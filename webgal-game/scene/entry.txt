@@ -1,0 +1,5 @@
+setVar:sessionId=static-001 -global;
+changeBg:bg.webp;
+欢迎进入 WebGAL × Vue 集成测试（静态回退版）。
+当前没有后端，剧本由 game/scene/ 下的本地文件直接提供。
+choose:走左路:left.txt|走右路:right.txt;

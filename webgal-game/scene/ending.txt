@@ -1,0 +1,4 @@
+changeBg:bg.webp;
+静态回退版：谜题闭环完成，测试流程结束！
+你的 sessionId={sessionId}。
+end;

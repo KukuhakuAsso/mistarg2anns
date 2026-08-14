@@ -3,3 +3,6 @@ node_modules/
 output/
 .env.local
 .env.*.local
+
+# 官方 WebGAL 发行包（scripts/fetch-webgal.mjs 按需自动拉取，不入库）
+public/webgal/
