@@ -14,7 +14,7 @@ const self = projects.find(
     (p) => path.resolve(ROOT_DIR, p.dir) === PROJECT_DIR,
 );
 
-const subPath = self?.subPath ?? "mistarg2anns";
+const subPath = self?.subPath ?? "mistarg/2anns";
 const devPort = self?.devPort ?? 5176;
 const proxyApi = self?.proxyApi ?? [];
 const outputDir = self?.outputDir ?? "output";
