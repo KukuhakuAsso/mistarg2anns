@@ -1,5 +1,5 @@
 changeBg:bg.webp;
-请输入谜题答案（静态版：由引擎内 jumpLabel 判题）。
+请输入谜题答案。
 提示：宇宙的终极答案（两位数字）。
 getUserInput:answer -title=谜题 -buttonText=提交;
 jumpLabel:p_correct -when=answer=="42";

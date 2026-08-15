@@ -1,2 +1,1 @@
-（静态回退版不走后端校验，正常情况下不应看到这里。）
 changeScene:puzzle.txt;
