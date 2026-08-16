@@ -85,21 +85,46 @@ async function loadEngineGameKey() {
 
 let engineDb = null; // 缓存的 localforage IndexedDB 连接，避免轮询反复 open
 
-// 打开/复用 localforage 的 IndexedDB 连接
+// 打开/复用 localforage 的 IndexedDB 连接。
+// 加超时兜底：若引擎长期占用连接导致新的 open 请求挂起，超时先返回 null，
+// 由 readEngineVar 走 localStorage 兜底，避免轮询死锁；连接稍后若成功打开
+// 仍会缓存，供后续轮询复用。
 function openEngineDb() {
   return new Promise((resolve) => {
     if (engineDb) return resolve(engineDb);
     try {
       const openReq = indexedDB.open("localforage");
+      const timer = setTimeout(() => resolve(null), 2000);
       openReq.onsuccess = () => {
+        clearTimeout(timer);
         engineDb = openReq.result;
         resolve(engineDb);
       };
-      openReq.onerror = () => resolve(null);
+      openReq.onerror = () => {
+        clearTimeout(timer);
+        resolve(null);
+      };
     } catch {
       resolve(null);
     }
   });
+}
+
+// 解析 localforage 存储的用户数据记录。
+// 引擎用 localforage.setItem(Game_key, userData) 持久化（userData 含 globalGameVar）。
+// 宿主绕过 localforage 直接读原始存储，读到的可能是：
+//   - IndexedDB driver：直接存对象（实测本引擎/浏览器下为对象）
+//   - localStorage driver：JSON 字符串
+// 这里两种都兼容。
+function parseEngineRecord(rec) {
+  if (typeof rec === "string") {
+    try {
+      return JSON.parse(rec);
+    } catch {
+      return null;
+    }
+  }
+  return rec && typeof rec === "object" ? rec : null;
 }
 
 // 读取引擎持久化的全局变量（IndexedDB 为主，localStorage 兜底）
@@ -107,11 +132,11 @@ async function readEngineVar(key) {
   if (!engineGameKey) return null;
   const db = await openEngineDb();
   if (!db) {
-    // IndexedDB 不可用 → localStorage 兜底（localforage 会落到这里）
+    // IndexedDB 不可用 → localStorage 兜底。
+    // localforage 的 localStorage driver 的 key 带 "localforage/" 前缀。
     try {
-      const raw = localStorage.getItem(engineGameKey);
-      if (!raw) return null;
-      const data = JSON.parse(raw);
+      const raw = localStorage.getItem(`localforage/${engineGameKey}`);
+      const data = parseEngineRecord(raw);
       return data?.globalGameVar?.[key] ?? null;
     } catch {
       return null;
@@ -124,8 +149,7 @@ async function readEngineVar(key) {
       const getReq = store.get(engineGameKey);
       getReq.onsuccess = () => {
         try {
-          const rec = getReq.result;
-          const data = rec?.value ? JSON.parse(rec.value) : null;
+          const data = parseEngineRecord(getReq.result);
           resolve(data?.globalGameVar?.[key] ?? null);
         } catch {
           resolve(null);
@@ -225,6 +249,8 @@ async function submitAnswer(answer) {
 
   try {
     const data = await getFlow(question, normalized);
+    console.log("[host] 提交答案:", question, normalized, "→", data);
+    console.log("[host] 当前quest位置:",currentQuestion.value, "引擎quest变量:", await readEngineVar("quest"));
     const hasResult = typeof data?.answerCorrect === "boolean";
     if (!hasResult) {
       throw new Error("响应格式错误");
