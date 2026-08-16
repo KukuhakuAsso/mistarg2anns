@@ -4,8 +4,8 @@
 // public/webgal/ 为生成物，已在 .gitignore 中忽略，不入库。
 //
 // 用法:
-//   node scripts/fetch-webgal.mjs            # 版本未变时跳过
-//   node scripts/fetch-webgal.mjs --force    # 强制重新拉取
+//   node scripts/fetch-webgal.mjs            # 引擎版本未变时仅同步游戏内容，不重新下载
+//   node scripts/fetch-webgal.mjs --force    # 强制重新下载引擎并同步游戏内容
 //
 // 环境变量（可选）:
 //   WEBGAL_VERSION      覆盖 package.json 的 webgalVersion
@@ -77,7 +77,11 @@ async function main() {
     if (!force && fs.existsSync(VERSION_FILE)) {
         const current = fs.readFileSync(VERSION_FILE, "utf-8").trim();
         if (current === VERSION) {
+            // 引擎已就绪：不重新下载，仅把仓库自维护的游戏内容覆盖进 game/，
+            // 保证每次 dev / build 时 scene 等修改都能立即生效。
             console.log(`✅ WebGAL ${VERSION} 已就绪（${path.relative(PROJECT_DIR, DEST_DIR)}），跳过拉取。`);
+            console.log(`🎮 同步游戏内容：${path.relative(PROJECT_DIR, GAME_DIR)} → game/`);
+            overlayGameFiles();
             return;
         }
     }
