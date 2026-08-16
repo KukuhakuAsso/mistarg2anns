@@ -1,3 +1,4 @@
+setVar:quest=puzzle_test -global;
 changeBg:bg.webp;
 请输入谜题答案。
 提示：宇宙的终极答案（两位数字）。

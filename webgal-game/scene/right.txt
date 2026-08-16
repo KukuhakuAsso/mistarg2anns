@@ -1,3 +1,4 @@
+setVar:quest=right -global;
 你选择了右路。
 接下来进入谜题环节。
 changeScene:puzzle.txt;
