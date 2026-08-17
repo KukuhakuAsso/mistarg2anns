@@ -1,1 +1,1 @@
-changeScene:entry.txt;
+changeScene: entry.txt;
