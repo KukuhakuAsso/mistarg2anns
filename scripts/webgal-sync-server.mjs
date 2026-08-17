@@ -145,13 +145,15 @@ export function createWebgalSyncServer({ logger = console } = {}) {
       }
       return;
     }
-    // 引擎对我们的命令/查询的回应，仅记录便于诊断
-    if (envelope.kind === "response" || envelope.kind === "error") {
-      logger.info(`← WebGAL 回应 ${envelope.type}（${envelope.kind}）`);
-      return;
-    }
-    if (envelope.kind === "event") {
-      logger.info(`← WebGAL 事件 ${envelope.type}`);
+    // 引擎对我们的命令/查询的回应、以及主动上报的事件，通常无需处理
+    if (
+      envelope.kind === "response" ||
+      envelope.kind === "error" ||
+      envelope.kind === "event"
+    ) {
+        // 可选：记录日志
+        // logger.info(`← WebGAL ${envelope.kind}: ${envelope.type}`);
+        return;
     }
   };
 
