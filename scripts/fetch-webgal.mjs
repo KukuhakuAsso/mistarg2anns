@@ -14,12 +14,14 @@ import AdmZip from "adm-zip";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { fileURLToPath } from "url";
+import {
+    PROJECT_DIR,
+    GAME_DIR,
+    WEBGAL_DIR,
+    syncGameFiles,
+} from "./sync-game.mjs";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PROJECT_DIR = path.resolve(__dirname, "..");
-const DEST_DIR = path.join(PROJECT_DIR, "public", "webgal");
-const GAME_DIR = path.join(PROJECT_DIR, "game");
+const DEST_DIR = WEBGAL_DIR;
 const VERSION_FILE = path.join(DEST_DIR, ".webgal-version");
 
 const pkg = JSON.parse(
@@ -59,20 +61,6 @@ async function retry(fn, label) {
     }
 }
 
-function overlayGameFiles() {
-    // fs.cp 会把目录整体复制成子目录，因此逐项合并，保证内容平铺进 game/
-    const gameDest = path.join(DEST_DIR, "game");
-    for (const entry of fs.readdirSync(GAME_DIR, { withFileTypes: true })) {
-        const src = path.join(GAME_DIR, entry.name);
-        const dest = path.join(gameDest, entry.name);
-        if (entry.isDirectory()) {
-            fs.cpSync(src, dest, { recursive: true, force: true });
-        } else {
-            fs.copyFileSync(src, dest);
-        }
-    }
-}
-
 async function main() {
     if (!force && fs.existsSync(VERSION_FILE)) {
         const current = fs.readFileSync(VERSION_FILE, "utf-8").trim();
@@ -81,7 +69,7 @@ async function main() {
             // 保证每次 dev / build 时 scene 等修改都能立即生效。
             console.log(`✅ WebGAL ${VERSION} 已就绪（${path.relative(PROJECT_DIR, DEST_DIR)}），跳过拉取。`);
             console.log(`🎮 同步游戏内容：${path.relative(PROJECT_DIR, GAME_DIR)} → game/`);
-            overlayGameFiles();
+            syncGameFiles();
             return;
         }
     }
@@ -116,7 +104,7 @@ async function main() {
     await retry(() => fs.rmSync(zipFile, { force: true }), "清理下载缓存");
 
     console.log(`🎮 覆盖游戏内容：${path.relative(PROJECT_DIR, GAME_DIR)} → game/`);
-    overlayGameFiles();
+    syncGameFiles();
 
     fs.writeFileSync(VERSION_FILE, `${VERSION}\n`);
     console.log(`✅ 完成：${path.relative(PROJECT_DIR, DEST_DIR)}（WebGAL ${VERSION}）`);
