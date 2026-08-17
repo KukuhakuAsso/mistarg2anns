@@ -5,6 +5,7 @@ import fs from "fs";
 
 import { GAME_DIR, syncGameFiles } from "./scripts/sync-game.mjs";
 import { createWebgalSyncServer } from "./scripts/webgal-sync-server.mjs";
+import { pruneGameResources } from "./scripts/prune-game-resources.mjs";
 
 // 单一数据源：base / port / 代理前缀 / 输出目录 均来自根目录 projects.json，
 // 与主站 config.mjs 的代理转发保持一致，新增子项目无需修改本文件。
@@ -23,6 +24,35 @@ const proxyApi = self?.proxyApi ?? [];
 const outputDir = self?.outputDir ?? "output";
 
 const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+// 构建时裁剪未引用的游戏资源（发行包自带的演示资源，如 vocal/figure）：
+// vite build 会把 public/webgal/ 整体拷进 outDir，这里在产物写出后（closeBundle）
+// 对 outDir/webgal/game/ 按「剧本/配置实际引用」做一次裁剪，只保留必要资源。
+// 只动构建产物，不碰 public/ 源目录（dev / --force 重下发行包均不受影响）。
+function pruneGameResourcesPlugin() {
+    return {
+        name: "prune-game-resources",
+        apply: "build",
+        closeBundle() {
+            const target = path.resolve(PROJECT_DIR, outputDir, "webgal", "game");
+            if (!fs.existsSync(target)) return;
+            const { removed, kept, removedList } = pruneGameResources(target);
+            if (removed > 0) {
+                console.log(
+                    `🗑️  构建裁剪：删除 ${removed} 个未引用的演示资源（保留 ${kept} 个）`,
+                );
+                for (const rel of removedList.slice(0, 20)) {
+                    console.log(`   - ${rel}`);
+                }
+                if (removedList.length > 20) {
+                    console.log(`   … 等共 ${removedList.length} 个`);
+                }
+            } else {
+                console.log(`✅ 构建裁剪：无多余演示资源（保留 ${kept} 个）`);
+            }
+        },
+    };
+}
 
 // dev 期间监听 game/ 文件夹，内容变化时：
 //   - 同步到 public/webgal/game/
@@ -143,7 +173,7 @@ export default defineConfig(({ mode }) => {
     return {
         base: `/${subPath}/`,
         server: { proxy, port: devPort },
-        plugins: [vue(), watchGameSyncPlugin()],
+        plugins: [vue(), watchGameSyncPlugin(), pruneGameResourcesPlugin()],
         resolve: { alias: { "@": path.resolve(import.meta.dirname, "src") } },
         build: { outDir: outputDir, emptyOutDir: true },
     };
