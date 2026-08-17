@@ -339,6 +339,24 @@ onMounted(async () => {
   }
 });
 
+// dev 热同步：vite.config.js 的 watch 插件在 game/ 内容变化后发送自定义事件。
+//   - game-scene-refreshed：场景文件已通过 WebGAL 编辑器同步 V1 按场景刷新，
+//     这里只需隐藏 iframe 内残留的引擎标题层（run-scene-content 不会隐藏它），
+//     不重建 iframe、不刷新宿主页面。
+//   - game-updated：config.txt / flowchart.json / 增删文件等，回退为整体重载 iframe。
+if (import.meta.hot) {
+  import.meta.hot.on("game-scene-refreshed", () => {
+    const doc = galFrame.value?.contentDocument;
+    const titleLayer = doc?.querySelector(".html-body__title-enter");
+    if (titleLayer) titleLayer.style.display = "none";
+    console.log("[host] 场景已按场景刷新，已隐藏标题层");
+  });
+  import.meta.hot.on("game-updated", () => {
+    console.log("[host] 检测到游戏内容更新，重载游戏 iframe");
+    reload();
+  });
+}
+
 onBeforeUnmount(() => {
   clearInterval(captureTimer);
   clearInterval(questTimer);
