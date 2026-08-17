@@ -30,8 +30,8 @@ graph LR
 
 | 路径 | 说明 |
 |---|---|
-| `webgal-game/` | 仓库自维护的游戏内容（config.txt / start.txt / scene/*.txt / flowchart.json） |
-| `public/webgal/` | 生成物（gitignore）：官方网页版发行包 + webgal-game 覆盖，由 `fetch:webgal` 拉取 |
+| `game/` | 仓库自维护的游戏内容（config.txt / start.txt / scene/*.txt / flowchart.json） |
+| `public/webgal/` | 生成物（gitignore）：官方网页版发行包 + game 覆盖，由 `fetch:webgal` 拉取 |
 | `scripts/fetch-webgal.mjs` | 从 GitHub Releases 拉取官方发行包（非源码），dev/build/preview 前自动执行 |
 | `public/webgal/game/scene/start.txt` | 引擎固定入口（4.6.4 版从 scene 目录启动），仅一句 `changeScene:entry.txt;` |
 | `src/components/GalPage.vue` | iframe 宿主：答案捕获 + 判定结果页 + 网络错误页 |
@@ -44,7 +44,7 @@ graph LR
   首次运行 dev/build/preview 时自动拉取（约 71 MB），版本由 package.json 的
   `webgalVersion` 固定；手动强制刷新：`pnpm fetch:webgal -- --force`
 - `game/start.txt`（game 根目录）在本引擎版本中不是启动场景，已同步为同一句内容
-- 版本未变时 `fetch:webgal` 会跳过覆盖：改了 `webgal-game/` 内容需同步
+- 版本未变时 `fetch:webgal` 会跳过覆盖：改了 `game/` 内容需同步
   `public/webgal/game/`，或用 `--force` 重拉
 
 ## 本地开发

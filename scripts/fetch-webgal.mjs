@@ -1,6 +1,6 @@
 // scripts/fetch-webgal.mjs
 // 拉取官方 WebGAL 网页版「发行包」（GitHub Releases 的 web 构建产物，非源码）
-// 解压到 public/webgal/，再把仓库自维护的游戏内容 webgal-game/ 覆盖进去。
+// 解压到 public/webgal/，再把仓库自维护的游戏内容 game/ 覆盖进去。
 // public/webgal/ 为生成物，已在 .gitignore 中忽略，不入库。
 //
 // 用法:
@@ -19,7 +19,7 @@ import { fileURLToPath } from "url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_DIR = path.resolve(__dirname, "..");
 const DEST_DIR = path.join(PROJECT_DIR, "public", "webgal");
-const GAME_DIR = path.join(PROJECT_DIR, "webgal-game");
+const GAME_DIR = path.join(PROJECT_DIR, "game");
 const VERSION_FILE = path.join(DEST_DIR, ".webgal-version");
 
 const pkg = JSON.parse(
