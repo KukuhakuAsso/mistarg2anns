@@ -1,7 +1,7 @@
 <template>
   <div class="app">
     <h1>mistarg2anns</h1>
-    <p>新子项目，开始编写内容。</p>
+    <p>以下为测试内容。</p>
   </div>
 </template>
 
