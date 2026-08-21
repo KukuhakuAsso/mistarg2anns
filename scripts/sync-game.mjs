@@ -57,7 +57,7 @@ export function syncGameFiles() {
     fs.mkdirSync(GAME_DEST_DIR, { recursive: true });
 
     // 1. 删除「上次写入、现在已从 game/ 移除」的文件（删除同步）
-    let prev = [];
+    let prev;
     try {
         prev = JSON.parse(fs.readFileSync(MANIFEST_FILE, "utf-8"));
     } catch {

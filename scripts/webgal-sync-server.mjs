@@ -158,7 +158,7 @@ export function createWebgalSyncServer({ logger = console } = {}) {
   };
 
   const attach = (httpServer) => {
-    httpServer.on("upgrade", (req, socket, head) => {
+    httpServer.on("upgrade", (req, socket, _head) => {
       let pathname;
       try {
         pathname = new URL(req.url, "http://localhost").pathname;

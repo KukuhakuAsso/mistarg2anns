@@ -47,7 +47,7 @@ export function collectReferencedAssets() {
         const text = fs.readFileSync(f, "utf-8");
         // 1) 直接匹配带扩展名的资源文件名
         for (const m of text.matchAll(
-            /[\w.\-]+\.(webp|png|jpe?g|gif|bmp|mp3|wav|ogg|flac|ttf|woff2?)/gi,
+            /[\w.-]+\.(webp|png|jpe?g|gif|bmp|mp3|wav|ogg|flac|ttf|woff2?)/gi,
         )) {
             refs.add(m[0].toLowerCase());
             refs.add(stemOf(m[0]));
