@@ -1,7 +1,7 @@
 <template>
   <div class="app">
     <h1>mistarg2anns</h1>
-    <p>新子项目mistarg2anns，测试中。</p>
+    <p>新子项目mistarg2anns，测试进行中。</p>
   </div>
 </template>
 
