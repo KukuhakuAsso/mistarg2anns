@@ -1,0 +1,80 @@
+# 2anns 推送 main 后，通知主仓库（ku2hakuasso.site）同步本子模块的指针
+#
+# 本仓库分支模型：
+#   preview  测试阶段的源码预览分支 → 自动发布到 dist 预览站（见 deploy.yml）
+#   main     稳定分支 → 本工作流通知主站同步指针 → 由主站聚合渲染
+#   dist     预览站的构建产物（GitHub Pages 的源），不要手工改
+#
+# 机制：调用主仓库**已有**的 `.github/workflows/sync-submodules.yml` 的 workflow_dispatch API。
+#       主仓库收到后按自身流程执行：更新 gitlink 到本仓库最新 main → 刷新 lockfile
+#       → 冻结安装并构建校验 → 自动开 PR（chore: sync submodules）。
+#
+#   ✅ 不需要修改主仓库任何文件：workflow_dispatch 已在该工作流中声明，
+#      且 .gitmodules 里 `submodule.vue-mistarg2anns.branch = main` 已被主仓库的
+#      同步脚本识别为「自动追踪」子模块。
+#
+# 前提：在本仓库 Settings → Secrets and variables → Actions 新建
+#   MAIN_REPO_TOKEN = 对 KukuhakuAsso/ku2hakuasso.site 有下述权限的令牌
+#       - fine-grained PAT：Actions: Read and write（触发工作流）
+#                           Pull requests: Read（下方「已有未合并 PR」守卫用，可省）
+#       - 或 classic PAT：repo 作用域
+#   跨仓库触发无法用 GITHUB_TOKEN（它只对当前仓库有效）。
+#   未配置该 secret 时本工作流只输出 warning 并跳过，不会失败；
+#   主仓库仍有每日 00:00 UTC 的定时同步兜底。
+name: Notify main repo (sync submodule pointer)
+
+on:
+    push:
+        branches:
+            - main
+    workflow_dispatch:
+
+permissions:
+    contents: read # 跨仓库调用用的是 PAT，不需要本仓库的写权限
+
+concurrency:
+    # 连续推送时只保留最后一次通知（cancel-in-progress 会取消正在等待的运行），
+    # 避免主仓库被反复触发。
+    group: notify-main-repo
+    cancel-in-progress: true
+
+jobs:
+    notify:
+        runs-on: ubuntu-latest
+        env:
+            MAIN_REPO: KukuhakuAsso/ku2hakuasso.site
+            MAIN_BRANCH: main
+        steps:
+            # 短延时 + 上面的并发组：把「连续几次 push」合并成一次通知
+            - name: Coalesce rapid pushes
+              run: sleep 15
+
+            - name: Dispatch main repo sync workflow
+              env:
+                  GH_TOKEN: ${{ secrets.MAIN_REPO_TOKEN }}
+              run: |
+                  if [ -z "$GH_TOKEN" ]; then
+                      echo "::warning::secrets.MAIN_REPO_TOKEN 未配置，已跳过通知主仓库（可等待主仓库每日定时同步）"
+                      exit 0
+                  fi
+
+                  # 守卫：主仓库已有未合并的同步 PR 时不再触发。
+                  # 主仓库的同步分支名是 chore/sync-submodules-<UTC 日期>，同一天重复触发
+                  # 会在同一分支上互相冲突导致推送被拒；查询失败时按「没有」处理（放行）。
+                  OPEN_PR="$(gh pr list --repo "$MAIN_REPO" --state open --limit 100 \
+                      --json headRefName \
+                      -q '[.[] | select(.headRefName | startswith("chore/sync-submodules"))] | length' 2>/dev/null)" \
+                      || OPEN_PR=""
+                  case "${OPEN_PR:-0}" in
+                      0|"")
+                          echo "主仓库暂无未合并的同步 PR，继续通知" ;;
+                      *)
+                          echo "主仓库已有 ${OPEN_PR} 个未合并的同步 PR，跳过本次通知"
+                          exit 0 ;;
+                  esac
+
+                  if gh workflow run sync-submodules.yml --repo "$MAIN_REPO" --ref "$MAIN_BRANCH"; then
+                      echo "已通知主仓库运行 sync-submodules.yml（同步 vue-mistarg2anns 指针）"
+                  else
+                      echo "::warning::通知主仓库失败：请确认 secrets.MAIN_REPO_TOKEN 对该仓库具备 Actions: write 权限"
+                  fi
