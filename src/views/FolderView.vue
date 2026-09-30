@@ -11,8 +11,14 @@ const props = defineProps({
 
 const emit = defineEmits(["close"]);
 
-const { state, setFolderCompleted, discoverClue, isClueDiscovered } =
-  useGameState();
+const {
+  state,
+  setFolderCompleted,
+  discoverClue,
+  isClueDiscovered,
+  isTipUnlocked,
+  unlockTip,
+} = useGameState();
 
 const puzzles = computed(() =>
   props.folder.entries.filter((entry) => entry.kind === "puzzle"),
@@ -30,6 +36,9 @@ const clueReadCount = computed(
 const selected = ref(null);
 const windowPosition = ref({ x: 0, y: 0 });
 const dragOffset = ref(null);
+const tipsOpen = ref(false);
+const answer = ref("");
+const answerStatus = ref("");
 
 const windowStyle = computed(() => ({
   left: `${windowPosition.value.x}px`,
@@ -38,6 +47,9 @@ const windowStyle = computed(() => ({
 
 function openEntry(entry) {
   selected.value = entry;
+  tipsOpen.value = false;
+  answer.value = "";
+  answerStatus.value = "";
   windowPosition.value = {
     x: Math.max(16, Math.round((window.innerWidth - 680) / 2)),
     y: Math.max(16, Math.round((window.innerHeight - 480) / 2)),
@@ -46,6 +58,28 @@ function openEntry(entry) {
 
 function closeEntry() {
   selected.value = null;
+  tipsOpen.value = false;
+}
+
+function tipId(index) {
+  return `${selected.value.id}-tip-${index + 1}`;
+}
+
+function toggleTips() {
+  tipsOpen.value = !tipsOpen.value;
+}
+
+function unlockSelectedTip(index) {
+  unlockTip(tipId(index));
+}
+
+function submitAnswer() {
+  if (!answer.value.trim()) {
+    answerStatus.value = "请输入答案";
+    return;
+  }
+
+  answerStatus.value = "答案已提交";
 }
 
 function startDrag(event) {
@@ -147,7 +181,49 @@ onBeforeUnmount(stopDrag);
         <header class="entry-modal__head" @pointerdown="startDrag">
           <div>
             <span class="entry-modal__kind">题目文件</span>
-            <h2 class="entry-modal__title">{{ selected.title }}</h2>
+            <div class="entry-modal__title-row">
+              <h2 class="entry-modal__title">{{ selected.title }}</h2>
+              <div class="tips-control">
+                <button
+                  class="tips-control__button"
+                  type="button"
+                  :aria-expanded="tipsOpen"
+                  @click="toggleTips"
+                  @contextmenu.prevent="tipsOpen = true"
+                >
+                  Tips
+                </button>
+                <section v-if="tipsOpen" class="tips-popover">
+                  <header class="tips-popover__head">
+                    <span>提示</span>
+                    <span>{{ state.tipPoints }} 点</span>
+                  </header>
+                  <ol class="tips-popover__list">
+                    <li
+                      v-for="(tip, index) in selected.tips"
+                      :key="tipId(index)"
+                    >
+                      <button
+                        class="tips-popover__item"
+                        type="button"
+                        :disabled="
+                          isTipUnlocked(tipId(index)) || state.tipPoints < 1
+                        "
+                        @click="unlockSelectedTip(index)"
+                      >
+                        <span>Tips {{ index + 1 }}</span>
+                        <span v-if="isTipUnlocked(tipId(index))">{{
+                          tip
+                        }}</span>
+                        <span v-else class="tips-popover__locked">
+                          {{ state.tipPoints > 0 ? "1 点解锁" : "点数不足" }}
+                        </span>
+                      </button>
+                    </li>
+                  </ol>
+                </section>
+              </div>
+            </div>
           </div>
           <button
             class="icon-btn"
@@ -160,7 +236,7 @@ onBeforeUnmount(stopDrag);
         </header>
 
         <p class="entry-modal__body">{{ selected.body }}</p>
-
+        <!-- 
         <section v-if="clues.length" class="clue-list">
           <header class="clue-list__head">
             <h3>相关线索</h3>
@@ -182,7 +258,25 @@ onBeforeUnmount(stopDrag);
               </button>
             </li>
           </ul>
-        </section>
+        </section> -->
+
+        <form class="answer-form" @submit.prevent="submitAnswer">
+          <label class="answer-form__label" for="puzzle-answer">答案</label>
+          <div class="answer-form__controls">
+            <input
+              id="puzzle-answer"
+              v-model="answer"
+              class="answer-form__input"
+              type="text"
+              placeholder="输入答案"
+              autocomplete="off"
+            />
+            <button class="bar-btn" type="submit">提交</button>
+          </div>
+          <p v-if="answerStatus" class="answer-form__status">
+            {{ answerStatus }}
+          </p>
+        </form>
       </article>
     </Teleport>
   </section>
@@ -365,8 +459,95 @@ onBeforeUnmount(stopDrag);
 }
 
 .entry-modal__title {
-  margin-top: 2px;
   font-size: 16px;
+}
+
+.entry-modal__title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.tips-control {
+  position: relative;
+}
+
+.tips-control__button {
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--surface-alt);
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.tips-control__button:hover,
+.tips-control__button[aria-expanded="true"] {
+  border-color: var(--border-strong);
+  color: var(--accent);
+}
+
+.tips-popover {
+  position: absolute;
+  z-index: 1;
+  top: calc(100% + 8px);
+  left: 0;
+  width: min(320px, calc(100vw - 72px));
+  padding: 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--text) 16%, transparent);
+}
+
+.tips-popover__head {
+  display: flex;
+  justify-content: space-between;
+  padding: 0 2px 8px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.tips-popover__list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tips-popover__item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tips-popover__item:hover:not(:disabled) {
+  border-color: var(--border);
+  background: var(--surface-alt);
+}
+
+.tips-popover__item:disabled {
+  cursor: default;
+}
+
+.tips-popover__locked {
+  color: var(--text-dim);
 }
 
 .entry-modal__body {
@@ -437,6 +618,48 @@ onBeforeUnmount(stopDrag);
 
 .clue-list__action {
   margin-left: auto;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.answer-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.answer-form__label {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.answer-form__controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.answer-form__input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 8px;
+  border-color: var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-alt);
+  color: var(--text);
+  font: inherit;
+}
+
+.answer-form__input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.answer-form__status {
+  margin: 0;
   font-size: 12px;
   color: var(--text-dim);
 }
