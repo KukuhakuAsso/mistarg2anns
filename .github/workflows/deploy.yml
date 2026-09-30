@@ -1,0 +1,113 @@
+# 2anns 预览站部署工作流（本仓库 = mistarg2anns，主仓库 ku2hakuasso.site 的子模块）
+#
+# 本仓库分支模型：
+#   preview  测试阶段的源码预览分支 → 推送 / PR 触发本工作流
+#   dist     构建产物分支（GitHub Pages 的源）→ 本工作流自动推送，不要手工改
+#   main     稳定分支 → 由主站同步 submodule 指针后聚合渲染（见 notify-main-repo.yml）
+#
+# 部署链路：push 到 preview → 构建（base=/mistarg2anns/）→ 产物推送到 `dist` 分支
+#           → GitHub Pages 以 `dist` 分支为源：https://kukuhakuasso.github.io/mistarg2anns/
+#
+# ⚠️ 与主仓库的聚合部署完全隔离，不会互相干扰：
+#   - 不参与主仓库的 dist-preview 聚合；
+#   - 不写主仓库的 dist 分支（只是本仓库同名分支，两个仓库互不相干）、
+#     不创建主仓库的 Release、不触发 CVM 部署钩子；
+#   - 只在本仓库内推送 dist 分支，不占用主仓库的 Pages / environment / concurrency。
+#
+# 触发：
+#   - push 到 preview               → 构建 + 发布到 dist 分支
+#   - pull_request（base = preview）→ 仅构建校验（不发布，避免未合并代码上线；产物可下载检查）
+#   - workflow_dispatch             → 手动触发（构建 + 发布；注意修改 ref 为 preview）
+#
+name: Deploy 2anns preview site (preview -> dist)
+
+on:
+    push:
+        branches:
+            - preview
+    # 只校验以 preview 为目标的 PR；upstream 分支随便叫什么
+    pull_request:
+        branches:
+            - preview
+    workflow_dispatch:
+
+# 需要向 dist 分支推送，因此用 contents: write；
+# 分支源模式不需要 pages: write / id-token（那是 Actions 产物源才需要）。
+permissions:
+    contents: write
+
+concurrency:
+    # 按 workflow + ref 分组：preview 的多次推送互相取消（只保留最新一次发布），
+    # PR 各自独立分组，不会取消正在进行的发布。
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    build:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v7
+
+            - name: Install pnpm
+              uses: pnpm/action-setup@v6
+              with:
+                  version: 11
+
+            - name: Set up Node
+              uses: actions/setup-node@v7
+              with:
+                  node-version: 24
+
+            # 本仓库是独立仓库，自身不带 pnpm-lock.yaml（monorepo 的锁文件在主仓库），
+            # 而 CI 环境下 pnpm 默认 --frozen-lockfile 会因缺少锁文件直接报错。
+            - name: Install dependencies
+              run: pnpm install --no-frozen-lockfile
+
+            # 独立部署时站点位于 /mistarg2anns/；
+            # 在主仓库内构建时该变量不存在，base 仍由 ../projects.json 的 subPath 决定。
+            # 本地复现：DEPLOY_BASE=mistarg2anns pnpm run build
+            # （Git Bash 会把带前导斜杠的值当路径转换，配置里已归一化，故可省略斜杠）
+            - name: Build
+              env:
+                  DEPLOY_BASE: /mistarg2anns/
+              run: pnpm run build
+
+            # 分支源 Pages 默认会走 Jekyll，放 .nojekyll 跳过；
+            # 产物目录为 output/（见 vite.config.js 的 build.outDir）。
+            - name: Add .nojekyll
+              run: touch output/.nojekyll
+
+            # PR 也能下载产物做检查（不发布）；
+            # include-hidden-files 必需，否则上一步的 .nojekyll 会被丢掉。
+            - name: Upload build artifact
+              uses: actions/upload-artifact@v7
+              with:
+                  name: site
+                  path: output
+                  retention-days: 1
+                  include-hidden-files: true
+
+    # PR 只做构建校验，只有 push 到 preview / 手动触发才真正发布
+    deploy:
+        if: github.event_name != 'pull_request'
+        needs: build
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v7
+
+            - name: Download build artifact
+              uses: actions/download-artifact@v8
+              with:
+                  name: site
+                  path: output
+
+            # 把产物推送到 dist 分支（分支不存在时自动创建），
+            # 之后由 GitHub Pages 直接以该分支为源对外提供服务。
+            - name: Push to dist branch
+              uses: JamesIves/github-pages-deploy-action@v4
+              with:
+                  folder: output
+                  branch: dist
+                  token: ${{ secrets.GITHUB_TOKEN }}

@@ -7,9 +7,14 @@ import fs from "fs";
 // 与主站 config.mjs 的代理转发保持一致，新增子项目无需修改本文件。
 const PROJECT_DIR = path.resolve(import.meta.dirname);
 const ROOT_DIR = path.resolve(PROJECT_DIR, "..");
-const projects = JSON.parse(
-    fs.readFileSync(path.join(ROOT_DIR, "projects.json"), "utf-8"),
-);
+
+// projects.json 只存在于 monorepo 主仓库中；本仓库作为独立仓库单独 clone 时
+// （例如 GitHub Actions 部署本仓库自己的 Pages）该文件不存在，此时退回下方默认值，
+// 保证不依赖主仓库也能独立构建。
+const PROJECTS_FILE = path.join(ROOT_DIR, "projects.json");
+const projects = fs.existsSync(PROJECTS_FILE)
+    ? JSON.parse(fs.readFileSync(PROJECTS_FILE, "utf-8"))
+    : [];
 const self = projects.find(
     (p) => path.resolve(ROOT_DIR, p.dir) === PROJECT_DIR,
 );
@@ -18,6 +23,12 @@ const subPath = self?.subPath ?? "mistarg/2anns";
 const devPort = self?.devPort ?? 5176;
 const proxyApi = self?.proxyApi ?? [];
 const outputDir = self?.outputDir ?? "output";
+
+// 部署 base：默认沿用 monorepo 子路径；独立部署（如本仓库自己的 GitHub Pages）时
+// 用环境变量 DEPLOY_BASE 覆盖，例如 DEPLOY_BASE=/mistarg2anns/。
+const base = process.env.DEPLOY_BASE
+    ? `/${String(process.env.DEPLOY_BASE).replace(/^\/+|\/+$/g, "")}/`
+    : `/${subPath}/`;
 
 const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -41,7 +52,7 @@ export default defineConfig(({ mode }) => {
     }
 
     return {
-        base: `/${subPath}/`,
+        base,
         server: { proxy, port: devPort },
         plugins: [vue()],
         resolve: { alias: { "@": path.resolve(import.meta.dirname, "src") } },
