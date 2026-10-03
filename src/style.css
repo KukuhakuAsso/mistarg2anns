@@ -12,6 +12,11 @@
     --accent: #2f5d8c;
     --accent-soft: rgba(47, 93, 140, 0.1);
     --danger: #9d3b3b;
+    --desktop-hover-glass-bg: linear-gradient(
+        180deg,
+        rgba(0, 0, 0, 0.22),
+        rgba(0, 0, 0, 0.12)
+    );
 
     --radius: 6px;
     --bar-h: 46px;
@@ -37,6 +42,11 @@ html.dark {
     --accent: #7aa7d6;
     --accent-soft: rgba(122, 167, 214, 0.14);
     --danger: #d27575;
+    --desktop-hover-glass-bg: linear-gradient(
+        180deg,
+        rgba(255, 255, 255, 0.1),
+        rgba(255, 255, 255, 0.02)
+    );
 
     color-scheme: dark;
 }
