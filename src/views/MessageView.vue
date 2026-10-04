@@ -366,15 +366,15 @@ function handleSendMessage() {
 :global(body) {
   margin: 0;
   font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-  background: #edf1f6;
+  background: var(--bg);
 }
 
 .mail-app {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: #eef3f8;
-  color: #1f2430;
+  background: var(--bg);
+  color: var(--text);
 }
 
 .topbar {
@@ -382,8 +382,8 @@ function handleSendMessage() {
   align-items: center;
   justify-content: space-between;
   padding: 10px 18px;
-  border-bottom: 1px solid rgba(20, 37, 62, 0.08);
-  background: rgba(255, 255, 255, 0.7);
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
   backdrop-filter: blur(8px);
 }
 
@@ -435,9 +435,9 @@ function handleSendMessage() {
 }
 
 .nav-btn.is-active {
-  background: #edf4ff;
-  color: #1d6fe7;
-  border-color: rgba(29, 111, 231, 0.15);
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 .topbar__right {
@@ -449,22 +449,22 @@ function handleSendMessage() {
 .user-chip {
   padding: 6px 10px;
   border-radius: 999px;
-  background: rgba(148, 163, 184, 0.12);
+  background: var(--surface-alt);
   font-size: 12px;
-  color: #475569;
+  color: var(--text-dim);
 }
 
 .mini-btn {
   padding: 7px 12px;
-  background: #ffffff;
-  border-color: rgba(15, 23, 42, 0.08);
+  background: var(--surface);
+  border-color: var(--border);
 }
 
 .mail-shell {
   display: flex;
   flex: 1;
   min-height: 0;
-  background: #f3f6fa;
+  background: var(--bg);
 }
 
 .compose-shell {
@@ -475,7 +475,7 @@ function handleSendMessage() {
   flex: 1;
   display: flex;
   flex-direction: column;
-  background: rgba(255, 255, 255, 0.5);
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
   min-width: 0;
 }
 
@@ -496,12 +496,12 @@ function handleSendMessage() {
 
 .label {
   width: 70px;
-  color: #64748b;
+  color: var(--text-dim);
   font-size: 12px;
 }
 
 .value {
-  color: #1f2937;
+  color: var(--text);
   font-size: 14px;
 }
 
@@ -514,8 +514,8 @@ function handleSendMessage() {
 .toolbar-label {
   padding: 6px 10px;
   border-radius: 8px;
-  background: rgba(148, 163, 184, 0.12);
-  color: #475569;
+  background: var(--surface-alt);
+  color: var(--text-dim);
   font-size: 12px;
 }
 
@@ -523,9 +523,9 @@ function handleSendMessage() {
   flex: 1;
   margin: 14px 18px 18px;
   padding: 18px 20px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
+  border: 1px solid var(--border);
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.85);
+  background: var(--surface);
   outline: none;
   font-size: 15px;
   line-height: 1.8;
@@ -535,7 +535,7 @@ function handleSendMessage() {
 
 .mail-editor:empty::before {
   content: "请输入正文内容...";
-  color: #9aa8b8;
+  color: var(--text-dim);
 }
 
 .composer__footer {
@@ -553,7 +553,7 @@ function handleSendMessage() {
 
 .helper-text {
   margin: 0 18px 18px;
-  color: #475569;
+  color: var(--text-dim);
   font-size: 12px;
 }
 
@@ -565,9 +565,9 @@ function handleSendMessage() {
   display: flex;
   flex: 1;
   flex-direction: column;
-  background: rgba(255, 255, 255, 0.72);
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
   margin: 0 18px 18px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
+  border: 1px solid var(--border);
   border-radius: 12px;
   overflow: hidden;
 }
@@ -578,8 +578,8 @@ function handleSendMessage() {
   justify-content: space-between;
   gap: 12px;
   padding: 12px 16px;
-  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
-  background: rgba(248, 250, 252, 0.8);
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-alt) 85%, transparent);
 }
 
 .toolbar-group {
@@ -593,22 +593,22 @@ function handleSendMessage() {
 
 .soft-btn {
   padding: 7px 12px;
-  background: white;
-  border-color: rgba(15, 23, 42, 0.08);
-  color: #46536a;
+  background: var(--surface);
+  border-color: var(--border);
+  color: var(--text-dim);
 }
 
 .soft-btn.is-selected {
-  background: #edf4ff;
-  border-color: rgba(29, 111, 231, 0.18);
-  color: #1d6fe7;
-  box-shadow: inset 0 0 0 1px rgba(29, 111, 231, 0.08);
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
 .soft-btn.danger-btn {
-  background: rgba(254, 242, 242, 0.9);
-  border-color: rgba(239, 68, 68, 0.18);
-  color: #b91c1c;
+  background: color-mix(in srgb, var(--danger) 14%, var(--surface));
+  border-color: color-mix(in srgb, var(--danger) 20%, transparent);
+  color: var(--danger);
 }
 
 .soft-btn:disabled {
@@ -628,19 +628,19 @@ function handleSendMessage() {
   align-items: center;
   gap: 12px;
   padding: 12px 16px;
-  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
-  background: rgba(255, 255, 255, 0.22);
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
 }
 
 .inbox-row--head {
-  background: rgba(241, 245, 249, 0.9);
-  color: #64748b;
+  background: color-mix(in srgb, var(--surface-alt) 92%, transparent);
+  color: var(--text-dim);
   font-size: 12px;
   font-weight: 600;
 }
 
 .inbox-row.is-unread {
-  background: rgba(248, 250, 252, 0.96);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
   font-weight: 600;
 }
 
@@ -658,7 +658,7 @@ function handleSendMessage() {
 .inbox-sender,
 .inbox-time,
 .inbox-actions {
-  color: #475569;
+  color: var(--text-dim);
   font-size: 12px;
   white-space: nowrap;
 }
@@ -670,16 +670,16 @@ function handleSendMessage() {
 
 .delete-btn {
   padding: 5px 10px;
-  border: 1px solid rgba(239, 68, 68, 0.2);
+  border: 1px solid color-mix(in srgb, var(--danger) 25%, transparent);
   border-radius: 6px;
-  background: rgba(254, 242, 242, 0.9);
-  color: #b91c1c;
+  background: color-mix(in srgb, var(--danger) 12%, var(--surface));
+  color: var(--danger);
   font-size: 11px;
   cursor: pointer;
 }
 
 .delete-btn:hover {
-  background: rgba(254, 226, 226, 0.95);
+  background: color-mix(in srgb, var(--danger) 18%, var(--surface));
 }
 
 .inbox-subject {
@@ -690,7 +690,7 @@ function handleSendMessage() {
 }
 
 .inbox-subject strong {
-  color: #1f2937;
+  color: var(--text);
   font-size: 13px;
   white-space: nowrap;
   overflow: hidden;
@@ -698,7 +698,7 @@ function handleSendMessage() {
 }
 
 .inbox-subject small {
-  color: #64748b;
+  color: var(--text-dim);
   font-size: 11px;
   line-height: 1.5;
   white-space: nowrap;
@@ -712,8 +712,8 @@ function handleSendMessage() {
   justify-content: space-between;
   gap: 12px;
   padding: 12px 16px;
-  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
-  background: rgba(248, 250, 252, 0.8);
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-alt) 88%, transparent);
 }
 
 .message-detail {
@@ -721,7 +721,7 @@ function handleSendMessage() {
   flex: 1;
   flex-direction: column;
   padding: 20px 24px 24px;
-  background: rgba(255, 255, 255, 0.45);
+  background: color-mix(in srgb, var(--surface) 76%, transparent);
   min-height: 0;
   overflow: auto;
 }
@@ -731,7 +731,7 @@ function handleSendMessage() {
   flex-wrap: wrap;
   gap: 18px;
   padding-bottom: 12px;
-  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+  border-bottom: 1px solid var(--border);
 }
 
 .message-detail__meta {
@@ -742,7 +742,7 @@ function handleSendMessage() {
 }
 
 .detail-label {
-  color: #64748b;
+  color: var(--text-dim);
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -752,14 +752,14 @@ function handleSendMessage() {
   margin: 18px 0 16px;
   font-size: 26px;
   line-height: 1.3;
-  color: #1f2937;
+  color: var(--text);
 }
 
 .message-detail__body {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  color: #334155;
+  color: var(--text);
   font-size: 15px;
   line-height: 1.9;
 }
