@@ -8,6 +8,7 @@ import DesktopView from "@/views/DesktopView.vue";
 import FolderView from "@/views/FolderView.vue";
 import RegisterView from "@/views/RegisterView.vue";
 import TeamView from "@/views/TeamView.vue";
+import MessageView from "@/views/MessageView.vue";
 import { FOLDER_BY_ID } from "@/config/folders";
 
 const activeFolderId = ref(null);
@@ -54,6 +55,10 @@ function backToDesktop() {
                 />
                 <TeamView
                     v-else-if="activeFeature === 'team'"
+                    @close="backToDesktop"
+                />
+                <MessageView
+                    v-else-if="activeFeature === 'messages'"
                     @close="backToDesktop"
                 />
                 <DesktopView v-else @open="openFolder" @open-page="openFeature" />

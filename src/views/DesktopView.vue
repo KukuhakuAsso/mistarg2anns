@@ -113,7 +113,6 @@ function closeUserPanel() {
 }
 
 function openShortcut(appId, event) {
-    const menuConfig = menuMap[appId];
     const button = event?.currentTarget;
     const rect = button?.getBoundingClientRect?.();
     const panelWidth = 280;
@@ -126,14 +125,16 @@ function openShortcut(appId, event) {
         const y = Math.min(Math.max(rect.bottom + 10, 12), window.innerHeight - 220);
         userPanelPosition.value = { x, y };
     }
-
-    if (!menuConfig) {
-        if (appId === "archive") {
-            const firstUnlockedFolder = folderStates.value.find((folder) => folder.unlocked);
-            if (firstUnlockedFolder) {
-                handleFolderOpen(firstUnlockedFolder.id);
-            }
+    if (appId === "archive") {
+        const firstUnlockedFolder = folderStates.value.find((folder) => folder.unlocked);
+        if (firstUnlockedFolder) {
+            handleFolderOpen(firstUnlockedFolder.id);
         }
+        return;
+    }
+
+    const menuConfig = menuMap[appId];
+    if (!menuConfig) {
         return;
     }
 
@@ -156,6 +157,8 @@ function openShortcut(appId, event) {
 function handleUserMenuClick(item) {
     if (!item) return;
 
+
+    console.log(item);
     closeUserPanel();
 
     if (item.id === "register") {
@@ -165,6 +168,16 @@ function handleUserMenuClick(item) {
 
     if (item.id === "team") {
         emit("open-page", "team");
+        return;
+    }
+
+    if (item.id === "messages") {
+        emit("open-page", "messages");
+        return;
+    }
+
+    if (item.id === "settings") {
+        emit("open-page", "messages");
     }
 }
 </script>
