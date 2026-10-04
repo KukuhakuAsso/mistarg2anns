@@ -3,6 +3,7 @@
 import { computed } from "vue";
 import AppIcon from "@/components/AppIcon.vue";
 import { useClueDrag } from "@/composables/useClueDrag";
+import puzzleThumbnail from "@/assets/test.jpg";
 
 const props = defineProps({
     clue: { type: Object, required: true },
@@ -16,6 +17,8 @@ const { startDrag } = useClueDrag();
 const style = computed(() => ({
     transform: `translate(${props.clue.x}px, ${props.clue.y}px)`,
 }));
+
+const thumbSrc = computed(() => props.clue.thumbnail || puzzleThumbnail);
 </script>
 
 <template>
@@ -38,7 +41,9 @@ const style = computed(() => ({
             </button>
         </header>
 
-        <p class="clue-card__body">{{ clue.body }}</p>
+        <div class="clue-card__thumb" aria-hidden="true">
+            <img :src="thumbSrc" :alt="clue.title" />
+        </div>
 
         <footer class="clue-card__foot">{{ clue.folderName }}</footer>
     </article>
@@ -51,7 +56,7 @@ const style = computed(() => ({
     left: 0;
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 6px;
     width: var(--card-w);
     height: var(--card-h);
     padding: 8px 10px;
@@ -84,13 +89,19 @@ const style = computed(() => ({
     text-overflow: ellipsis;
 }
 
-.clue-card__body {
+.clue-card__thumb {
     flex: 1;
-    font-size: 11px;
-    line-height: 1.35;
-    color: var(--text-dim);
-    white-space: pre-line;
     overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface-alt);
+}
+
+.clue-card__thumb img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
 }
 
 .clue-card__foot {

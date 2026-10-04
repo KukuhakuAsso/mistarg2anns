@@ -2,6 +2,7 @@
 // 档案查看页：以文件缩略图陈列题目，点击后在可移动窗口中查看详情。
 import { computed, onBeforeUnmount, ref } from "vue";
 import AppIcon from "@/components/AppIcon.vue";
+import { useClueDrag } from "@/composables/useClueDrag";
 import { useGameState } from "@/composables/useGameState";
 import puzzleThumbnail from "@/assets/test.jpg";
 
@@ -14,11 +15,11 @@ const emit = defineEmits(["close"]);
 const {
   state,
   setFolderCompleted,
-  discoverClue,
   isClueDiscovered,
   isTipUnlocked,
   unlockTip,
 } = useGameState();
+const { startDrag: startClueDrag } = useClueDrag();
 
 const puzzles = computed(() =>
   props.folder.entries.filter((entry) => entry.kind === "puzzle"),
@@ -54,6 +55,11 @@ function openEntry(entry) {
     x: Math.max(16, Math.round((window.innerWidth - 680) / 2)),
     y: Math.max(16, Math.round((window.innerHeight - 480) / 2)),
   };
+}
+
+function startPuzzleDrag(event, entry) {
+  if (event.pointerType === "mouse" && event.button !== 0) return;
+  startClueDrag(event, entry.id, "puzzle");
 }
 
 function closeEntry() {
@@ -156,10 +162,11 @@ onBeforeUnmount(stopDrag);
             class="puzzle-file"
             type="button"
             :title="`打开题目：${entry.title}`"
+            @pointerdown="startPuzzleDrag($event, entry)"
             @click="openEntry(entry)"
           >
             <span class="puzzle-file__thumbnail">
-              <img :src="puzzleThumbnail" alt="" />
+              <img :src="entry.thumbnail || puzzleThumbnail" alt="" />
               <span class="puzzle-file__index" aria-hidden="true">
                 {{ String(index + 1).padStart(2, "0") }}
               </span>
@@ -370,7 +377,7 @@ onBeforeUnmount(stopDrag);
   font-size: 13px;
   color: var(--text);
   text-align: left;
-  cursor: pointer;
+  cursor: grab;
 }
 
 .puzzle-file__thumbnail {
