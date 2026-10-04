@@ -1,11 +1,12 @@
 <script setup>
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import { useGameState } from "@/composables/useGameState";
 
 const emit = defineEmits(["close"]);
 
 const { state } = useGameState();
 const activeTab = ref("inbox");
+const inboxFilter = ref("all");
 const mailEditor = ref(null);
 const messageNotice = ref("");
 
@@ -13,7 +14,7 @@ const recipientLabel = state.user.currentUser
   ? `${state.user.currentUser.nickname}（${state.user.currentUser.username}）`
   : "管理员";
 
-const inboxItems = [
+const inboxItems = ref([
   {
     id: 1,
     sender: "Copilot",
@@ -22,6 +23,8 @@ const inboxItems = [
     time: "2025-03-28 10:26",
     unread: true,
     starred: false,
+    content:
+      "Hi there,\n\nThanks for the recent updates to the desktop layout and team flow. I reviewed the archive fallback fix and the team page flow again. The current milestone is now aligned with the requested page routing, and the menu behavior is anchored to the clicked app button instead of floating in the center of the screen.\n\nPlease continue refining the message view so the mail detail experience matches the project’s desktop UI style more closely.\n\nBest,\nCopilot",
   },
   {
     id: 2,
@@ -31,6 +34,8 @@ const inboxItems = [
     time: "2025-03-27 18:40",
     unread: false,
     starred: false,
+    content:
+      "A pull request has been updated and a review was requested.\n\nThe branch includes refinements to the inbox view and filtering behavior, plus a few UI adjustments for the desktop prototype. Please review the current changes and leave feedback if any interaction or layout adjustments are still needed.\n\nThanks,\nGitHub",
   },
   {
     id: 3,
@@ -40,6 +45,8 @@ const inboxItems = [
     time: "2025-03-26 11:05",
     unread: true,
     starred: true,
+    content:
+      "This is a reminder that your DNS verification record needs review.\n\nA new validation request was generated for your domain, and the current status is waiting for a final check. Please confirm the values match the expected project configuration.\n\nRegards,\nCloudDNS",
   },
   {
     id: 4,
@@ -49,21 +56,115 @@ const inboxItems = [
     time: "2025-03-25 09:18",
     unread: false,
     starred: false,
+    content:
+      "We detected a sign-in attempt from a new device or browser.\n\nIf this was not you, please review your account activity and update your recovery settings immediately. If this was you, no action is required.\n\nSecurity Team\nGoogle",
   },
-  {
-    id: 5,
-    sender: "Fanita",
-    subject: "Project follow-up",
-    preview: "The draft of the message center is ready. Please confirm the final wording before sending.",
-    time: "2025-03-24 15:42",
-    unread: true,
-    starred: true,
-  },
-];
+]);
+const selectedMessageIds = ref([]);
+const selectedMessageId = ref(null);
+
+const filteredInboxItems = computed(() => {
+  if (inboxFilter.value === "read") {
+    return inboxItems.value.filter((item) => !item.unread);
+  }
+
+  if (inboxFilter.value === "unread") {
+    return inboxItems.value.filter((item) => item.unread);
+  }
+
+  return inboxItems.value;
+});
+
+const allVisibleSelected = computed(() => {
+  if (!filteredInboxItems.value.length) {
+    return false;
+  }
+
+  return filteredInboxItems.value.every((item) => selectedMessageIds.value.includes(item.id));
+});
+
+const selectedMessage = computed(() =>
+  inboxItems.value.find((item) => item.id === selectedMessageId.value) ?? null,
+);
 
 function switchTab(tab) {
   activeTab.value = tab;
   messageNotice.value = "";
+}
+
+function setInboxFilter(filter) {
+  inboxFilter.value = filter;
+}
+
+function openMessage(messageId) {
+  const target = inboxItems.value.find((item) => item.id === messageId);
+  if (!target) {
+    return;
+  }
+
+  markMessageRead(messageId);
+  selectedMessageId.value = messageId;
+}
+
+function closeMessageDetail() {
+  selectedMessageId.value = null;
+}
+
+function markMessageRead(messageId) {
+  const target = inboxItems.value.find((item) => item.id === messageId);
+  if (target) {
+    target.unread = false;
+  }
+}
+
+function toggleSelectMessage(messageId) {
+  if (selectedMessageIds.value.includes(messageId)) {
+    selectedMessageIds.value = selectedMessageIds.value.filter((id) => id !== messageId);
+    return;
+  }
+
+  selectedMessageIds.value = [...selectedMessageIds.value, messageId];
+}
+
+function toggleSelectAllVisible() {
+  if (allVisibleSelected.value) {
+    selectedMessageIds.value = selectedMessageIds.value.filter(
+      (id) => !filteredInboxItems.value.some((item) => item.id === id),
+    );
+    return;
+  }
+
+  const visibleIds = filteredInboxItems.value.map((item) => item.id);
+  selectedMessageIds.value = Array.from(new Set([...selectedMessageIds.value, ...visibleIds]));
+}
+
+function deleteMessage(messageId) {
+  const target = inboxItems.value.find((item) => item.id === messageId);
+  if (!target) {
+    return;
+  }
+
+  const confirmed = window.confirm(`确定删除来自“${target.sender}”的邮件吗？`);
+  if (!confirmed) {
+    return;
+  }
+
+  inboxItems.value = inboxItems.value.filter((item) => item.id !== messageId);
+  selectedMessageIds.value = selectedMessageIds.value.filter((id) => id !== messageId);
+}
+
+function deleteSelectedMessages() {
+  if (!selectedMessageIds.value.length) {
+    return;
+  }
+
+  const confirmed = window.confirm(`确定删除选中的 ${selectedMessageIds.value.length} 封邮件吗？`);
+  if (!confirmed) {
+    return;
+  }
+
+  inboxItems.value = inboxItems.value.filter((item) => !selectedMessageIds.value.includes(item.id));
+  selectedMessageIds.value = [];
 }
 
 function handleSendMessage() {
@@ -103,7 +204,6 @@ function handleSendMessage() {
 
       <div class="topbar__right">
         <span class="user-chip">{{ recipientLabel }}</span>
-        <button class="mini-btn" type="button" @click="emit('close')">返回</button>
       </div>
     </header>
 
@@ -145,40 +245,118 @@ function handleSendMessage() {
 
     <div v-else class="mail-shell inbox-shell">
       <main class="inbox-panel">
-        <header class="inbox-toolbar">
-          <div class="toolbar-group">
-            <button class="soft-btn" type="button">全部</button>
-            <button class="soft-btn" type="button">未读</button>
-            <button class="soft-btn" type="button">已读</button>
-          </div>
-          <div class="toolbar-group toolbar-group--right">
-            <button class="soft-btn" type="button">筛选</button>
-            <button class="soft-btn" type="button">刷新</button>
-          </div>
-        </header>
+        <template v-if="selectedMessage">
+          <header class="message-detail-header">
+            <button class="soft-btn" type="button" @click="closeMessageDetail">返回收件箱</button>
+            <button class="soft-btn danger-btn" type="button" @click.stop="deleteMessage(selectedMessage.id)">
+              删除
+            </button>
+          </header>
 
-        <div class="inbox-list">
-          <div class="inbox-row inbox-row--head">
-            <span class="inbox-check"></span>
-            <span class="inbox-sender">发件人</span>
-            <span class="inbox-subject">主题</span>
-            <span class="inbox-time">时间</span>
-          </div>
+          <article class="message-detail">
+            <header class="message-detail__header">
+              <div class="message-detail__meta">
+                <span class="detail-label">发件人</span>
+                <strong>{{ selectedMessage.sender }}</strong>
+              </div>
+              <div class="message-detail__meta">
+                <span class="detail-label">时间</span>
+                <span>{{ selectedMessage.time }}</span>
+              </div>
+            </header>
 
-          <div
-            v-for="item in inboxItems"
-            :key="item.id"
-            :class="['inbox-row', { 'is-unread': item.unread }]"
-          >
-            <span class="inbox-check"><input type="checkbox" /></span>
-            <span class="inbox-sender">{{ item.sender }}</span>
-            <span class="inbox-subject">
-              <strong>{{ item.subject }}</strong>
-              <small>{{ item.preview }}</small>
-            </span>
-            <span class="inbox-time">{{ item.time }}</span>
+            <h2 class="message-detail__subject">{{ selectedMessage.subject }}</h2>
+
+            <div class="message-detail__body">
+              <p v-for="(paragraph, index) in selectedMessage.content.split('\n\n')" :key="index">
+                {{ paragraph.replace(/\n/g, " ") }}
+              </p>
+            </div>
+          </article>
+        </template>
+
+        <template v-else>
+          <header class="inbox-toolbar">
+            <div class="toolbar-group">
+              <button
+                :class="['soft-btn', { 'is-selected': inboxFilter === 'all' }]"
+                type="button"
+                @click="setInboxFilter('all')"
+              >
+                全部
+              </button>
+              <button
+                :class="['soft-btn', { 'is-selected': inboxFilter === 'unread' }]"
+                type="button"
+                @click="setInboxFilter('unread')"
+              >
+                未读
+              </button>
+              <button
+                :class="['soft-btn', { 'is-selected': inboxFilter === 'read' }]"
+                type="button"
+                @click="setInboxFilter('read')"
+              >
+                已读
+              </button>
+            </div>
+            <div class="toolbar-group toolbar-group--right">
+              <button
+                class="soft-btn danger-btn"
+                type="button"
+                :disabled="!selectedMessageIds.length"
+                @click="deleteSelectedMessages"
+              >
+                批量删除
+              </button>
+              <button class="soft-btn" type="button">刷新</button>
+            </div>
+          </header>
+
+          <div class="inbox-list">
+            <div class="inbox-row inbox-row--head">
+              <span class="inbox-check">
+                <input
+                  type="checkbox"
+                  :checked="allVisibleSelected"
+                  :indeterminate="selectedMessageIds.length > 0 && !allVisibleSelected"
+                  @change="toggleSelectAllVisible"
+                />
+              </span>
+              <span class="inbox-sender">发件人</span>
+              <span class="inbox-subject">主题</span>
+              <span class="inbox-time">时间</span>
+              <span class="inbox-actions">操作</span>
+            </div>
+
+            <div
+              v-for="item in filteredInboxItems"
+              :key="item.id"
+              :class="['inbox-row', { 'is-unread': item.unread }]"
+              @click="openMessage(item.id)"
+            >
+              <span class="inbox-check">
+                <input
+                  type="checkbox"
+                  :checked="selectedMessageIds.includes(item.id)"
+                  @click.stop
+                  @change="toggleSelectMessage(item.id)"
+                />
+              </span>
+              <span class="inbox-sender">{{ item.sender }}</span>
+              <span class="inbox-subject">
+                <strong>{{ item.subject }}</strong>
+                <small>{{ item.preview }}</small>
+              </span>
+              <span class="inbox-time">{{ item.time }}</span>
+              <span class="inbox-actions">
+                <button class="delete-btn" type="button" @click.stop="deleteMessage(item.id)">
+                  删除
+                </button>
+              </span>
+            </div>
           </div>
-        </div>
+        </template>
       </main>
     </div>
   </section>
@@ -420,6 +598,24 @@ function handleSendMessage() {
   color: #46536a;
 }
 
+.soft-btn.is-selected {
+  background: #edf4ff;
+  border-color: rgba(29, 111, 231, 0.18);
+  color: #1d6fe7;
+  box-shadow: inset 0 0 0 1px rgba(29, 111, 231, 0.08);
+}
+
+.soft-btn.danger-btn {
+  background: rgba(254, 242, 242, 0.9);
+  border-color: rgba(239, 68, 68, 0.18);
+  color: #b91c1c;
+}
+
+.soft-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .inbox-list {
   display: flex;
   flex-direction: column;
@@ -428,7 +624,7 @@ function handleSendMessage() {
 
 .inbox-row {
   display: grid;
-  grid-template-columns: 36px minmax(110px, 150px) minmax(0, 1fr) 120px;
+  grid-template-columns: 36px minmax(110px, 150px) minmax(0, 1fr) 120px 80px;
   align-items: center;
   gap: 12px;
   padding: 12px 16px;
@@ -460,10 +656,30 @@ function handleSendMessage() {
 }
 
 .inbox-sender,
-.inbox-time {
+.inbox-time,
+.inbox-actions {
   color: #475569;
   font-size: 12px;
   white-space: nowrap;
+}
+
+.inbox-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.delete-btn {
+  padding: 5px 10px;
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  border-radius: 6px;
+  background: rgba(254, 242, 242, 0.9);
+  color: #b91c1c;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.delete-btn:hover {
+  background: rgba(254, 226, 226, 0.95);
 }
 
 .inbox-subject {
@@ -490,13 +706,76 @@ function handleSendMessage() {
   text-overflow: ellipsis;
 }
 
+.message-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+  background: rgba(248, 250, 252, 0.8);
+}
+
+.message-detail {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  padding: 20px 24px 24px;
+  background: rgba(255, 255, 255, 0.45);
+  min-height: 0;
+  overflow: auto;
+}
+
+.message-detail__header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+.message-detail__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 160px;
+}
+
+.detail-label {
+  color: #64748b;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.message-detail__subject {
+  margin: 18px 0 16px;
+  font-size: 26px;
+  line-height: 1.3;
+  color: #1f2937;
+}
+
+.message-detail__body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  color: #334155;
+  font-size: 15px;
+  line-height: 1.9;
+}
+
+.message-detail__body p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
 @media (max-width: 960px) {
   .mail-shell {
     flex-direction: column;
   }
 
   .inbox-row {
-    grid-template-columns: 30px minmax(90px, 120px) minmax(0, 1fr) 80px;
+    grid-template-columns: 30px minmax(90px, 120px) minmax(0, 1fr) 80px 68px;
     gap: 8px;
     padding: 10px 12px;
   }

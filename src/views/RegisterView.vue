@@ -60,9 +60,6 @@ function handleLogout() {
 <template>
     <section class="page-shell">
         <header class="page-shell__head">
-            <button class="bar-btn" type="button" @click="emit('close')">
-                返回桌面
-            </button>
             <div class="page-shell__title">
                 <p class="page-shell__eyebrow">账户</p>
                 <h1>登录 / 注册</h1>

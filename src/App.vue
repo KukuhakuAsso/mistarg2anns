@@ -1,6 +1,6 @@
 <script setup>
 // 伪桌面布局：顶部设置栏 + 主界面（档案） + 右侧线索栏。
-import { computed, ref } from "vue";
+import { computed } from "vue";
 import TopBar from "@/components/TopBar.vue";
 import ClueBoard from "@/components/ClueBoard.vue";
 import DragGhost from "@/components/DragGhost.vue";
@@ -10,34 +10,53 @@ import RegisterView from "@/views/RegisterView.vue";
 import TeamView from "@/views/TeamView.vue";
 import MessageView from "@/views/MessageView.vue";
 import { FOLDER_BY_ID } from "@/config/folders";
+import { router } from "@/router";
 
-const activeFolderId = ref(null);
-const activeFeature = ref(null);
+const currentRoute = computed(() => router.currentRoute);
 
 const activeFolder = computed(() =>
-    activeFolderId.value ? (FOLDER_BY_ID.get(activeFolderId.value) ?? null) : null,
+    currentRoute.value.name === "folder"
+        ? FOLDER_BY_ID.get(currentRoute.value.params.folderId) ?? null
+        : null,
+);
+
+const activeFeature = computed(() => {
+    const routeName = currentRoute.value.name;
+    if (routeName === "register" || routeName === "team" || routeName === "messages") {
+        return routeName;
+    }
+    return null;
+});
+
+const inFolder = computed(
+    () => currentRoute.value.name !== "desktop" && currentRoute.value.name !== "",
 );
 
 function openFolder(folderId) {
-    activeFolderId.value = folderId;
-    activeFeature.value = null;
+    router.goToRoute(`/folder/${folderId}`);
 }
 
 function openFeature(featureName) {
-    activeFeature.value = featureName;
-    activeFolderId.value = null;
+    const routeMap = {
+        register: "/register",
+        team: "/team",
+        messages: "/messages",
+    };
+
+    if (routeMap[featureName]) {
+        router.goToRoute(routeMap[featureName]);
+    }
 }
 
 function backToDesktop() {
-    activeFolderId.value = null;
-    activeFeature.value = null;
+    router.backToDesktop();
 }
 </script>
 
 <template>
     <div class="app">
         <TopBar
-            :in-folder="Boolean(activeFolder) || Boolean(activeFeature)"
+            :in-folder="inFolder"
             @go-desktop="backToDesktop"
         />
 
