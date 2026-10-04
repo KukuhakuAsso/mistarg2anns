@@ -15,8 +15,10 @@ const STORAGE_KEY = "mistarg2anns:state:v1";
 function createDefaultState() {
   return {
     completedFolders: [],
+    visitedFolders: [],
     discoveredClues: [],
     tipPoints: 3,
+    unreadMessages: 0,
     unlockedTips: [],
     board: [],
     ui: {
@@ -48,6 +50,9 @@ function loadState() {
       completedFolders: Array.isArray(saved.completedFolders)
         ? saved.completedFolders
         : [],
+      visitedFolders: Array.isArray(saved.visitedFolders)
+        ? saved.visitedFolders
+        : [],
       discoveredClues: Array.isArray(saved.discoveredClues)
         ? saved.discoveredClues
         : [],
@@ -55,6 +60,10 @@ function loadState() {
         Number.isInteger(saved.tipPoints) && saved.tipPoints >= 0
           ? saved.tipPoints
           : fallback.tipPoints,
+      unreadMessages:
+        Number.isInteger(saved.unreadMessages) && saved.unreadMessages >= 0
+          ? saved.unreadMessages
+          : fallback.unreadMessages,
       unlockedTips: Array.isArray(saved.unlockedTips)
         ? saved.unlockedTips.filter((tipId) => typeof tipId === "string")
         : [],
@@ -108,6 +117,7 @@ const folderStates = computed(() =>
     ...folder,
     unlocked: unlockedFolderIds.value.has(folder.id),
     completed: state.completedFolders.includes(folder.id),
+    visited: state.visitedFolders.includes(folder.id),
     puzzleCount: folder.entries.filter((entry) => entry.kind === "puzzle")
       .length,
     clueCount: folder.entries.filter((entry) => entry.kind === "clue").length,
@@ -141,6 +151,15 @@ const poolClues = computed(() => {
 function setFolderCompleted(folderId) {
   if (!state.completedFolders.includes(folderId)) {
     state.completedFolders.push(folderId);
+  }
+  if (!state.visitedFolders.includes(folderId)) {
+    state.visitedFolders.push(folderId);
+  }
+}
+
+function markFolderVisited(folderId) {
+  if (!state.visitedFolders.includes(folderId)) {
+    state.visitedFolders.push(folderId);
   }
 }
 
@@ -227,6 +246,7 @@ export function useGameState() {
     boardClues,
     poolClues,
     setFolderCompleted,
+    markFolderVisited,
     discoverClue,
     isClueDiscovered,
     isTipUnlocked,

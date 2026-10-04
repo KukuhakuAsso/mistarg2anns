@@ -1,15 +1,17 @@
 <script setup>
 // 主界面：桌面式启动页，保留档案柜入口，并提供常用功能快捷方式。
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import DesktopAppItem from "@/components/DesktopAppItem.vue";
 import FolderItem from "@/components/FolderItem.vue";
+import UserPanel from "@/components/UserPanel.vue";
 import { useGameState } from "@/composables/useGameState";
 import { DESKTOP_APPS } from "@/config/desktop";
 import { MAIN_FOLDERS } from "@/config/folders";
 
 const emit = defineEmits(["open"]);
 
-const { folderStates, unlockedCount, completedCount } = useGameState();
+const { state, folderStates, unlockedCount, completedCount, markFolderVisited } = useGameState();
+const showUserPanel = ref(false);
 
 const desktopCards = computed(() => [
     ...DESKTOP_APPS.map((app) => ({
@@ -42,14 +44,57 @@ function hintOf(folder) {
     return previous ? `完成「${previous.name}」后解锁` : "可直接进入";
 }
 
+function handleFolderOpen(folderId) {
+    markFolderVisited(folderId);
+    emit("open", folderId);
+}
+
 function openShortcut(appId) {
+    if (appId === "user") {
+        showUserPanel.value = !showUserPanel.value;
+        return;
+    }
+
     if (appId !== "archive") return;
 
     const firstUnlockedFolder = folderStates.value.find((folder) => folder.unlocked);
     if (firstUnlockedFolder) {
-        emit("open", firstUnlockedFolder.id);
+        handleFolderOpen(firstUnlockedFolder.id);
     }
 }
+
+const userPanelItems = [
+    {
+        id: "team",
+        name: "我的队伍",
+        detail: "空白实验组",
+    },
+    {
+        id: "messages",
+        name: "站内信",
+        detail: `${state.unreadMessages ?? 0} 条未读`,
+    },
+    {
+        id: "settings",
+        name: "设置",
+        detail: "界面 · 通知",
+    },
+    {
+        id: "tips",
+        name: "tips点",
+        detail: `${state.tipPoints} 点可用`,
+    },
+    {
+        id: "register",
+        name: "注册",
+        detail: "加入档案网络",
+    },
+    {
+        id: "milestone",
+        name: "里程碑",
+        detail: `${completedCount.value}/${MAIN_FOLDERS.length} 已完成`,
+    },
+];
 </script>
 
 <template>
@@ -83,11 +128,20 @@ function openShortcut(appId) {
                         :folder="item.folder"
                         :hint="hintOf(item.folder)"
                         class="desktop-card"
-                        @open="emit('open', $event)"
+                        @open="handleFolderOpen($event)"
                     />
                 </li>
             </ul>
         </div>
+
+        <UserPanel
+            :open="showUserPanel"
+            title="用户"
+            subtitle="个人终端"
+            :items="userPanelItems"
+            @close="showUserPanel = false"
+            @item-click="showUserPanel = false"
+        />
 
         <!-- <section class="desktop__archive-panel">
             <header class="desktop__section-head">
@@ -157,9 +211,8 @@ function openShortcut(appId) {
 }
 
 .desktop__grid {
-    display: flex;
-    flex-direction: column;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(136px, 1fr));
     align-content: flex-start;
     gap: 12px;
     width: 100%;
@@ -171,7 +224,10 @@ function openShortcut(appId) {
 }
 
 .desktop__card-slot {
-    flex: 0 0 110px;
+    display: flex;
+    width: 100%;
+    min-width: 136px;
+    min-height: 96px;
 }
 
 .desktop-card {
@@ -179,7 +235,7 @@ function openShortcut(appId) {
     align-items: center;
     gap: 12px;
     width: 100%;
-    min-height: 72px;
+    min-height: 96px;
     padding: 12px 14px;
     color: var(--text);
     text-align: left;
