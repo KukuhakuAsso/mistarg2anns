@@ -10,49 +10,68 @@ const props = defineProps({
 
 const emit = defineEmits(["open"]);
 
+const status = computed(() => {
+    if (!props.folder.unlocked) return "locked";
+    if (props.folder.completed) return "done";
+    if (props.folder.visited) return "none";
+    return "new";
+});
+
 // 隐藏档案在锁定状态下不暴露名称
 const label = computed(() =>
     props.folder.unlocked || !props.folder.hidden ? props.folder.name : "未归档",
 );
-
-const subLabel = computed(() =>
-    props.folder.unlocked || !props.folder.hidden
-        ? props.folder.subtitle
-        : "解锁后可见",
-);
 </script>
 
 <template>
-    <button
-        class="folder-item folder-item--locked"
-        type="button"
-        :disabled="!folder.unlocked"
-        @click="emit('open', folder.id)"
-    >
-        <span class="folder-item__icon">
-            <AppIcon :name="folder.unlocked ? 'folder' : 'lock'" :size="22" />
-        </span>
+    <div>
+        <button
+            class="folder-item"
+            type="button"
+            :class="{
+                'folder-item--locked': status === 'locked',
+                'folder-item--done': status === 'done',
+                'folder-item--new': status === 'new',
+            }"
+            :disabled="!folder.unlocked"
+            @click="emit('open', folder.id)"
+        >
+            <span class="folder-item__icon">
+                <AppIcon name="folder" :size="22" />
+            </span>
 
-        <span class="folder-item__text">
-            <span class="folder-item__name">{{ label }}</span>
-            <span class="folder-item__sub">{{ subLabel }}</span>
-        </span>
+            <span class="folder-item__text">
+                <span class="folder-item__name">{{ label }}</span>
+            </span>
 
-        <span v-if="folder.unlocked" class="folder-item__meta">
-            题目 {{ folder.puzzleCount }} · 线索 {{ folder.clueCount }}
-        </span>
-        <span v-else class="folder-item__meta folder-item__meta--hint">
-            {{ hint }}
-        </span>
+            <span
+                v-if="status !== 'none'"
+                class="folder-item__status"
+                :class="`folder-item__status--${status}`"
+                :aria-label="
+                    status === 'locked'
+                        ? '未解锁'
+                        : status === 'done'
+                            ? '已完成'
+                            : '新文件'
+                "
+            >
+                <AppIcon v-if="status === 'locked'" name="lock" :size="10" />
+                <AppIcon v-else-if="status === 'done'" name="check" :size="10" />
+                <span v-else class="folder-item__status-dot" aria-hidden="true" />
+            </span>
+        </button>
+    </div>
 
-        <span v-if="folder.completed" class="folder-item__badge">
-            <AppIcon name="check" :size="13" />
-            已完成
-        </span>
-    </button>
 </template>
 
 <style scoped>
+.desktop-app-item-wrapper {
+    display: flex;
+    width: 100%;
+    height: 100%;
+}
+
 .folder-item {
     position: relative;
     display: flex;
@@ -61,6 +80,7 @@ const subLabel = computed(() =>
     justify-content: center;
     gap: 12px;
     width: 100%;
+    height: 100%;
     min-height: 72px;
     padding: 12px 14px;
     border: 0;
@@ -102,8 +122,7 @@ const subLabel = computed(() =>
 
 .folder-item__icon,
 .folder-item__text,
-.folder-item__meta,
-.folder-item__badge {
+.folder-item__status {
     position: relative;
     z-index: 1;
 }
@@ -134,43 +153,53 @@ const subLabel = computed(() =>
     text-align: center;
 }
 
-.folder-item__sub {
-    font-size: 12px;
-    line-height: 1.4;
+.folder-item__status {
+    position: absolute;
+    right: 35px;
+    bottom: 40px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--surface) 85%, var(--text) 15%);
+    background: color-mix(in srgb, var(--surface) 92%, var(--text) 8%);
+    box-shadow: 0 2px 6px color-mix(in srgb, var(--text) 12%, transparent);
+    color: var(--text);
+}
+
+.folder-item__status--locked {
     color: var(--text-dim);
 }
 
-.folder-item__meta {
-    font-size: 11px;
-    line-height: 1.3;
-    color: var(--text-dim);
-    text-align: center;
+.folder-item__status--new {
+    background: color-mix(in srgb, var(--accent) 18%, var(--surface));
+}
+
+.folder-item__status--new .folder-item__status-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent, #7aa7d6);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.folder-item__status--done {
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 18%, var(--surface));
 }
 
 .folder-item--locked {
     opacity: 0.9;
 }
 
-.folder-item--locked .folder-item__icon,
-.folder-item--locked .folder-item__sub,
-.folder-item--locked .folder-item__meta {
+.folder-item--locked .folder-item__icon {
     color: var(--text-dim);
 }
 
 .folder-item--done {
     background: color-mix(in srgb, var(--accent-soft) 36%, var(--bg));
-}
-
-.folder-item__badge {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 4px;
-    padding: 4px 8px;
-    border-radius: 999px;
-    background: rgba(122, 167, 214, 0.12);
-    color: var(--accent);
-    font-size: 11px;
-    font-weight: 600;
 }
 </style>

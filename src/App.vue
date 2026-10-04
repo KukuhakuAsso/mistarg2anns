@@ -6,10 +6,12 @@ import ClueBoard from "@/components/ClueBoard.vue";
 import DragGhost from "@/components/DragGhost.vue";
 import DesktopView from "@/views/DesktopView.vue";
 import FolderView from "@/views/FolderView.vue";
+import RegisterView from "@/views/RegisterView.vue";
+import TeamView from "@/views/TeamView.vue";
 import { FOLDER_BY_ID } from "@/config/folders";
 
-// 当前打开的档案；为空即主界面
 const activeFolderId = ref(null);
+const activeFeature = ref(null);
 
 const activeFolder = computed(() =>
     activeFolderId.value ? (FOLDER_BY_ID.get(activeFolderId.value) ?? null) : null,
@@ -17,16 +19,26 @@ const activeFolder = computed(() =>
 
 function openFolder(folderId) {
     activeFolderId.value = folderId;
+    activeFeature.value = null;
+}
+
+function openFeature(featureName) {
+    activeFeature.value = featureName;
+    activeFolderId.value = null;
 }
 
 function backToDesktop() {
     activeFolderId.value = null;
+    activeFeature.value = null;
 }
 </script>
 
 <template>
     <div class="app">
-        <TopBar :in-folder="Boolean(activeFolder)" @go-desktop="backToDesktop" />
+        <TopBar
+            :in-folder="Boolean(activeFolder) || Boolean(activeFeature)"
+            @go-desktop="backToDesktop"
+        />
 
         <div class="app-body">
             <main class="app-main">
@@ -36,7 +48,15 @@ function backToDesktop() {
                     :folder="activeFolder"
                     @close="backToDesktop"
                 />
-                <DesktopView v-else @open="openFolder" />
+                <RegisterView
+                    v-else-if="activeFeature === 'register'"
+                    @close="backToDesktop"
+                />
+                <TeamView
+                    v-else-if="activeFeature === 'team'"
+                    @close="backToDesktop"
+                />
+                <DesktopView v-else @open="openFolder" @open-page="openFeature" />
             </main>
 
             <ClueBoard />
