@@ -7,6 +7,7 @@ import ClueCard from "@/components/ClueCard.vue";
 import { useClueDrag } from "@/composables/useClueDrag";
 import { useGameState } from "@/composables/useGameState";
 import { CARD_GAP, CARD_H } from "@/config/board";
+import puzzleThumbnail from "@/assets/test.jpg";
 
 const {
     state,
@@ -97,8 +98,13 @@ function onPoolPointerDown(event, clueId) {
                     }"
                     @pointerdown="onPoolPointerDown($event, clue.id)"
                 >
-                    <span class="pool__label">{{ clue.title }}</span>
-                    <span class="pool__source">{{ clue.folderName }}</span>
+                    <span class="pool__thumb" aria-hidden="true">
+                        <img :src="clue.thumbnail || puzzleThumbnail" :alt="clue.title" />
+                    </span>
+                    <span class="pool__meta">
+                        <span class="pool__label">{{ clue.title }}</span>
+                        <span class="pool__source">{{ clue.folderName }}</span>
+                    </span>
                     <button
                         class="icon-btn icon-btn--sm"
                         type="button"
@@ -220,8 +226,32 @@ function onPoolPointerDown(event, clueId) {
     opacity: 0.35;
 }
 
-.pool__label {
+.pool__thumb {
+    display: block;
+    width: 48px;
+    height: 36px;
+    overflow: hidden;
+    flex: none;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+}
+
+.pool__thumb img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.pool__meta {
+    display: flex;
     flex: 1;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.pool__label {
     min-width: 0;
     font-size: 13px;
     white-space: nowrap;

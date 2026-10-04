@@ -42,7 +42,7 @@ function clamp(value, min, max) {
 }
 
 export function useClueDrag() {
-    const { placeClue, removeClueFromBoard } = useGameState();
+    const { placeClue, removeClueFromBoard, discoverClue } = useGameState();
 
     function stop() {
         drag.active = false;
@@ -67,6 +67,9 @@ export function useClueDrag() {
         if (drag.clueId && rect && drag.overBoard) {
             const x = clamp(drag.x - rect.left - drag.offsetX, 0, rect.width - drag.w);
             const y = clamp(drag.y - rect.top - drag.offsetY, 0, rect.height - drag.h);
+            if (drag.source === "puzzle") {
+                discoverClue(drag.clueId);
+            }
             placeClue(drag.clueId, Math.round(x), Math.round(y));
         } else if (drag.clueId && drag.source === "board") {
             removeClueFromBoard(drag.clueId);
@@ -77,6 +80,7 @@ export function useClueDrag() {
 
     function startDrag(event, clueId, source) {
         if (event.pointerType === "mouse" && event.button !== 0) return;
+        event.preventDefault();
 
         const rect = event.currentTarget.getBoundingClientRect();
 

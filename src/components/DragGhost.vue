@@ -21,8 +21,15 @@ const style = computed(() => ({
 <template>
     <Teleport to="body">
         <div v-if="drag.active && clue" class="drag-ghost" :style="style">
-            <span class="drag-ghost__title">{{ clue.title }}</span>
-            <span class="drag-ghost__foot">{{ clue.folderName }}</span>
+            <div class="drag-ghost__text">
+                <span class="drag-ghost__title">{{ clue.title }}</span>
+            </div>
+            <div v-if="clue.thumbnail" class="drag-ghost__thumb">
+                <img :src="clue.thumbnail" :alt="clue.title" />
+            </div>
+            <div class="drag-ghost__text">
+                <span class="drag-ghost__foot">{{ clue.folderName }}</span>
+            </div>
         </div>
     </Teleport>
 </template>
@@ -36,11 +43,36 @@ const style = computed(() => ({
     display: flex;
     flex-direction: column;
     justify-content: space-between;
+    gap: 6px;
     padding: 8px 10px;
     border: 1px solid var(--accent);
     border-radius: var(--radius);
     background: var(--surface);
     pointer-events: none;
+    box-shadow: 0 12px 28px color-mix(in srgb, var(--text) 16%, transparent);
+}
+
+.drag-ghost__thumb {
+    overflow: hidden;
+    width: 100%;
+    aspect-ratio: 4 / 3;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface-alt);
+}
+
+.drag-ghost__thumb img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.drag-ghost__text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
 }
 
 .drag-ghost__title {

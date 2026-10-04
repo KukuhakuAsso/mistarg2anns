@@ -6,6 +6,8 @@
 //
 // 正文目前为占位文本，后续替换为正式题面与线索内容。
 
+import puzzleThumbnail from "@/assets/test.jpg";
+
 const PLACEHOLDER = (title) =>
   `【${title}】\n正文待填充：在此放置题面、附件与提示。`;
 
@@ -85,6 +87,7 @@ function buildFolder(seed, order) {
       title,
       body: PLACEHOLDER(title),
       tips: TIPS(title),
+      thumbnail: puzzleThumbnail,
     });
   });
 
@@ -94,6 +97,7 @@ function buildFolder(seed, order) {
       kind: "clue",
       title,
       body: PLACEHOLDER(title),
+      thumbnail: puzzleThumbnail,
     });
   });
 
@@ -123,11 +127,9 @@ export const HIDDEN_FOLDER_ID = HIDDEN_FOLDER ? HIDDEN_FOLDER.id : "";
 // 线索条目索引：id -> { ...entry, folderId, folderName }
 export const CLUE_BY_ID = new Map(
   FOLDERS.flatMap((folder) =>
-    folder.entries
-      .filter((entry) => entry.kind === "clue")
-      .map((entry) => [
-        entry.id,
-        { ...entry, folderId: folder.id, folderName: folder.name },
-      ]),
+    folder.entries.map((entry) => [
+      entry.id,
+      { ...entry, folderId: folder.id, folderName: folder.name },
+    ]),
   ),
 );
