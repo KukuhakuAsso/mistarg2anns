@@ -73,9 +73,6 @@ function resolveApplication(applicationId, action) {
 <template>
   <section class="page-shell">
     <header class="page-shell__head">
-      <button class="bar-btn" type="button" @click="emit('close')">
-        返回桌面
-      </button>
       <div class="page-shell__title">
         <p class="page-shell__eyebrow">队伍管理</p>
         <h1>我的队伍</h1>
