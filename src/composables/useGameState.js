@@ -21,6 +21,34 @@ function createDefaultState() {
     unreadMessages: 0,
     unlockedTips: [],
     board: [],
+    user: {
+      currentUser: null,
+      users: [
+        {
+          username: "demo",
+          password: "demo123",
+          nickname: "档案员A",
+        },
+      ],
+      team: {
+        joined: true,
+        name: "星图调查组",
+        code: "ST-01",
+        members: [
+          { username: "demo", nickname: "档案员A", role: "队长" },
+          { username: "alice", nickname: "Alice", role: "成员" },
+        ],
+        applications: [
+          {
+            id: "app-1",
+            username: "bob",
+            nickname: "Bob",
+            message: "我希望参与档案整理和联络工作。",
+            status: "pending",
+          },
+        ],
+      },
+    },
     ui: {
       cluePanelOpen: true,
       theme: "system", // system | light | dark
@@ -68,6 +96,25 @@ function loadState() {
         ? saved.unlockedTips.filter((tipId) => typeof tipId === "string")
         : [],
       board: Array.isArray(saved.board) ? saved.board.filter(isPlacement) : [],
+      user: {
+        ...fallback.user,
+        ...(saved.user ?? {}),
+        team: {
+          ...fallback.user.team,
+          ...(saved.user?.team ?? {}),
+          joined: Boolean(saved.user?.team?.joined ?? fallback.user.team.joined),
+          members: Array.isArray(saved.user?.team?.members)
+            ? saved.user.team.members
+            : fallback.user.team.members,
+          applications: Array.isArray(saved.user?.team?.applications)
+            ? saved.user.team.applications
+            : fallback.user.team.applications,
+        },
+        users: Array.isArray(saved.user?.users)
+          ? saved.user.users
+          : fallback.user.users,
+        currentUser: saved.user?.currentUser ?? fallback.user.currentUser,
+      },
       ui: { ...fallback.ui, ...(saved.ui ?? {}) },
     };
   } catch (error) {
@@ -237,6 +284,209 @@ function resetProgress() {
   Object.assign(state, createDefaultState(), { ui: state.ui });
 }
 
+function registerUser({ username, nickname, password }) {
+  const trimmedUsername = String(username ?? "").trim();
+  const trimmedNickname = String(nickname ?? "").trim();
+  const trimmedPassword = String(password ?? "").trim();
+
+  if (!trimmedUsername || !trimmedPassword) {
+    return { ok: false, message: "用户名和密码不能为空。" };
+  }
+
+  const exists = state.user.users.some(
+    (user) => user.username.toLowerCase() === trimmedUsername.toLowerCase(),
+  );
+
+  if (exists) {
+    return { ok: false, message: "该用户名已存在。" };
+  }
+
+  state.user.users.push({
+    username: trimmedUsername,
+    password: trimmedPassword,
+    nickname: trimmedNickname || trimmedUsername,
+  });
+
+  state.user.currentUser = {
+    username: trimmedUsername,
+    nickname: trimmedNickname || trimmedUsername,
+  };
+
+  return { ok: true, message: "注册成功。" };
+}
+
+function loginUser({ username, password }) {
+  const trimmedUsername = String(username ?? "").trim();
+  const trimmedPassword = String(password ?? "").trim();
+
+  const match = state.user.users.find(
+    (user) =>
+      user.username.toLowerCase() === trimmedUsername.toLowerCase() &&
+      user.password === trimmedPassword,
+  );
+
+  if (!match) {
+    return { ok: false, message: "用户名或密码错误。" };
+  }
+
+  state.user.currentUser = {
+    username: match.username,
+    nickname: match.nickname,
+  };
+
+  return { ok: true, message: "登录成功。" };
+}
+
+function logoutUser() {
+  state.user.currentUser = null;
+  return { ok: true };
+}
+
+function createTeam(teamName, teamCode) {
+  if (!state.user.currentUser) {
+    return { ok: false, message: "请先登录后再创建队伍。" };
+  }
+
+  if (state.user.team.joined) {
+    return { ok: false, message: "你已经在队伍中，无法重复创建队伍。" };
+  }
+
+  const cleanName = String(teamName ?? "").trim();
+  const cleanCode = String(teamCode ?? "").trim();
+
+  state.user.team = {
+    joined: true,
+    name: cleanName || `${state.user.currentUser.nickname || state.user.currentUser.username}的队伍`,
+    code: cleanCode || `TM-${Math.random().toString(36).slice(2, 6).toUpperCase()}`,
+    members: [
+      {
+        username: state.user.currentUser.username,
+        nickname: state.user.currentUser.nickname,
+        role: "队长",
+      },
+    ],
+    applications: [],
+  };
+
+  return {
+    ok: true,
+    message: `队伍创建成功，编号 ${state.user.team.code}。`,
+  };
+}
+
+function joinTeam(teamCode) {
+  if (!state.user.currentUser) {
+    return { ok: false, message: "请先登录后再加入队伍。" };
+  }
+
+  if (state.user.team.joined) {
+    return { ok: false, message: "你已经在队伍中。" };
+  }
+
+  const cleanCode = String(teamCode ?? "").trim();
+
+  if (!cleanCode) {
+    return { ok: false, message: "队伍编号不能为空。" };
+  }
+
+  state.user.team = {
+    joined: true,
+    name: `${state.user.currentUser.nickname || state.user.currentUser.username}的队伍`,
+    code: cleanCode,
+    members: [
+      {
+        username: state.user.currentUser.username,
+        nickname: state.user.currentUser.nickname,
+        role: "成员",
+      },
+    ],
+    applications: [],
+  };
+
+  return {
+    ok: true,
+    message: `已加入队伍 ${cleanCode}。`,
+  };
+}
+
+function leaveTeam() {
+  if (!state.user.currentUser) {
+    return { ok: false, message: "请先登录后再退出队伍。" };
+  }
+
+  if (!state.user.team.joined) {
+    return { ok: false, message: "你当前并没有加入任何队伍。" };
+  }
+
+  state.user.team = {
+    joined: false,
+    name: "",
+    code: "",
+    members: [],
+    applications: [],
+  };
+
+  return { ok: true, message: "已退出当前队伍。" };
+}
+
+function submitTeamApplication(message) {
+  if (!state.user.currentUser) {
+    return { ok: false, message: "请先登录后再申请组队。" };
+  }
+
+  if (!state.user.team.joined) {
+    return { ok: false, message: "你当前没有队伍，先创建或加入一个队伍后再申请。" };
+  }
+
+  const text = String(message ?? "").trim();
+  const alreadyApplied = state.user.team.applications.some(
+    (application) =>
+      application.username === state.user.currentUser.username &&
+      application.status === "pending",
+  );
+
+  if (alreadyApplied) {
+    return { ok: false, message: "你已经提交过组队申请了。" };
+  }
+
+  state.user.team.applications.push({
+    id: `req-${Date.now()}`,
+    username: state.user.currentUser.username,
+    nickname: state.user.currentUser.nickname,
+    message: text || "我希望加入队伍，协助完成任务。",
+    status: "pending",
+  });
+
+  return { ok: true, message: "组队申请已提交。" };
+}
+
+function handleTeamApplication(applicationId, action) {
+  const application = state.user.team.applications.find(
+    (item) => item.id === applicationId,
+  );
+
+  if (!application) {
+    return { ok: false, message: "申请不存在。" };
+  }
+
+  if (action === "accept") {
+    const exists = state.user.team.members.some(
+      (member) => member.username === application.username,
+    );
+
+    if (!exists) {
+      state.user.team.members.push({
+        username: application.username,
+        nickname: application.nickname,
+        role: "成员",
+      });
+    }
+  }
+
+  application.status = action === "accept" ? "accepted" : "rejected";
+  return { ok: true, message: action === "accept" ? "已接受申请" : "已拒绝申请" };
+}
+
 export function useGameState() {
   return {
     state,
@@ -258,5 +508,13 @@ export function useGameState() {
     addClueToBoard,
     toggleCluePanel,
     resetProgress,
+    registerUser,
+    loginUser,
+    logoutUser,
+    createTeam,
+    joinTeam,
+    leaveTeam,
+    submitTeamApplication,
+    handleTeamApplication,
   };
 }

@@ -8,10 +8,69 @@ import { useGameState } from "@/composables/useGameState";
 import { DESKTOP_APPS } from "@/config/desktop";
 import { MAIN_FOLDERS } from "@/config/folders";
 
-const emit = defineEmits(["open"]);
+const emit = defineEmits(["open", "open-page"]);
 
 const { state, folderStates, unlockedCount, completedCount, markFolderVisited } = useGameState();
 const showUserPanel = ref(false);
+const userPanelPosition = ref({ x: 0, y: 0 });
+const activeMenu = ref({
+    appId: null,
+    title: "用户",
+    subtitle: "个人终端",
+    items: [],
+    position: { x: 0, y: 0 },
+});
+
+const menuMap = {
+    user: {
+        title: "用户",
+        subtitle: "个人终端",
+        items: [
+            { id: "team", name: "我的队伍", detail: "当前组队情况" },
+            { id: "register", name: "注册", detail: "登录 / 注册" },
+            { id: "messages", name: "站内信", detail: `${state.unreadMessages ?? 0} 条未读` },
+            { id: "settings", name: "设置", detail: "界面 · 通知" },
+            { id: "tips", name: "tips点", detail: `${state.tipPoints} 点可用` },
+            { id: "milestone", name: "里程碑", detail: `${completedCount.value}/${MAIN_FOLDERS.length} 已完成` },
+        ],
+    },
+    archive: {
+        title: "档案",
+        subtitle: "主线数据库",
+        items: [
+            { id: "archive-search", name: "快速检索", detail: "待补充" },
+            { id: "archive-summary", name: "档案摘要", detail: "待补充" },
+            { id: "archive-logs", name: "历史记录", detail: "待补充" },
+        ],
+    },
+    entertainment: {
+        title: "娱乐",
+        subtitle: "休闲入口",
+        items: [
+            { id: "entertainment-1", name: "功能一", detail: "待补充" },
+            { id: "entertainment-2", name: "功能二", detail: "待补充" },
+            { id: "entertainment-3", name: "功能三", detail: "待补充" },
+        ],
+    },
+    communication: {
+        title: "通讯",
+        subtitle: "联络中心",
+        items: [
+            { id: "communication-1", name: "功能一", detail: "待补充" },
+            { id: "communication-2", name: "功能二", detail: "待补充" },
+            { id: "communication-3", name: "功能三", detail: "待补充" },
+        ],
+    },
+    tools: {
+        title: "工具",
+        subtitle: "处理中心",
+        items: [
+            { id: "tools-1", name: "功能一", detail: "待补充" },
+            { id: "tools-2", name: "功能二", detail: "待补充" },
+            { id: "tools-3", name: "功能三", detail: "待补充" },
+        ],
+    },
+};
 
 const desktopCards = computed(() => [
     ...DESKTOP_APPS.map((app) => ({
@@ -49,52 +108,65 @@ function handleFolderOpen(folderId) {
     emit("open", folderId);
 }
 
-function openShortcut(appId) {
-    if (appId === "user") {
-        showUserPanel.value = !showUserPanel.value;
+function closeUserPanel() {
+    showUserPanel.value = false;
+}
+
+function openShortcut(appId, event) {
+    const menuConfig = menuMap[appId];
+    const button = event?.currentTarget;
+    const rect = button?.getBoundingClientRect?.();
+    const panelWidth = 280;
+
+    if (rect) {
+        const x = Math.min(
+            Math.max(rect.left, 12),
+            window.innerWidth - panelWidth - 12,
+        );
+        const y = Math.min(Math.max(rect.bottom + 10, 12), window.innerHeight - 220);
+        userPanelPosition.value = { x, y };
+    }
+
+    if (!menuConfig) {
+        if (appId === "archive") {
+            const firstUnlockedFolder = folderStates.value.find((folder) => folder.unlocked);
+            if (firstUnlockedFolder) {
+                handleFolderOpen(firstUnlockedFolder.id);
+            }
+        }
         return;
     }
 
-    if (appId !== "archive") return;
-
-    const firstUnlockedFolder = folderStates.value.find((folder) => folder.unlocked);
-    if (firstUnlockedFolder) {
-        handleFolderOpen(firstUnlockedFolder.id);
+    const isSameMenu = showUserPanel.value && activeMenu.value.appId === appId;
+    if (isSameMenu) {
+        closeUserPanel();
+        return;
     }
+
+    activeMenu.value = {
+        appId,
+        title: menuConfig.title,
+        subtitle: menuConfig.subtitle,
+        items: menuConfig.items,
+        position: userPanelPosition.value,
+    };
+    showUserPanel.value = true;
 }
 
-const userPanelItems = [
-    {
-        id: "team",
-        name: "我的队伍",
-        detail: "空白实验组",
-    },
-    {
-        id: "messages",
-        name: "站内信",
-        detail: `${state.unreadMessages ?? 0} 条未读`,
-    },
-    {
-        id: "settings",
-        name: "设置",
-        detail: "界面 · 通知",
-    },
-    {
-        id: "tips",
-        name: "tips点",
-        detail: `${state.tipPoints} 点可用`,
-    },
-    {
-        id: "register",
-        name: "注册",
-        detail: "加入档案网络",
-    },
-    {
-        id: "milestone",
-        name: "里程碑",
-        detail: `${completedCount.value}/${MAIN_FOLDERS.length} 已完成`,
-    },
-];
+function handleUserMenuClick(item) {
+    if (!item) return;
+
+    closeUserPanel();
+
+    if (item.id === "register") {
+        emit("open-page", "register");
+        return;
+    }
+
+    if (item.id === "team") {
+        emit("open-page", "team");
+    }
+}
 </script>
 
 <template>
@@ -136,11 +208,12 @@ const userPanelItems = [
 
         <UserPanel
             :open="showUserPanel"
-            title="用户"
-            subtitle="个人终端"
-            :items="userPanelItems"
-            @close="showUserPanel = false"
-            @item-click="showUserPanel = false"
+            :title="activeMenu.title"
+            :subtitle="activeMenu.subtitle"
+            :items="activeMenu.items"
+            :position="activeMenu.position"
+            @close="closeUserPanel"
+            @item-click="handleUserMenuClick"
         />
 
         <!-- <section class="desktop__archive-panel">

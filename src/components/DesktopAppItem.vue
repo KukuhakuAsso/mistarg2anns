@@ -13,7 +13,7 @@ const emit = defineEmits(["open"]);
         <button
             class="desktop-app-item"
             type="button"
-            @click="emit('open', props.app.id)"
+            @click="emit('open', props.app.id, $event)"
         >
             <span class="desktop-app-item__icon">
                 <AppIcon :name="props.app.icon" :size="22" />
