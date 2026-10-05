@@ -11,6 +11,9 @@ import TeamView from "@/views/TeamView.vue";
 import MessageView from "@/views/MessageView.vue";
 import MilestoneView from "@/views/MilestoneView.vue";
 import ArchiveSearchView from "@/views/ArchiveSearchView.vue";
+import CommunicationView from "@/views/CommunicationView.vue";
+import ToolsView from "@/views/ToolsView.vue";
+import TimelineView from "@/views/TimelineView.vue";
 import { FOLDER_BY_ID } from "@/config/folders";
 import { router } from "@/router";
 
@@ -29,7 +32,10 @@ const activeFeature = computed(() => {
         routeName === "team" ||
         routeName === "messages" ||
         routeName === "milestone" ||
-        routeName === "archive"
+        routeName === "archive" ||
+        routeName === "communication" ||
+        routeName === "tools" ||
+        routeName === "timeline"
     ) {
         return routeName;
     }
@@ -51,6 +57,9 @@ function openFeature(featureName) {
         messages: "/messages",
         milestone: "/milestone",
         archive: "/archive",
+        communication: "/communication",
+        tools: "/tools",
+        timeline: "/timeline",
     };
 
     if (routeMap[featureName]) {
@@ -96,6 +105,18 @@ function backToDesktop() {
                 />
                 <ArchiveSearchView
                     v-else-if="activeFeature === 'archive'"
+                    @close="backToDesktop"
+                />
+                <CommunicationView
+                    v-else-if="activeFeature === 'communication'"
+                    @close="backToDesktop"
+                />
+                <ToolsView
+                    v-else-if="activeFeature === 'tools'"
+                    @close="backToDesktop"
+                />
+                <TimelineView
+                    v-else-if="activeFeature === 'timeline'"
                     @close="backToDesktop"
                 />
                 <DesktopView v-else @open="openFolder" @open-page="openFeature" />

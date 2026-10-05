@@ -65,9 +65,8 @@ const menuMap = {
         title: "工具",
         subtitle: "处理中心",
         items: [
-            { id: "tools-1", name: "功能一", detail: "待补充" },
-            { id: "tools-2", name: "功能二", detail: "待补充" },
-            { id: "tools-3", name: "功能三", detail: "待补充" },
+            { id: "toolbox", name: "常用工具", detail: "网页与资料检索" },
+            { id: "timeline", name: "时间线", detail: "剧情事件时间轴" },
         ],
     },
 };
@@ -130,6 +129,11 @@ function openShortcut(appId, event) {
         return;
     }
 
+    if (appId === "communication") {
+        emit("open-page", "communication");
+        return;
+    }
+
     const menuConfig = menuMap[appId];
     if (!menuConfig) {
         return;
@@ -180,6 +184,21 @@ function handleUserMenuClick(item) {
 
     if (item.id === "archive-search") {
         emit("open-page", "archive");
+        return;
+    }
+
+    if (item.id === "communication-1" || item.id === "communication-2" || item.id === "communication-3") {
+        emit("open-page", "communication");
+        return;
+    }
+
+    if (item.id === "toolbox") {
+        emit("open-page", "tools");
+        return;
+    }
+
+    if (item.id === "timeline") {
+        emit("open-page", "timeline");
         return;
     }
 

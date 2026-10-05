@@ -44,6 +44,18 @@ function resolveRoute(path) {
     return { name: "archive", path: "/archive", params: {} };
   }
 
+  if (normalized === "/communication") {
+    return { name: "communication", path: "/communication", params: {} };
+  }
+
+  if (normalized === "/tools") {
+    return { name: "tools", path: "/tools", params: {} };
+  }
+
+  if (normalized === "/timeline") {
+    return { name: "timeline", path: "/timeline", params: {} };
+  }
+
   const folderMatch = normalized.match(/^\/folder\/([^/]+)$/);
   if (folderMatch) {
     return {
