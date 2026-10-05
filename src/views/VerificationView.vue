@@ -1,9 +1,9 @@
 <script setup>
-import { computed, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useGameState } from "@/composables/useGameState";
 import { router } from "@/router";
 
-const { state, registerUser, loginUser, logoutUser } = useGameState();
+const { state, registerUser, completeLoginAfterVerification } = useGameState();
 const verificationCode = ref("");
 const verificationMessage = ref("");
 
@@ -15,6 +15,47 @@ const verificationTarget = computed(() => {
 
   return state.user.auth.pendingLogin?.username || "账户";
 });
+
+const hasValidVerificationState = computed(() => {
+  if (!state.user.auth.verificationRequired) {
+    return false;
+  }
+
+  if (verificationMode.value === "register") {
+    return Boolean(state.user.auth.pendingRegister);
+  }
+
+  return Boolean(state.user.auth.pendingLogin);
+});
+
+function enforceVerificationGuard() {
+  if (!hasValidVerificationState.value) {
+    verificationMessage.value = "无效的验证状态，已返回登录页。";
+    router.goToRoute("/register");
+    return false;
+  }
+
+  return true;
+}
+
+onMounted(() => {
+  enforceVerificationGuard();
+});
+
+watch(
+  () => [
+    state.user.auth.verificationRequired,
+    state.user.auth.verificationMode,
+    state.user.auth.pendingRegister,
+    state.user.auth.pendingLogin,
+  ],
+  () => {
+    if (!hasValidVerificationState.value) {
+      router.goToRoute("/register");
+    }
+  },
+  { deep: true },
+);
 
 function getGeneratedCode() {
   return String(state.user.auth.generatedCode ?? "");
@@ -85,10 +126,10 @@ function completeVerification() {
     return;
   }
 
-  const result = loginUser({
-    username: pendingLogin.username,
-    password: pendingLogin.password,
-  });
+  const result = completeLoginAfterVerification(
+    pendingLogin.username,
+    pendingLogin.password,
+  );
 
   verificationMessage.value = result.message;
   if (result.ok) {
