@@ -97,12 +97,6 @@ function resolveApplication(applicationId, action) {
               placeholder="队伍名称（可选）"
               class="team-input"
             />
-            <input
-              v-model="createTeamCode"
-              type="text"
-              placeholder="自定义队伍编号（可选）"
-              class="team-input"
-            />
             <button class="primary-button" type="button" @click="handleCreateTeam">
               创建队伍
             </button>

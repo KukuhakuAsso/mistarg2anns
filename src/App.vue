@@ -14,6 +14,7 @@ import ArchiveSearchView from "@/views/ArchiveSearchView.vue";
 import CommunicationView from "@/views/CommunicationView.vue";
 import ToolsView from "@/views/ToolsView.vue";
 import TimelineView from "@/views/TimelineView.vue";
+import VerificationView from "@/views/VerificationView.vue";
 import { FOLDER_BY_ID } from "@/config/folders";
 import { router } from "@/router";
 
@@ -35,7 +36,8 @@ const activeFeature = computed(() => {
         routeName === "archive" ||
         routeName === "communication" ||
         routeName === "tools" ||
-        routeName === "timeline"
+        routeName === "timeline" ||
+        routeName === "verification"
     ) {
         return routeName;
     }
@@ -117,6 +119,10 @@ function backToDesktop() {
                 />
                 <TimelineView
                     v-else-if="activeFeature === 'timeline'"
+                    @close="backToDesktop"
+                />
+                <VerificationView
+                    v-else-if="activeFeature === 'verification'"
                     @close="backToDesktop"
                 />
                 <DesktopView v-else @open="openFolder" @open-page="openFeature" />

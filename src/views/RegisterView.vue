@@ -1,53 +1,127 @@
 <script setup>
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import { useGameState } from "@/composables/useGameState";
+import { router } from "@/router";
 
 const emit = defineEmits(["close"]);
 
-const { state, registerUser, loginUser, logoutUser } = useGameState();
+const { state, loginUser, logoutUser } = useGameState();
 const authMode = ref("login");
 const authForm = ref({
     username: "",
     nickname: "",
+    email: "",
     password: "",
     confirmPassword: "",
 });
 const authMessage = ref("");
+
+const currentUserEmail = computed(() => state.user.currentUser?.email || "");
 
 function switchAuthMode(mode) {
     authMode.value = mode;
     authMessage.value = "";
 }
 
+function validateRegisterForm() {
+    const username = String(authForm.value.username ?? "").trim();
+    const nickname = String(authForm.value.nickname ?? "").trim();
+    const email = String(authForm.value.email ?? "").trim();
+    const password = String(authForm.value.password ?? "").trim();
+    const confirmPassword = String(authForm.value.confirmPassword ?? "").trim();
+
+    if (!username || !email || !password) {
+        authMessage.value = "用户名、邮箱和密码不能为空。";
+        return null;
+    }
+
+    if (!nickname) {
+        authMessage.value = "昵称不能为空。";
+        return null;
+    }
+
+    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailPattern.test(email)) {
+        authMessage.value = "请输入有效的邮箱地址。";
+        return null;
+    }
+
+    if (!confirmPassword) {
+        authMessage.value = "确认密码不能为空。";
+        return null;
+    }
+
+    if (password !== confirmPassword) {
+        authMessage.value = "两次输入的密码不一致。";
+        return null;
+    }
+
+    const duplicateUser = state.user.users.some(
+        (user) => user.username.toLowerCase() === username.toLowerCase(),
+    );
+    const duplicateEmail = state.user.users.some(
+        (user) => String(user.email ?? "").toLowerCase() === email.toLowerCase(),
+    );
+
+    if (duplicateUser) {
+        authMessage.value = "该用户名已存在，请更换用户名。";
+        return null;
+    }
+
+    if (duplicateEmail) {
+        authMessage.value = "该邮箱已被注册，请更换邮箱。";
+        return null;
+    }
+
+    return { username, nickname, email, password };
+}
+
+function startRegisterVerification() {
+    const validated = validateRegisterForm();
+    if (!validated) {
+        return;
+    }
+
+    const { username, nickname, email, password } = validated;
+    const generatedCode = String(Math.floor(100000 + Math.random() * 900000));
+
+    state.user.auth.verificationRequired = true;
+    state.user.auth.verificationMode = "register";
+    state.user.auth.generatedCode = generatedCode;
+    state.user.auth.pendingRegister = { username, nickname, email, password };
+    state.user.auth.pendingLogin = null;
+
+    authMessage.value = `验证码已发送至 ${email}，验证码为 ${generatedCode}（演示环境）。`;
+    router.goToRoute("/verification");
+}
+
 function handleAuthSubmit() {
     if (authMode.value === "register") {
-        if (authForm.value.password !== authForm.value.confirmPassword) {
-            authMessage.value = "两次输入的密码不一致。";
-            return;
-        }
+        startRegisterVerification();
+        return;
+    }
 
-        const result = registerUser({
-            username: authForm.value.username,
-            nickname: authForm.value.nickname,
-            password: authForm.value.password,
-        });
+    const username = String(authForm.value.username ?? "").trim();
+    const password = String(authForm.value.password ?? "").trim();
 
-        authMessage.value = result.message;
-        if (result.ok) {
-            authForm.value = { username: "", nickname: "", password: "", confirmPassword: "" };
-            authMode.value = "login";
-        }
+    if (!username) {
+        authMessage.value = "用户名不能为空。";
+        return;
+    }
+
+    if (!password) {
+        authMessage.value = "密码不能为空。";
         return;
     }
 
     const result = loginUser({
-        username: authForm.value.username,
-        password: authForm.value.password,
+        username,
+        password,
     });
 
     authMessage.value = result.message;
     if (result.ok) {
-        authForm.value = { username: "", nickname: "", password: "", confirmPassword: "" };
+        authForm.value = { username: "", nickname: "", email: "", password: "", confirmPassword: "" };
     }
 }
 
@@ -71,6 +145,7 @@ function handleLogout() {
                 <p class="panel-card__label">当前账户</p>
                 <h2>{{ state.user.currentUser.nickname }}</h2>
                 <p>@{{ state.user.currentUser.username }}</p>
+                <p v-if="currentUserEmail">{{ currentUserEmail }}</p>
                 <button class="secondary-button" type="button" @click="handleLogout">
                     退出登录
                 </button>
@@ -105,6 +180,11 @@ function handleLogout() {
                         <input v-model="authForm.nickname" type="text" placeholder="请输入显示昵称" />
                     </label>
 
+                    <label v-if="authMode === 'register'">
+                        <span>邮箱</span>
+                        <input v-model="authForm.email" type="text" placeholder="请输入邮箱地址" />
+                    </label>
+
                     <label>
                         <span>密码</span>
                         <input v-model="authForm.password" type="password" placeholder="请输入密码" />
@@ -116,7 +196,7 @@ function handleLogout() {
                     </label>
 
                     <button class="primary-button" type="submit">
-                        {{ authMode === "register" ? "注册账号" : "登录" }}
+                        {{ authMode === "register" ? "发送验证码" : "登录" }}
                     </button>
                 </form>
 
@@ -227,7 +307,8 @@ function handleLogout() {
     gap: 12px;
 }
 
-.auth-form label {
+.auth-form label,
+.verification-field {
     display: flex;
     flex-direction: column;
     gap: 6px;
@@ -235,7 +316,8 @@ function handleLogout() {
     color: var(--text-dim);
 }
 
-.auth-form input {
+.auth-form input,
+.verification-field input {
     width: 100%;
     padding: 10px 12px;
     border: 1px solid var(--border);
@@ -243,6 +325,24 @@ function handleLogout() {
     background: rgba(8, 13, 20, 0.12);
     color: var(--text);
     box-sizing: border-box;
+}
+
+.verification-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.verification-help {
+    margin: 0;
+    color: var(--text-dim);
+    line-height: 1.6;
+}
+
+.verification-actions {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
 }
 
 .primary-button,
