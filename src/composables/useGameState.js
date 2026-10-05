@@ -374,40 +374,11 @@ function loginUser({ username, password }) {
   );
 
   if (!match) {
-    const nextFailureCount = state.user.auth.loginFailureCount + 1;
-    state.user.auth.loginFailureCount = nextFailureCount;
+    state.user.auth.loginFailureCount += 1;
     return { ok: false, message: "用户名/邮箱或密码错误。" };
   }
 
-  const isPendingVerificationLogin =
-    state.user.auth.verificationRequired &&
-    state.user.auth.pendingLogin &&
-    state.user.auth.pendingLogin.username.toLowerCase() === trimmedUsername.toLowerCase() &&
-    state.user.auth.pendingLogin.password === trimmedPassword;
-
-  if (isPendingVerificationLogin) {
-    state.user.currentUser = {
-      username: match.username,
-      nickname: match.nickname,
-      email: match.email ?? "",
-    };
-    state.user.auth.loginFailureCount = 0;
-    state.user.auth.verificationRequired = false;
-    state.user.auth.verificationMode = "login";
-    state.user.auth.pendingLogin = null;
-    state.user.auth.pendingRegister = null;
-    state.user.auth.generatedCode = "";
-
-    if (typeof window !== "undefined") {
-      router.goToRoute("/register");
-    }
-
-    return { ok: true, message: "登录成功。" };
-  }
-
-  const hasReachedVerificationThreshold = state.user.auth.loginFailureCount >= 3;
-
-  if (hasReachedVerificationThreshold) {
+  if (state.user.auth.loginFailureCount >= 3) {
     state.user.auth.verificationRequired = true;
     state.user.auth.verificationMode = "login";
     state.user.auth.generatedCode = createVerificationCode();
@@ -423,7 +394,7 @@ function loginUser({ username, password }) {
 
     return {
       ok: false,
-      message: `密码已正确，请完成验证码验证。验证码：${state.user.auth.generatedCode}（演示环境）`,
+      message: `密码正确，请完成验证码验证。验证码：${state.user.auth.generatedCode}（演示环境）`,
       requiresVerification: true,
     };
   }
@@ -439,6 +410,54 @@ function loginUser({ username, password }) {
   state.user.auth.pendingLogin = null;
   state.user.auth.pendingRegister = null;
   state.user.auth.generatedCode = "";
+
+  return { ok: true, message: "登录成功。" };
+}
+
+function completeLoginAfterVerification(username, password) {
+  const trimmedUsername = String(username ?? "").trim();
+  const trimmedPassword = String(password ?? "").trim();
+
+  if (!state.user.auth.verificationRequired || !state.user.auth.pendingLogin) {
+    return { ok: false, message: "当前没有待验证的登录请求。" };
+  }
+
+  const pendingUsername = String(state.user.auth.pendingLogin.username ?? "").trim();
+  const pendingPassword = String(state.user.auth.pendingLogin.password ?? "").trim();
+
+  if (
+    trimmedUsername.toLowerCase() !== pendingUsername.toLowerCase() ||
+    trimmedPassword !== pendingPassword
+  ) {
+    return { ok: false, message: "待验证登录信息与当前账号不一致。" };
+  }
+
+  const match = state.user.users.find(
+    (user) =>
+      user.username.toLowerCase() === pendingUsername.toLowerCase() ||
+      String(user.email ?? "").toLowerCase() === pendingUsername.toLowerCase(),
+  );
+
+  if (!match || match.password !== pendingPassword) {
+    return { ok: false, message: "验证信息无效，请重新登录。" };
+  }
+
+  state.user.currentUser = {
+    username: match.username,
+    nickname: match.nickname,
+    email: match.email ?? "",
+  };
+
+  state.user.auth.loginFailureCount = 0;
+  state.user.auth.verificationRequired = false;
+  state.user.auth.verificationMode = "login";
+  state.user.auth.pendingLogin = null;
+  state.user.auth.pendingRegister = null;
+  state.user.auth.generatedCode = "";
+
+  if (typeof window !== "undefined") {
+    router.goToRoute("/register");
+  }
 
   return { ok: true, message: "登录成功。" };
 }
@@ -616,6 +635,7 @@ export function useGameState() {
     resetProgress,
     registerUser,
     loginUser,
+    completeLoginAfterVerification,
     logoutUser,
     createTeam,
     joinTeam,
