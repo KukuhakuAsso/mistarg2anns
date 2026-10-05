@@ -56,6 +56,10 @@ function resolveRoute(path) {
     return { name: "timeline", path: "/timeline", params: {} };
   }
 
+  if (normalized === "/verification") {
+    return { name: "verification", path: "/verification", params: {} };
+  }
+
   const folderMatch = normalized.match(/^\/folder\/([^/]+)$/);
   if (folderMatch) {
     return {

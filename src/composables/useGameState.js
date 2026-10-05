@@ -9,6 +9,7 @@ import {
   MAIN_FOLDERS,
 } from "@/config/folders";
 import { CARD_GAP, CARD_H, CARD_W } from "@/config/board";
+import { router } from "@/router";
 
 const STORAGE_KEY = "mistarg2anns:state:v1";
 
@@ -28,8 +29,17 @@ function createDefaultState() {
           username: "demo",
           password: "demo123",
           nickname: "档案员A",
+          email: "demo@example.com",
         },
       ],
+      auth: {
+        loginFailureCount: 0,
+        verificationRequired: false,
+        verificationMode: "login",
+        generatedCode: "",
+        pendingRegister: null,
+        pendingLogin: null,
+      },
       team: {
         joined: true,
         name: "星图调查组",
@@ -99,6 +109,12 @@ function loadState() {
       user: {
         ...fallback.user,
         ...(saved.user ?? {}),
+        auth: {
+          ...fallback.user.auth,
+          ...(saved.user?.auth ?? {}),
+          pendingRegister: saved.user?.auth?.pendingRegister ?? null,
+          pendingLogin: saved.user?.auth?.pendingLogin ?? null,
+        },
         team: {
           ...fallback.user.team,
           ...(saved.user?.team ?? {}),
@@ -284,33 +300,60 @@ function resetProgress() {
   Object.assign(state, createDefaultState(), { ui: state.ui });
 }
 
-function registerUser({ username, nickname, password }) {
+function createVerificationCode() {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+function resetAuthVerificationState() {
+  state.user.auth = {
+    loginFailureCount: 0,
+    verificationRequired: false,
+    verificationMode: "login",
+    generatedCode: "",
+    pendingRegister: null,
+    pendingLogin: null,
+  };
+}
+
+function registerUser({ username, nickname, password, email }) {
   const trimmedUsername = String(username ?? "").trim();
   const trimmedNickname = String(nickname ?? "").trim();
   const trimmedPassword = String(password ?? "").trim();
+  const trimmedEmail = String(email ?? "").trim();
 
-  if (!trimmedUsername || !trimmedPassword) {
-    return { ok: false, message: "用户名和密码不能为空。" };
+  if (!trimmedUsername || !trimmedPassword || !trimmedEmail) {
+    return { ok: false, message: "用户名、邮箱和密码不能为空。" };
+  }
+
+  const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailPattern.test(trimmedEmail)) {
+    return { ok: false, message: "请输入有效的邮箱地址。" };
   }
 
   const exists = state.user.users.some(
-    (user) => user.username.toLowerCase() === trimmedUsername.toLowerCase(),
+    (user) =>
+      user.username.toLowerCase() === trimmedUsername.toLowerCase() ||
+      String(user.email ?? "").toLowerCase() === trimmedEmail.toLowerCase(),
   );
 
   if (exists) {
-    return { ok: false, message: "该用户名已存在。" };
+    return { ok: false, message: "该用户名或邮箱已存在。" };
   }
 
   state.user.users.push({
     username: trimmedUsername,
     password: trimmedPassword,
     nickname: trimmedNickname || trimmedUsername,
+    email: trimmedEmail,
   });
 
   state.user.currentUser = {
     username: trimmedUsername,
     nickname: trimmedNickname || trimmedUsername,
+    email: trimmedEmail,
   };
+
+  resetAuthVerificationState();
 
   return { ok: true, message: "注册成功。" };
 }
@@ -319,20 +362,83 @@ function loginUser({ username, password }) {
   const trimmedUsername = String(username ?? "").trim();
   const trimmedPassword = String(password ?? "").trim();
 
+  if (!trimmedUsername || !trimmedPassword) {
+    return { ok: false, message: "用户名/邮箱和密码不能为空。" };
+  }
+
   const match = state.user.users.find(
     (user) =>
-      user.username.toLowerCase() === trimmedUsername.toLowerCase() &&
+      (user.username.toLowerCase() === trimmedUsername.toLowerCase() ||
+        String(user.email ?? "").toLowerCase() === trimmedUsername.toLowerCase()) &&
       user.password === trimmedPassword,
   );
 
   if (!match) {
-    return { ok: false, message: "用户名或密码错误。" };
+    const nextFailureCount = state.user.auth.loginFailureCount + 1;
+    state.user.auth.loginFailureCount = nextFailureCount;
+    return { ok: false, message: "用户名/邮箱或密码错误。" };
+  }
+
+  const isPendingVerificationLogin =
+    state.user.auth.verificationRequired &&
+    state.user.auth.pendingLogin &&
+    state.user.auth.pendingLogin.username.toLowerCase() === trimmedUsername.toLowerCase() &&
+    state.user.auth.pendingLogin.password === trimmedPassword;
+
+  if (isPendingVerificationLogin) {
+    state.user.currentUser = {
+      username: match.username,
+      nickname: match.nickname,
+      email: match.email ?? "",
+    };
+    state.user.auth.loginFailureCount = 0;
+    state.user.auth.verificationRequired = false;
+    state.user.auth.verificationMode = "login";
+    state.user.auth.pendingLogin = null;
+    state.user.auth.pendingRegister = null;
+    state.user.auth.generatedCode = "";
+
+    if (typeof window !== "undefined") {
+      router.goToRoute("/register");
+    }
+
+    return { ok: true, message: "登录成功。" };
+  }
+
+  const hasReachedVerificationThreshold = state.user.auth.loginFailureCount >= 3;
+
+  if (hasReachedVerificationThreshold) {
+    state.user.auth.verificationRequired = true;
+    state.user.auth.verificationMode = "login";
+    state.user.auth.generatedCode = createVerificationCode();
+    state.user.auth.pendingLogin = {
+      username: match.username,
+      password: trimmedPassword,
+    };
+    state.user.auth.pendingRegister = null;
+
+    if (typeof window !== "undefined") {
+      router.goToRoute("/verification");
+    }
+
+    return {
+      ok: false,
+      message: `密码已正确，请完成验证码验证。验证码：${state.user.auth.generatedCode}（演示环境）`,
+      requiresVerification: true,
+    };
   }
 
   state.user.currentUser = {
     username: match.username,
     nickname: match.nickname,
+    email: match.email ?? "",
   };
+  state.user.auth.loginFailureCount = 0;
+  state.user.auth.verificationRequired = false;
+  state.user.auth.verificationMode = "login";
+  state.user.auth.pendingLogin = null;
+  state.user.auth.pendingRegister = null;
+  state.user.auth.generatedCode = "";
 
   return { ok: true, message: "登录成功。" };
 }
