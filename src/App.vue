@@ -9,6 +9,8 @@ import FolderView from "@/views/FolderView.vue";
 import RegisterView from "@/views/RegisterView.vue";
 import TeamView from "@/views/TeamView.vue";
 import MessageView from "@/views/MessageView.vue";
+import MilestoneView from "@/views/MilestoneView.vue";
+import ArchiveSearchView from "@/views/ArchiveSearchView.vue";
 import { FOLDER_BY_ID } from "@/config/folders";
 import { router } from "@/router";
 
@@ -22,7 +24,13 @@ const activeFolder = computed(() =>
 
 const activeFeature = computed(() => {
     const routeName = currentRoute.value.name;
-    if (routeName === "register" || routeName === "team" || routeName === "messages") {
+    if (
+        routeName === "register" ||
+        routeName === "team" ||
+        routeName === "messages" ||
+        routeName === "milestone" ||
+        routeName === "archive"
+    ) {
         return routeName;
     }
     return null;
@@ -41,6 +49,8 @@ function openFeature(featureName) {
         register: "/register",
         team: "/team",
         messages: "/messages",
+        milestone: "/milestone",
+        archive: "/archive",
     };
 
     if (routeMap[featureName]) {
@@ -78,6 +88,14 @@ function backToDesktop() {
                 />
                 <MessageView
                     v-else-if="activeFeature === 'messages'"
+                    @close="backToDesktop"
+                />
+                <MilestoneView
+                    v-else-if="activeFeature === 'milestone'"
+                    @close="backToDesktop"
+                />
+                <ArchiveSearchView
+                    v-else-if="activeFeature === 'archive'"
                     @close="backToDesktop"
                 />
                 <DesktopView v-else @open="openFolder" @open-page="openFeature" />

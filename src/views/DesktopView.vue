@@ -29,8 +29,8 @@ const menuMap = {
             { id: "team", name: "我的队伍", detail: "当前组队情况" },
             { id: "register", name: "注册", detail: "登录 / 注册" },
             { id: "messages", name: "站内信", detail: `${state.unreadMessages ?? 0} 条未读` },
-            { id: "settings", name: "设置", detail: "界面 · 通知" },
-            { id: "tips", name: "tips点", detail: `${state.tipPoints} 点可用` },
+            // { id: "settings", name: "设置", detail: "界面 · 通知" },
+            // { id: "tips", name: "tips点", detail: `${state.tipPoints} 点可用` },
             { id: "milestone", name: "里程碑", detail: `${completedCount.value}/${MAIN_FOLDERS.length} 已完成` },
         ],
     },
@@ -126,10 +126,7 @@ function openShortcut(appId, event) {
         userPanelPosition.value = { x, y };
     }
     if (appId === "archive") {
-        const firstUnlockedFolder = folderStates.value.find((folder) => folder.unlocked);
-        if (firstUnlockedFolder) {
-            handleFolderOpen(firstUnlockedFolder.id);
-        }
+        emit("open-page", "archive");
         return;
     }
 
@@ -173,6 +170,16 @@ function handleUserMenuClick(item) {
 
     if (item.id === "messages") {
         emit("open-page", "messages");
+        return;
+    }
+
+    if (item.id === "milestone") {
+        emit("open-page", "milestone");
+        return;
+    }
+
+    if (item.id === "archive-search") {
+        emit("open-page", "archive");
         return;
     }
 
