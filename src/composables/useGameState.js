@@ -315,9 +315,8 @@ function resetAuthVerificationState() {
   };
 }
 
-function registerUser({ username, nickname, password, email }) {
+function registerUser({ username, password, email }) {
   const trimmedUsername = String(username ?? "").trim();
-  const trimmedNickname = String(nickname ?? "").trim();
   const trimmedPassword = String(password ?? "").trim();
   const trimmedEmail = String(email ?? "").trim();
 
@@ -330,26 +329,16 @@ function registerUser({ username, nickname, password, email }) {
     return { ok: false, message: "请输入有效的邮箱地址。" };
   }
 
-  const exists = state.user.users.some(
-    (user) =>
-      user.username.toLowerCase() === trimmedUsername.toLowerCase() ||
-      String(user.email ?? "").toLowerCase() === trimmedEmail.toLowerCase(),
-  );
-
-  if (exists) {
-    return { ok: false, message: "该用户名或邮箱已存在。" };
-  }
-
   state.user.users.push({
     username: trimmedUsername,
     password: trimmedPassword,
-    nickname: trimmedNickname || trimmedUsername,
+    nickname: trimmedUsername,
     email: trimmedEmail,
   });
 
   state.user.currentUser = {
     username: trimmedUsername,
-    nickname: trimmedNickname || trimmedUsername,
+    nickname: trimmedUsername,
     email: trimmedEmail,
   };
 

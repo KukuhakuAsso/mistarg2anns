@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { useGameState } from "@/composables/useGameState";
 import { router } from "@/router";
+import { authApi } from "@/api/auth";
 
 const { state, registerUser, completeLoginAfterVerification } = useGameState();
 const verificationCode = ref("");
@@ -61,10 +62,33 @@ function getGeneratedCode() {
   return String(state.user.auth.generatedCode ?? "");
 }
 
-function resendVerificationCode() {
-  const generated = String(Math.floor(100000 + Math.random() * 900000));
-  state.user.auth.generatedCode = generated;
-  verificationMessage.value = `验证码已重新发送至 ${verificationTarget.value}，验证码为 ${generated}（演示环境）。`;
+async function resendVerificationCode() {
+  if (verificationMode.value !== "register") {
+    const generated = String(Math.floor(100000 + Math.random() * 900000));
+    state.user.auth.generatedCode = generated;
+    verificationMessage.value = `验证码已重新发送至 ${verificationTarget.value}，验证码为 ${generated}（演示环境）。`;
+    return;
+  }
+
+  const pendingRegister = state.user.auth.pendingRegister;
+  if (!pendingRegister) {
+    verificationMessage.value = "注册信息已失效，请重新注册。";
+    return;
+  }
+
+  try {
+    const payload = {
+      email: pendingRegister.email,
+      username: pendingRegister.username,
+      ...(import.meta.env.VITE_DEV_TICKET ? { dev_ticket: import.meta.env.VITE_DEV_TICKET } : {}),
+      ...(window.__captchaResponse ? { captcha: { response: window.__captchaResponse } } : {}),
+    };
+
+    await authApi.sendVerificationCode(payload);
+    verificationMessage.value = `验证码已重新发送至 ${pendingRegister.email}。`;
+  } catch (error) {
+    verificationMessage.value = error?.payload?.error?.message || error?.payload?.message || error?.message || "验证码重发失败。";
+  }
 }
 
 function goBackToAuth() {
@@ -78,7 +102,7 @@ function goBackToAuth() {
   router.goToRoute("/register");
 }
 
-function completeVerification() {
+async function completeVerification() {
   const enteredCode = String(verificationCode.value ?? "").trim();
 
   if (!enteredCode) {
@@ -86,9 +110,60 @@ function completeVerification() {
     return;
   }
 
-  if (enteredCode !== getGeneratedCode()) {
-    verificationMessage.value = "验证码错误，请重新输入。";
-    return;
+  if (verificationMode.value === "register") {
+    try {
+      const response = await authApi.verifyVerificationCode({
+        email: state.user.auth.pendingRegister?.email,
+        code: enteredCode,
+      });
+
+      if (!response?.ok && response?.data?.ok === false) {
+        verificationMessage.value = response?.data?.message || "验证码错误，请重新输入。";
+        return;
+      }
+
+      const account = response?.data?.account || response?.account;
+      if (account) {
+        state.user.currentUser = {
+          id: account.id,
+          username: account.username,
+          nickname: account.username,
+          email: state.user.auth.pendingRegister?.email || "",
+          player_no: account.player_no || "",
+          role: account.role || "player",
+          team: account.team || null,
+        };
+
+        const existingUserIndex = state.user.users.findIndex(
+          (user) => String(user.email ?? "").toLowerCase() === String(state.user.auth.pendingRegister?.email ?? "").toLowerCase(),
+        );
+
+        if (existingUserIndex >= 0) {
+          state.user.users[existingUserIndex] = {
+            ...state.user.users[existingUserIndex],
+            username: account.username,
+            nickname: account.username,
+            email: state.user.auth.pendingRegister?.email || state.user.users[existingUserIndex].email,
+            password: state.user.users[existingUserIndex].password || "",
+          };
+        } else {
+          state.user.users.push({
+            username: account.username,
+            nickname: account.username,
+            email: state.user.auth.pendingRegister?.email || "",
+            password: "",
+          });
+        }
+      }
+    } catch (error) {
+      verificationMessage.value = error?.payload?.error?.message || error?.payload?.message || error?.message || "验证码校验失败。";
+      return;
+    }
+  } else {
+    if (enteredCode !== getGeneratedCode()) {
+      verificationMessage.value = "验证码错误，请重新输入。";
+      return;
+    }
   }
 
   if (verificationMode.value === "register") {
@@ -101,7 +176,6 @@ function completeVerification() {
 
     const result = registerUser({
       username: pendingRegister.username,
-      nickname: pendingRegister.nickname,
       email: pendingRegister.email,
       password: pendingRegister.password,
     });

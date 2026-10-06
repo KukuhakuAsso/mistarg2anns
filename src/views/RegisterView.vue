@@ -1,15 +1,38 @@
 <script setup>
-import { computed, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useGameState } from "@/composables/useGameState";
 import { router } from "@/router";
+import { probeHealth } from "@/api/health";
+import { authApi } from "@/api/auth";
 
 const emit = defineEmits(["close"]);
 
 const { state, loginUser, logoutUser } = useGameState();
 const authMode = ref("login");
+const healthStatus = ref({ loading: true, ok: null, message: "正在检查服务状态..." });
+const usernameChecking = ref(false);
+const usernameStatus = ref("idle");
+const usernameCheckTimer = ref(null);
+const registrationConfig = ref({
+    captcha: {
+        enabled: false,
+        ready: false,
+        mode: "turnstile",
+        site_key: "",
+        script: "",
+        test_hosts: [],
+        test_ticket_required: false,
+    },
+    code_length: 6,
+    code_ttl_minutes: 10,
+    resend_cooldown_sec: 60,
+});
+const captchaContainer = ref(null);
+const turnstileWidgetId = ref(null);
+const captchaResponse = ref("");
+let usernameCheckRequestId = 0;
 const authForm = ref({
     username: "",
-    nickname: "",
     email: "",
     password: "",
     confirmPassword: "",
@@ -18,9 +41,294 @@ const authMessage = ref("");
 
 const currentUserEmail = computed(() => state.user.currentUser?.email || "");
 
+function normalizeUsername(value) {
+    return String(value ?? "").trim();
+}
+
+function validateUsernamePattern(value) {
+    const username = normalizeUsername(value);
+    if (!username) {
+        return { ok: false, message: "用户名不能为空。" };
+    }
+
+    if (username.length < 1 || username.length > 32) {
+        return { ok: false, message: "用户名长度必须为 1–32 个字符。" };
+    }
+
+    const forbiddenPattern = /[@/\\]|\p{C}|\p{So}/u;
+    const validPattern = /^[\p{L}\p{N}\p{Zs}_\-\.\+&'()\[\]!#$%*=?^\{\|\}~`]+$/u;
+
+    if (!validPattern.test(username)) {
+        return { ok: false, message: "用户名包含非法字符。" };
+    }
+
+    if (forbiddenPattern.test(username)) {
+        return { ok: false, message: "用户名包含禁止字符。" };
+    }
+
+    if (/^M2\d{6}$/i.test(username)) {
+        return { ok: false, message: "用户名不能使用玩家编号格式。" };
+    }
+
+    return { ok: true, value: username };
+}
+
+watch(
+    () => authMode.value,
+    (nextMode) => {
+        if (nextMode === "register") {
+            window.setTimeout(() => {
+                renderTurnstileWidget();
+            }, 0);
+        }
+    },
+    { immediate: true },
+);
+
+watch(
+    () => authForm.value.username,
+    (nextValue) => {
+        if (authMode.value !== "register") {
+            usernameStatus.value = "idle";
+            return;
+        }
+
+        const sanitized = normalizeUsername(nextValue);
+        if (!sanitized) {
+            usernameStatus.value = "idle";
+            if (usernameCheckTimer.value) {
+                clearTimeout(usernameCheckTimer.value);
+                usernameCheckTimer.value = null;
+            }
+            return;
+        }
+
+        const validation = validateUsernamePattern(sanitized);
+        if (!validation.ok) {
+            usernameStatus.value = "invalid";
+            if (usernameCheckTimer.value) {
+                clearTimeout(usernameCheckTimer.value);
+                usernameCheckTimer.value = null;
+            }
+            return;
+        }
+
+        if (usernameCheckTimer.value) {
+            clearTimeout(usernameCheckTimer.value);
+        }
+
+        usernameCheckTimer.value = window.setTimeout(async () => {
+            const currentRequestId = ++usernameCheckRequestId;
+            usernameChecking.value = true;
+            usernameStatus.value = "checking";
+
+            try {
+                const response = await authApi.usernameAvailable(sanitized);
+                if (currentRequestId !== usernameCheckRequestId) {
+                    return;
+                }
+
+                const status = response?.data?.status || response?.status;
+                if (status === "available") {
+                    usernameStatus.value = "available";
+                } else if (status === "taken") {
+                    usernameStatus.value = "taken";
+                } else if (status === "unchanged") {
+                    usernameStatus.value = "unchanged";
+                } else {
+                    usernameStatus.value = "idle";
+                }
+            } catch (error) {
+                if (currentRequestId === usernameCheckRequestId) {
+                    usernameStatus.value = "idle";
+                }
+            } finally {
+                if (currentRequestId === usernameCheckRequestId) {
+                    usernameChecking.value = false;
+                }
+            }
+        }, 500);
+    },
+);
+
+async function loadRegistrationConfig() {
+    try {
+        const payload = await authApi.getRegistrationConfig();
+        registrationConfig.value = {
+            ...registrationConfig.value,
+            ...(payload?.data || payload || {}),
+        };
+
+        const captcha = registrationConfig.value.captcha;
+        if (captcha?.enabled && captcha?.ready && captcha?.widget) {
+            if (captcha.widget.driver === "turnstile" && captcha.widget.params?.site_key && captcha.script) {
+                await loadTurnstileScript(captcha.script);
+                renderTurnstileWidget();
+            }
+        }
+    } catch (error) {
+        registrationConfig.value.captcha.enabled = false;
+        registrationConfig.value.captcha.ready = false;
+        authMessage.value = "注册配置暂不可用，请稍后再试。";
+    }
+}
+
+function loadTurnstileScript(scriptUrl) {
+    if (!scriptUrl) {
+        return Promise.resolve();
+    }
+
+    const existingScript = document.querySelector(`script[data-turnstile-script="${scriptUrl}"]`);
+    if (existingScript) {
+        if (window.turnstile) {
+            return Promise.resolve();
+        }
+
+        return new Promise((resolve, reject) => {
+            existingScript.addEventListener("load", () => resolve(), { once: true });
+            existingScript.addEventListener("error", () => reject(new Error("Turnstile script failed to load.")), { once: true });
+        });
+    }
+
+    return new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = scriptUrl;
+        script.async = true;
+        script.defer = true;
+        script.setAttribute("data-turnstile-script", scriptUrl);
+        script.onload = () => resolve();
+        script.onerror = () => reject(new Error("Turnstile script failed to load."));
+        document.head.appendChild(script);
+    });
+}
+
+function renderTurnstileWidget() {
+    const captcha = registrationConfig.value.captcha;
+    const widget = captcha?.widget;
+    const params = widget?.params || {};
+    const siteKey = params.site_key || captcha?.site_key;
+
+    if (!captcha?.enabled || !captcha?.ready || !widget || !captchaContainer.value || !window.turnstile || !siteKey) {
+        return;
+    }
+
+    if (turnstileWidgetId.value !== null && window.turnstile?.remove) {
+        try {
+            window.turnstile.remove(turnstileWidgetId.value);
+        } catch (error) {
+            // ignore removal errors and re-render cleanly
+        }
+    }
+
+    turnstileWidgetId.value = window.turnstile.render(captchaContainer.value, {
+        sitekey: siteKey,
+        ...(params && typeof params === "object" ? params : {}),
+        callback: (response) => {
+            captchaResponse.value = response || "";
+            window.__captchaResponse = response || "";
+        },
+        "expired-callback": () => {
+            captchaResponse.value = "";
+            window.__captchaResponse = "";
+        },
+        "error-callback": () => {
+            captchaResponse.value = "";
+            window.__captchaResponse = "";
+        },
+    });
+}
+
+function redirectToPendingVerification() {
+    if (state.user.auth.verificationRequired && state.user.auth.pendingRegister) {
+        router.goToRoute("/verification");
+        return true;
+    }
+
+    if (state.user.auth.verificationRequired && state.user.auth.pendingLogin) {
+        router.goToRoute("/verification");
+        return true;
+    }
+
+    return false;
+}
+
+onMounted(async () => {
+    if (redirectToPendingVerification()) {
+        return;
+    }
+
+    try {
+        await probeHealth();
+        healthStatus.value = {
+            loading: false,
+            ok: true,
+            message: "服务可用",
+        };
+    } catch (error) {
+        healthStatus.value = {
+            loading: false,
+            ok: false,
+            message: error instanceof Error ? error.message : "服务不可用",
+        };
+    }
+
+    try {
+        await loadRegistrationConfig();
+    } catch (error) {
+        // ignore and keep the form usable without captcha if config is unavailable
+    }
+});
+
+watch(
+    () => [state.user.auth.verificationRequired, state.user.auth.pendingRegister, state.user.auth.pendingLogin],
+    () => {
+        if (state.user.auth.verificationRequired) {
+            redirectToPendingVerification();
+        }
+    },
+    { deep: true },
+);
+
+onBeforeUnmount(() => {
+    if (usernameCheckTimer.value) {
+        clearTimeout(usernameCheckTimer.value);
+        usernameCheckTimer.value = null;
+    }
+    if (turnstileWidgetId.value !== null && window.turnstile?.remove) {
+        try {
+            window.turnstile.remove(turnstileWidgetId.value);
+        } catch (error) {
+            // ignore unmount cleanup errors
+        }
+    }
+    usernameCheckRequestId += 1;
+});
+
 function switchAuthMode(mode) {
     authMode.value = mode;
     authMessage.value = "";
+    authForm.value = {
+        username: "",
+        email: "",
+        password: "",
+        confirmPassword: "",
+    };
+    usernameStatus.value = "idle";
+    usernameChecking.value = false;
+    captchaResponse.value = "";
+    if (turnstileWidgetId.value !== null && window.turnstile?.remove) {
+        try {
+            window.turnstile.remove(turnstileWidgetId.value);
+        } catch (error) {
+            // ignore removal errors
+        }
+        turnstileWidgetId.value = null;
+    }
+    if (mode === "register") {
+        window.setTimeout(() => {
+            renderTurnstileWidget();
+        }, 0);
+    }
 }
 
 function validateRegisterForm() {
@@ -35,8 +343,9 @@ function validateRegisterForm() {
         return null;
     }
 
-    if (!nickname) {
-        authMessage.value = "昵称不能为空。";
+    const usernamePatternResult = validateUsernamePattern(username);
+    if (!usernamePatternResult.ok) {
+        authMessage.value = usernamePatternResult.message;
         return null;
     }
 
@@ -56,43 +365,52 @@ function validateRegisterForm() {
         return null;
     }
 
-    const duplicateUser = state.user.users.some(
-        (user) => user.username.toLowerCase() === username.toLowerCase(),
-    );
-    const duplicateEmail = state.user.users.some(
-        (user) => String(user.email ?? "").toLowerCase() === email.toLowerCase(),
-    );
-
-    if (duplicateUser) {
-        authMessage.value = "该用户名已存在，请更换用户名。";
+    const captcha = registrationConfig.value.captcha;
+    if (captcha?.enabled && captcha?.ready && !captchaResponse.value) {
+        authMessage.value = "请完成人机验证后再继续。";
         return null;
     }
 
-    if (duplicateEmail) {
-        authMessage.value = "该邮箱已被注册，请更换邮箱。";
-        return null;
-    }
-
-    return { username, nickname, email, password };
+    return { username, nickname: username, email, password };
 }
 
-function startRegisterVerification() {
+async function startRegisterVerification() {
     const validated = validateRegisterForm();
     if (!validated) {
         return;
     }
 
-    const { username, nickname, email, password } = validated;
-    const generatedCode = String(Math.floor(100000 + Math.random() * 900000));
+    const { username, email, password } = validated;
 
-    state.user.auth.verificationRequired = true;
-    state.user.auth.verificationMode = "register";
-    state.user.auth.generatedCode = generatedCode;
-    state.user.auth.pendingRegister = { username, nickname, email, password };
-    state.user.auth.pendingLogin = null;
+    const captcha = registrationConfig.value.captcha;
+    if (captcha?.enabled && captcha?.ready && !captchaResponse.value) {
+        authMessage.value = "请完成人机验证后再发送验证码。";
+        return;
+    }
 
-    authMessage.value = `验证码已发送至 ${email}，验证码为 ${generatedCode}（演示环境）。`;
-    router.goToRoute("/verification");
+    try {
+        const payload = {
+            email,
+            username,
+            captcha: captcha?.enabled ? { response: captchaResponse.value } : undefined,
+            dev_ticket: import.meta.env.VITE_DEV_TICKET || "",
+        };
+
+        const response = await authApi.sendVerificationCode(payload);
+        const sentEmail = response?.data?.email || email;
+
+        state.user.auth.verificationRequired = true;
+        state.user.auth.verificationMode = "register";
+        state.user.auth.pendingRegister = { username, nickname: username, email, password };
+        state.user.auth.pendingLogin = null;
+        state.user.auth.generatedCode = response?.data?.code || "";
+
+        authMessage.value = `验证码已发送至 ${sentEmail}，请在下一页完成验证。`;
+        router.goToRoute("/verification");
+    } catch (error) {
+        const serverMessage = error?.payload?.error?.message || error?.payload?.message || error?.message || "验证码发送失败，请稍后再试。";
+        authMessage.value = serverMessage;
+    }
 }
 
 function handleAuthSubmit() {
@@ -121,7 +439,7 @@ function handleAuthSubmit() {
 
     authMessage.value = result.message;
     if (result.ok) {
-        authForm.value = { username: "", nickname: "", email: "", password: "", confirmPassword: "" };
+        authForm.value = { username: "", email: "", password: "", confirmPassword: "" };
     }
 }
 
@@ -152,6 +470,11 @@ function handleLogout() {
             </div>
 
             <div v-else class="panel-card panel-card--wide">
+                <div class="auth-health" :class="{ 'is-ok': healthStatus.ok === true, 'is-error': healthStatus.ok === false }">
+                    <span>{{ healthStatus.loading ? "检查中" : healthStatus.ok ? "服务在线" : "服务离线" }}</span>
+                    <small>{{ healthStatus.message }}</small>
+                </div>
+
                 <div class="auth-tabs">
                     <button
                         :class="{ 'is-active': authMode === 'login' }"
@@ -173,17 +496,24 @@ function handleLogout() {
                     <label>
                         <span>用户名</span>
                         <input v-model="authForm.username" type="text" placeholder="请输入用户名" />
-                    </label>
-
-                    <label v-if="authMode === 'register'">
-                        <span>昵称</span>
-                        <input v-model="authForm.nickname" type="text" placeholder="请输入显示昵称" />
+                        <small v-if="authMode === 'register' && authForm.username" class="username-status" :class="usernameStatus">
+                            <template v-if="usernameChecking">检查中...</template>
+                            <template v-else-if="usernameStatus === 'available'">用户名可用</template>
+                            <template v-else-if="usernameStatus === 'taken'">用户名已被占用</template>
+                            <template v-else-if="usernameStatus === 'unchanged'">这是当前账号用户名</template>
+                            <template v-else-if="usernameStatus === 'invalid'">用户名格式不符合规则</template>
+                        </small>
                     </label>
 
                     <label v-if="authMode === 'register'">
                         <span>邮箱</span>
                         <input v-model="authForm.email" type="text" placeholder="请输入邮箱地址" />
                     </label>
+
+                    <div v-if="authMode === 'register' && registrationConfig.captcha?.enabled" class="captcha-box">
+                        <div v-if="registrationConfig.captcha.ready" ref="captchaContainer" class="turnstile-wrap"></div>
+                        <small v-else class="captcha-hint">人机验证暂不可用，请稍后再试。</small>
+                    </div>
 
                     <label>
                         <span>密码</span>
@@ -327,6 +657,21 @@ function handleLogout() {
     box-sizing: border-box;
 }
 
+.captcha-box {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px 0;
+}
+
+.turnstile-wrap {
+    min-height: 60px;
+}
+
+.captcha-hint {
+    color: var(--text-dim);
+}
+
 .verification-panel {
     display: flex;
     flex-direction: column;
@@ -370,5 +715,26 @@ function handleLogout() {
     font-size: 12px;
     line-height: 1.6;
     color: var(--text-dim);
+}
+
+.username-status {
+    display: block;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--text-dim);
+}
+
+.username-status.available {
+    color: #6ce39b;
+}
+
+.username-status.taken,
+.username-status.invalid {
+    color: #ff8a80;
+}
+
+.username-status.unchanged,
+.username-status.checking {
+    color: #ffd166;
 }
 </style>
