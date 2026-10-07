@@ -4,7 +4,7 @@ import { useGameState } from "@/composables/useGameState";
 import { router } from "@/router";
 import { authApi } from "@/api/auth";
 
-const { state, registerUser, completeLoginAfterVerification } = useGameState();
+const { state } = useGameState();
 const verificationCode = ref("");
 const verificationMessage = ref("");
 
@@ -58,15 +58,9 @@ watch(
   { deep: true },
 );
 
-function getGeneratedCode() {
-  return String(state.user.auth.generatedCode ?? "");
-}
-
 async function resendVerificationCode() {
   if (verificationMode.value !== "register") {
-    const generated = String(Math.floor(100000 + Math.random() * 900000));
-    state.user.auth.generatedCode = generated;
-    verificationMessage.value = `验证码已重新发送至 ${verificationTarget.value}，验证码为 ${generated}（演示环境）。`;
+    verificationMessage.value = "登录不使用本地验证码验证，请直接返回登录页重新提交凭据。";
     return;
   }
 
@@ -117,12 +111,13 @@ async function completeVerification() {
         code: enteredCode,
       });
 
-      if (!response?.ok && response?.data?.ok === false) {
-        verificationMessage.value = response?.data?.message || "验证码错误，请重新输入。";
+      const payload = response?.data ?? response ?? {};
+      if (!response?.ok && payload?.ok === false) {
+        verificationMessage.value = payload?.message || "验证码错误，请重新输入。";
         return;
       }
 
-      const account = response?.data?.account || response?.account;
+      const account = payload?.account ?? response?.account ?? null;
       if (account) {
         state.user.currentUser = {
           id: account.id,
@@ -133,88 +128,31 @@ async function completeVerification() {
           role: account.role || "player",
           team: account.team || null,
         };
-
-        const existingUserIndex = state.user.users.findIndex(
-          (user) => String(user.email ?? "").toLowerCase() === String(state.user.auth.pendingRegister?.email ?? "").toLowerCase(),
-        );
-
-        if (existingUserIndex >= 0) {
-          state.user.users[existingUserIndex] = {
-            ...state.user.users[existingUserIndex],
-            username: account.username,
-            nickname: account.username,
-            email: state.user.auth.pendingRegister?.email || state.user.users[existingUserIndex].email,
-            password: state.user.users[existingUserIndex].password || "",
-          };
-        } else {
-          state.user.users.push({
-            username: account.username,
-            nickname: account.username,
-            email: state.user.auth.pendingRegister?.email || "",
-            password: "",
-          });
-        }
       }
-    } catch (error) {
-      verificationMessage.value = error?.payload?.error?.message || error?.payload?.message || error?.message || "验证码校验失败。";
-      return;
-    }
-  } else {
-    if (enteredCode !== getGeneratedCode()) {
-      verificationMessage.value = "验证码错误，请重新输入。";
-      return;
-    }
-  }
 
-  if (verificationMode.value === "register") {
-    const pendingRegister = state.user.auth.pendingRegister;
-
-    if (!pendingRegister) {
-      verificationMessage.value = "注册信息已失效，请重新注册。";
-      return;
-    }
-
-    const result = registerUser({
-      username: pendingRegister.username,
-      email: pendingRegister.email,
-      password: pendingRegister.password,
-    });
-
-    verificationMessage.value = result.message;
-    if (result.ok) {
       state.user.auth.verificationRequired = false;
       state.user.auth.verificationMode = "login";
       state.user.auth.pendingRegister = null;
       state.user.auth.pendingLogin = null;
       state.user.auth.generatedCode = "";
       verificationCode.value = "";
+      verificationMessage.value = "注册验证已完成。";
       router.goToRoute("/register");
+      return;
+    } catch (error) {
+      verificationMessage.value = error?.payload?.error?.message || error?.payload?.message || error?.message || "验证码校验失败。";
+      return;
     }
-    return;
   }
 
-  const pendingLogin = state.user.auth.pendingLogin;
-
-  if (!pendingLogin) {
-    verificationMessage.value = "登录验证信息已失效，请重新登录。";
-    return;
-  }
-
-  const result = completeLoginAfterVerification(
-    pendingLogin.username,
-    pendingLogin.password,
-  );
-
-  verificationMessage.value = result.message;
-  if (result.ok) {
-    state.user.auth.verificationRequired = false;
-    state.user.auth.verificationMode = "login";
-    state.user.auth.pendingRegister = null;
-    state.user.auth.pendingLogin = null;
-    state.user.auth.generatedCode = "";
-    verificationCode.value = "";
-    router.goToRoute("/register");
-  }
+  verificationMessage.value = "登录流程已改为直接走后端 cookie / token 验证，请返回登录页重新提交凭据。";
+  state.user.auth.verificationRequired = false;
+  state.user.auth.verificationMode = "login";
+  state.user.auth.pendingRegister = null;
+  state.user.auth.pendingLogin = null;
+  state.user.auth.generatedCode = "";
+  verificationCode.value = "";
+  router.goToRoute("/register");
 }
 </script>
 

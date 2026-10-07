@@ -54,6 +54,34 @@ export const authApi = {
       return result;
     }),
 
+  changePassword: (payload) =>
+    request("/auth/password", {
+      method: "POST",
+      body: payload,
+      useAuth: true,
+    }),
+
+  changeUsername: (payload) =>
+    request("/auth/username", {
+      method: "POST",
+      body: payload,
+      useAuth: true,
+    }),
+
+  forgotPassword: (payload) =>
+    request("/auth/forgot", {
+      method: "POST",
+      body: payload,
+      skipRefresh: true,
+    }),
+
+  resetPassword: (payload) =>
+    request("/auth/reset", {
+      method: "POST",
+      body: payload,
+      skipRefresh: true,
+    }),
+
   refresh: () =>
     request("/auth/refresh", {
       method: "POST",
@@ -66,8 +94,46 @@ export const authApi = {
       return result;
     }),
 
+  bootstrapSession: async () => {
+    try {
+      const result = await authApi.refresh();
+      const payload = result?.data ?? result ?? {};
+      const account = payload.account ?? payload.user ?? null;
+      const token = payload?.access_token || payload?.data?.access_token || payload?.token || "";
+
+      if (token) {
+        setAccessToken(token);
+      }
+
+      return {
+        ok: true,
+        account,
+        accessToken: token,
+        expiresIn: Number(payload.expires_in ?? payload?.data?.expires_in ?? 0),
+      };
+    } catch (error) {
+      clearAccessToken();
+      return {
+        ok: false,
+        account: null,
+        accessToken: "",
+        expiresIn: 0,
+        error,
+      };
+    }
+  },
+
   logout: () =>
     request("/auth/logout", {
+      method: "POST",
+      useAuth: true,
+      skipRefresh: true,
+    }).finally(() => {
+      clearAccessToken();
+    }),
+
+  logoutAll: () =>
+    request("/auth/logout-all", {
       method: "POST",
       useAuth: true,
       skipRefresh: true,

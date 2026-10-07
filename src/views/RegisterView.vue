@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useGameState } from "@/composables/useGameState";
+import { useAuth } from "@/composables/useAuth";
 import { router } from "@/router";
 import { probeHealth } from "@/api/health";
 import { authApi } from "@/api/auth";
@@ -8,6 +9,7 @@ import { authApi } from "@/api/auth";
 const emit = defineEmits(["close"]);
 
 const { state, loginUser, logoutUser } = useGameState();
+const { loginWithPassword } = useAuth();
 const authMode = ref("login");
 const healthStatus = ref({ loading: true, ok: null, message: "正在检查服务状态..." });
 const usernameChecking = ref(false);
@@ -34,15 +36,46 @@ let usernameCheckRequestId = 0;
 const authForm = ref({
     username: "",
     email: "",
+    loginType: "email",
+    loginIdentifier: "",
     password: "",
     confirmPassword: "",
 });
 const authMessage = ref("");
+const loginTypeOptions = [
+    { value: "email", label: "邮箱" },
+    { value: "username", label: "用户名" },
+    { value: "player_no", label: "玩家编号" },
+];
+const loginTypeMenuOpen = ref(false);
 
 const currentUserEmail = computed(() => state.user.currentUser?.email || "");
+const currentUsernameDraft = ref("");
+const usernameChangeState = ref({ open: false, message: "", submitting: false });
+const selectedLoginTypeLabel = computed(
+    () => loginTypeOptions.find((option) => option.value === authForm.value.loginType)?.label ?? "邮箱",
+);
 
 function normalizeUsername(value) {
     return String(value ?? "").trim();
+}
+
+function resetUsernameEditor() {
+    usernameChangeState.value = { open: false, message: "", submitting: false };
+    currentUsernameDraft.value = "";
+}
+
+function openUsernameEditor() {
+    if (!state.user.currentUser) {
+        return;
+    }
+
+    currentUsernameDraft.value = state.user.currentUser.username || "";
+    usernameChangeState.value = {
+        open: true,
+        message: "",
+        submitting: false,
+    };
 }
 
 function validateUsernamePattern(value) {
@@ -289,6 +322,19 @@ watch(
     { deep: true },
 );
 
+onMounted(() => {
+    const handleClickOutside = (event) => {
+        const menuRoot = document.querySelector(".login-type-select");
+        if (!menuRoot || menuRoot.contains(event.target)) {
+            return;
+        }
+        closeLoginTypeMenu();
+    };
+
+    document.addEventListener("click", handleClickOutside);
+    window.__mistargLoginTypeClickHandler = handleClickOutside;
+});
+
 onBeforeUnmount(() => {
     if (usernameCheckTimer.value) {
         clearTimeout(usernameCheckTimer.value);
@@ -301,6 +347,10 @@ onBeforeUnmount(() => {
             // ignore unmount cleanup errors
         }
     }
+    if (window.__mistargLoginTypeClickHandler) {
+        document.removeEventListener("click", window.__mistargLoginTypeClickHandler);
+        delete window.__mistargLoginTypeClickHandler;
+    }
     usernameCheckRequestId += 1;
 });
 
@@ -310,9 +360,12 @@ function switchAuthMode(mode) {
     authForm.value = {
         username: "",
         email: "",
+        loginType: "email",
+        loginIdentifier: "",
         password: "",
         confirmPassword: "",
     };
+    loginTypeMenuOpen.value = false;
     usernameStatus.value = "idle";
     usernameChecking.value = false;
     captchaResponse.value = "";
@@ -329,6 +382,19 @@ function switchAuthMode(mode) {
             renderTurnstileWidget();
         }, 0);
     }
+}
+
+function toggleLoginTypeMenu() {
+    loginTypeMenuOpen.value = !loginTypeMenuOpen.value;
+}
+
+function selectLoginType(type) {
+    authForm.value.loginType = type;
+    loginTypeMenuOpen.value = false;
+}
+
+function closeLoginTypeMenu() {
+    loginTypeMenuOpen.value = false;
 }
 
 function validateRegisterForm() {
@@ -413,17 +479,18 @@ async function startRegisterVerification() {
     }
 }
 
-function handleAuthSubmit() {
+async function handleAuthSubmit() {
     if (authMode.value === "register") {
         startRegisterVerification();
         return;
     }
 
-    const username = String(authForm.value.username ?? "").trim();
+    const loginType = String(authForm.value.loginType ?? "email").trim();
+    const identifier = String(authForm.value.loginIdentifier ?? "").trim();
     const password = String(authForm.value.password ?? "").trim();
 
-    if (!username) {
-        authMessage.value = "用户名不能为空。";
+    if (!identifier) {
+        authMessage.value = "登录标识不能为空。";
         return;
     }
 
@@ -432,22 +499,159 @@ function handleAuthSubmit() {
         return;
     }
 
-    const result = loginUser({
-        username,
-        password,
-    });
+    try {
+        const result = await loginWithPassword({
+            type: loginType,
+            identifier,
+            password,
+        });
 
-    authMessage.value = result.message;
-    if (result.ok) {
-        authForm.value = { username: "", email: "", password: "", confirmPassword: "" };
+        const account = result?.account ?? null;
+        if (account) {
+            state.user.currentUser = {
+                username: account.username ?? account.player_no ?? identifier,
+                nickname: account.username ?? account.player_no ?? identifier,
+                email: account.email ?? "",
+                playerNo: account.player_no ?? "",
+                role: account.role ?? "player",
+                team: account.team ?? null,
+            };
+        }
+
+        state.user.auth.loginFailureCount = 0;
+        state.user.auth.verificationRequired = false;
+        state.user.auth.pendingLogin = null;
+        state.user.auth.pendingRegister = null;
+        state.user.auth.generatedCode = "";
+
+        authMessage.value = account ? "登录成功。" : "登录成功，正在同步会话状态。";
+        authForm.value = {
+            username: "",
+            email: "",
+            loginType: "email",
+            loginIdentifier: "",
+            password: "",
+            confirmPassword: "",
+        };
+    } catch (error) {
+        authMessage.value = error?.message || "登录失败。";
     }
 }
 
-function handleLogout() {
-    logoutUser();
-    authMessage.value = "已退出登录。";
+async function submitUsernameChange() {
+    if (!state.user.currentUser) {
+        return;
+    }
+
+    const nextUsername = normalizeUsername(currentUsernameDraft.value);
+    const validation = validateUsernamePattern(nextUsername);
+
+    if (!nextUsername) {
+        usernameChangeState.value.message = "用户名不能为空。";
+        return;
+    }
+
+    if (!validation.ok) {
+        usernameChangeState.value.message = validation.message;
+        return;
+    }
+
+    const currentUsername = normalizeUsername(state.user.currentUser.username || "");
+    if (nextUsername.toLowerCase() === currentUsername.toLowerCase()) {
+        usernameChangeState.value.message = "新用户名与当前用户名相同，无需修改。";
+        return;
+    }
+
+    usernameChangeState.value.submitting = true;
+    usernameChangeState.value.message = "正在校验用户名...";
+
+    try {
+        const availability = await authApi.usernameAvailable(nextUsername);
+        const availabilityStatus = availability?.data?.status ?? availability?.status ?? "";
+
+        if (availabilityStatus === "taken") {
+            usernameChangeState.value.message = "该用户名已被占用，请换一个用户名。";
+            return;
+        }
+
+        if (availabilityStatus === "invalid") {
+            usernameChangeState.value.message = "用户名格式不符合规则。";
+            return;
+        }
+
+        usernameChangeState.value.message = "正在更新用户名...";
+
+        const response = await authApi.changeUsername({ username: nextUsername });
+        const account = response?.data?.account ?? response?.account ?? null;
+        const updatedUsername = account?.username ?? nextUsername;
+
+        if (state.user.currentUser) {
+            state.user.currentUser.username = updatedUsername;
+            state.user.currentUser.nickname = updatedUsername;
+            if (account?.playerNo || account?.player_no) {
+                state.user.currentUser.playerNo = account.playerNo ?? account.player_no ?? state.user.currentUser.playerNo;
+            }
+            if (account?.email) {
+                state.user.currentUser.email = account.email;
+            }
+        }
+
+        usernameChangeState.value.message = "用户名已更新。";
+        window.setTimeout(() => {
+            resetUsernameEditor();
+        }, 500);
+    } catch (error) {
+        const payload = error?.payload ?? {};
+        const code = payload?.code || payload?.error?.code || error?.code || "";
+        const detail = payload?.detail ?? payload?.error?.detail ?? {};
+
+        if (code === "E_VALIDATION") {
+            usernameChangeState.value.message = detail?.fields?.username || "用户名格式不符合规则。";
+        } else if (code === "E_AUTH") {
+            usernameChangeState.value.message = "未登录或令牌失效，无法修改用户名。";
+        } else if (code === "E_BANNED") {
+            usernameChangeState.value.message = "账号已被封禁，不能修改用户名。";
+        } else if (code === "E_CONFLICT") {
+            usernameChangeState.value.message = "该用户名已被占用，请换一个用户名。";
+        } else {
+            usernameChangeState.value.message = error?.message || "用户名修改失败，请稍后再试。";
+        }
+    } finally {
+        usernameChangeState.value.submitting = false;
+    }
+}
+
+async function handleLogout() {
+    try {
+        await authApi.logout();
+        logoutUser();
+        authMessage.value = "已退出当前设备登录。";
+    } catch (error) {
+        logoutUser();
+        authMessage.value = "已退出当前设备登录。";
+    }
+}
+
+async function handleLogoutAll() {
+    try {
+        await authApi.logoutAll();
+        logoutUser();
+        authMessage.value = "已退出全部设备登录。";
+    } catch (error) {
+        logoutUser();
+        authMessage.value = "已退出全部设备登录。";
+    }
 }
 </script>
+
+<style scoped>
+.current-user-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 16px;
+}
+</style>
 
 <template>
     <section class="page-shell">
@@ -464,10 +668,44 @@ function handleLogout() {
                 <h2>{{ state.user.currentUser.nickname }}</h2>
                 <p>@{{ state.user.currentUser.username }}</p>
                 <p v-if="currentUserEmail">{{ currentUserEmail }}</p>
-                <button class="secondary-button" type="button" @click="handleLogout">
-                    退出登录
-                </button>
-            </div>
+                    <div class="current-user-actions">
+                        <button class="secondary-button" type="button" @click="openUsernameEditor">
+                            修改用户名
+                        </button>
+                        <button class="secondary-button" type="button" @click="router.goToRoute('/password')">
+                            修改密码
+                        </button>
+                        <button class="secondary-button" type="button" @click="handleLogout">
+                            退出登录
+                        </button>
+                        <button class="secondary-button" type="button" @click="handleLogoutAll">
+                            退出全部设备登录
+                        </button>
+                    </div>
+
+                    <div v-if="usernameChangeState.open" class="username-change-form">
+                        <label class="field">
+                            <span>新用户名</span>
+                            <input v-model="currentUsernameDraft" type="text" placeholder="请输入新用户名" />
+                        </label>
+
+                        <div v-if="usernameChangeState.message" class="status-box" :class="{
+                            'status-box--error': usernameChangeState.message.includes('失败') || usernameChangeState.message.includes('不可') || usernameChangeState.message.includes('已被') || usernameChangeState.message.includes('不符合') || usernameChangeState.message.includes('无效') || usernameChangeState.message.includes('相同') || usernameChangeState.message.includes('被封禁') || usernameChangeState.message.includes('失效') || usernameChangeState.message.includes('占用'),
+                            'status-box--success': usernameChangeState.message.includes('已更新')
+                        }">
+                            {{ usernameChangeState.message }}
+                        </div>
+
+                        <div class="inline-actions">
+                            <button class="secondary-button" type="button" @click="resetUsernameEditor">
+                                取消
+                            </button>
+                            <button class="primary-button" type="button" :disabled="usernameChangeState.submitting" @click="submitUsernameChange">
+                                {{ usernameChangeState.submitting ? "保存中..." : "保存用户名" }}
+                            </button>
+                        </div>
+                    </div>
+                </div>
 
             <div v-else class="panel-card panel-card--wide">
                 <div class="auth-health" :class="{ 'is-ok': healthStatus.ok === true, 'is-error': healthStatus.ok === false }">
@@ -493,10 +731,58 @@ function handleLogout() {
                 </div>
 
                 <form class="auth-form" @submit.prevent="handleAuthSubmit">
-                    <label>
+                    <template v-if="authMode === 'login'">
+                        <label>
+                            <span>登录方式</span>
+                            <div class="login-type-select" :class="{ 'is-open': loginTypeMenuOpen }">
+                                <button
+                                    type="button"
+                                    class="login-type-trigger"
+                                    @click.stop="toggleLoginTypeMenu"
+                                    aria-haspopup="listbox"
+                                    :aria-expanded="loginTypeMenuOpen"
+                                >
+                                    <span>{{ selectedLoginTypeLabel }}</span>
+                                    <span class="login-type-caret" aria-hidden="true">▾</span>
+                                </button>
+
+                                <ul v-if="loginTypeMenuOpen" class="login-type-menu" role="listbox" aria-label="登录方式">
+                                    <li
+                                        v-for="option in loginTypeOptions"
+                                        :key="option.value"
+                                        :class="{ 'is-selected': authForm.loginType === option.value }"
+                                        role="option"
+                                        :aria-selected="authForm.loginType === option.value"
+                                        @click.stop="selectLoginType(option.value)"
+                                    >
+                                        {{ option.label }}
+                                    </li>
+                                </ul>
+                            </div>
+                        </label>
+
+                        <label>
+                            <span>
+                                {{ selectedLoginTypeLabel }}
+                            </span>
+                            <input
+                                v-model="authForm.loginIdentifier"
+                                type="text"
+                                :placeholder="
+                                    authForm.loginType === 'email'
+                                        ? '请输入邮箱地址'
+                                        : authForm.loginType === 'player_no'
+                                            ? '请输入玩家编号，例如 M2000001'
+                                            : '请输入用户名'
+                                "
+                            />
+                        </label>
+                    </template>
+
+                    <label v-else>
                         <span>用户名</span>
                         <input v-model="authForm.username" type="text" placeholder="请输入用户名" />
-                        <small v-if="authMode === 'register' && authForm.username" class="username-status" :class="usernameStatus">
+                        <small v-if="authForm.username" class="username-status" :class="usernameStatus">
                             <template v-if="usernameChecking">检查中...</template>
                             <template v-else-if="usernameStatus === 'available'">用户名可用</template>
                             <template v-else-if="usernameStatus === 'taken'">用户名已被占用</template>
@@ -525,12 +811,17 @@ function handleLogout() {
                         <input v-model="authForm.confirmPassword" type="password" placeholder="再次输入密码" />
                     </label>
 
-                    <button class="primary-button" type="submit">
-                        {{ authMode === "register" ? "发送验证码" : "登录" }}
-                    </button>
-                </form>
+                    <div class="auth-footer">
+                        <button class="primary-button" type="submit">
+                            {{ authMode === "register" ? "发送验证码" : "登录" }}
+                        </button>
+                        <button class="text-link-button" type="button" @click="router.goToRoute('/forgot')">
+                            找回密码
+                        </button>
+                    </div>
+                    </form>
 
-                <p v-if="authMessage" class="helper-text">{{ authMessage }}</p>
+                    <p v-if="authMessage" class="helper-text">{{ authMessage }}</p>
             </div>
         </div>
     </section>
@@ -655,6 +946,80 @@ function handleLogout() {
     background: rgba(8, 13, 20, 0.12);
     color: var(--text);
     box-sizing: border-box;
+    font: inherit;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+}
+
+.login-type-select {
+    position: relative;
+    width: 100%;
+}
+
+.login-type-trigger {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: rgba(8, 13, 20, 0.12);
+    color: var(--text);
+    font: inherit;
+    cursor: pointer;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+}
+
+.login-type-trigger:hover,
+.login-type-select.is-open .login-type-trigger {
+    border-color: var(--border-strong);
+    background: rgba(18, 24, 36, 0.14);
+}
+
+.login-type-caret {
+    color: var(--text-dim);
+    font-size: 12px;
+    transition: transform 0.2s ease;
+}
+
+.login-type-select.is-open .login-type-caret {
+    transform: rotate(180deg);
+}
+
+.login-type-menu {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: calc(100% + 6px);
+    margin: 0;
+    padding: 8px;
+    list-style: none;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    box-shadow: 0 18px 30px rgba(0, 0, 0, 0.32);
+    z-index: 20;
+}
+
+.login-type-menu li {
+    padding: 10px 12px;
+    color: var(--text);
+    cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.login-type-menu li:hover,
+.login-type-menu li.is-selected {
+    background: var(--surface);
+    color: var(--text);
+}
+
+.auth-form input:focus,
+.verification-field input:focus,
+.login-type-trigger:focus {
+    outline: none;
+    border-color: var(--border-strong);
+    box-shadow: 0 0 0 3px rgba(110, 171, 255, 0.18);
+    background: rgba(18, 24, 36, 0.14);
 }
 
 .captcha-box {
@@ -708,6 +1073,85 @@ function handleLogout() {
 
 .secondary-button {
     width: fit-content;
+}
+
+.username-change-form {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+}
+
+.username-change-form .field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-dim);
+}
+
+.username-change-form .field input {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: rgba(8, 13, 20, 0.12);
+    color: var(--text);
+    box-sizing: border-box;
+    font: inherit;
+}
+
+.username-change-form .field input:focus {
+    outline: none;
+    border-color: var(--border-strong);
+    box-shadow: 0 0 0 3px rgba(110, 171, 255, 0.18);
+    background: rgba(18, 24, 36, 0.14);
+}
+
+.status-box {
+    padding: 10px 12px;
+    border-radius: 10px;
+    font-size: 12px;
+    line-height: 1.5;
+    border: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.02);
+    color: var(--text);
+}
+
+.status-box--success {
+    border-color: rgba(61, 200, 128, 0.3);
+    background: rgba(61, 200, 128, 0.08);
+    color: #7fe0a8;
+}
+
+.status-box--error {
+    border-color: rgba(255, 93, 93, 0.25);
+    background: rgba(255, 93, 93, 0.08);
+    color: #ff9f9f;
+}
+
+.inline-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.auth-footer {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.text-link-button {
+    width: fit-content;
+    border: none;
+    background: transparent;
+    padding: 0;
+    color: var(--accent);
+    font-size: 12px;
+    line-height: 1.5;
+    cursor: pointer;
 }
 
 .helper-text {
