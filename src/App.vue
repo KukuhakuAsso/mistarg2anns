@@ -27,7 +27,7 @@ const currentRoute = computed(() => router.currentRoute);
 watch(
     () => [currentRoute.value.name, state.user.currentUser],
     ([routeName, currentUser]) => {
-        const allowedPublicRoutes = new Set(["desktop", "register", "forgot"]);
+        const allowedPublicRoutes = new Set(["desktop", "register", "verification", "forgot"]);
         if (!currentUser && !allowedPublicRoutes.has(routeName)) {
             router.goToRoute("/register");
         }
