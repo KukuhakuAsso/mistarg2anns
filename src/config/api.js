@@ -3,7 +3,7 @@ export const apiConfig = {
   basePath: import.meta.env.VITE_API_BASE_PATH || "/api",
   apiVersion: import.meta.env.VITE_API_VERSION || "mistarg.2026.v1",
   devTicket: import.meta.env.VITE_DEV_TICKET || "",
-  "X-Mistarg-Dev-Ticket": import.meta.env.VITE_X_MISTARG_DEV_TICKET || "",
+  "X-Mistarg-Test-Ticket": import.meta.env.VITE_X_MISTARG_TEST_TICKET || "",
 };
 
 export function buildApiUrl(path) {
@@ -35,7 +35,7 @@ export function getApiHeaders(extra = {}) {
 }
 
 export function getRegistrationHeaders() {
-  return apiConfig["X-Mistarg-Dev-Ticket"]
-    ? { "X-Mistarg-Dev-Ticket": apiConfig["X-Mistarg-Dev-Ticket"] }
+  return apiConfig["X-Mistarg-Test-Ticket"]
+    ? { "X-Mistarg-Test-Ticket": apiConfig["X-Mistarg-Test-Ticket"] }
     : {};
 }
