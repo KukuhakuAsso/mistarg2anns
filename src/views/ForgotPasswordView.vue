@@ -326,7 +326,7 @@ function goBackToRequest() {
             :disabled="submitting"
             @click="submitForgotRequest"
           >
-            {{ submitting ? "发送中..." : "发送重置邮件" }}
+            {{ submitting ? "发送中，请稍候..." : "发送重置邮件" }}
           </button>
         </div>
 
@@ -374,7 +374,7 @@ function goBackToRequest() {
               :disabled="submitting"
               @click="submitResetPassword"
             >
-              {{ submitting ? "重置中..." : "确认重置" }}
+              {{ submitting ? "重置中，请稍候..." : "确认重置" }}
             </button>
           </div>
         </div>

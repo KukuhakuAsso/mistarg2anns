@@ -1,5 +1,4 @@
 import request, { setAccessToken, clearAccessToken } from "@/api/request";
-import { getRegistrationHeaders } from "@/config/api";
 
 export const authApi = {
   getRegistrationConfig: () =>
@@ -40,7 +39,6 @@ export const authApi = {
     request("/auth/reg/start", {
       method: "POST",
       body: payload,
-      headers: getRegistrationHeaders(),
       skipRefresh: true,
     }),
 

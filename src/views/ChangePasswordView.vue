@@ -52,7 +52,7 @@ async function submitChangePassword() {
   }
 
   submitting.value = true;
-  message.value = "正在更新密码...";
+  message.value = "正在更新密码，请稍候...";
   messageType.value = "info";
 
   try {
@@ -160,7 +160,7 @@ function closeView() {
               :disabled="submitting"
               @click="submitChangePassword"
             >
-              {{ submitting ? "修改中..." : "确认修改" }}
+              {{ submitting ? "修改中，请稍候..." : "确认修改" }}
             </button>
           </div>
         </template>

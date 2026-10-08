@@ -7,6 +7,9 @@ import { authApi } from "@/api/auth";
 const { state } = useGameState();
 const verificationCode = ref("");
 const verificationMessage = ref("");
+const resending = ref(false);
+const verifying = ref(false);
+const requestPending = computed(() => resending.value || verifying.value);
 
 const verificationMode = computed(() => state.user.auth.verificationMode || "login");
 const verificationTarget = computed(() => {
@@ -59,6 +62,10 @@ watch(
 );
 
 async function resendVerificationCode() {
+  if (requestPending.value) {
+    return;
+  }
+
   if (verificationMode.value !== "register") {
     verificationMessage.value = "登录不使用本地验证码验证，请直接返回登录页重新提交凭据。";
     return;
@@ -70,6 +77,8 @@ async function resendVerificationCode() {
     return;
   }
 
+  resending.value = true;
+  verificationMessage.value = "正在重新发送验证码，请稍候...";
   try {
     const payload = {
       email: pendingRegister.email,
@@ -82,6 +91,8 @@ async function resendVerificationCode() {
     verificationMessage.value = `验证码已重新发送至 ${pendingRegister.email}。`;
   } catch (error) {
     verificationMessage.value = error?.payload?.error?.message || error?.payload?.message || error?.message || "验证码重发失败。";
+  } finally {
+    resending.value = false;
   }
 }
 
@@ -97,6 +108,10 @@ function goBackToAuth() {
 }
 
 async function completeVerification() {
+  if (requestPending.value) {
+    return;
+  }
+
   const enteredCode = String(verificationCode.value ?? "").trim();
 
   if (!enteredCode) {
@@ -105,6 +120,8 @@ async function completeVerification() {
   }
 
   if (verificationMode.value === "register") {
+    verifying.value = true;
+    verificationMessage.value = "正在验证并完成注册，请稍候...";
     try {
       const response = await authApi.verifyVerificationCode({
         email: state.user.auth.pendingRegister?.email,
@@ -142,6 +159,8 @@ async function completeVerification() {
     } catch (error) {
       verificationMessage.value = error?.payload?.error?.message || error?.payload?.message || error?.message || "验证码校验失败。";
       return;
+    } finally {
+      verifying.value = false;
     }
   }
 
@@ -179,16 +198,37 @@ async function completeVerification() {
         </label>
 
         <div class="verification-actions">
-          <button class="secondary-button" type="button" @click="resendVerificationCode">
-            重新发送
+          <button
+            class="secondary-button"
+            type="button"
+            :disabled="requestPending"
+            @click="resendVerificationCode"
+          >
+            {{ resending ? "发送中，请稍候..." : "重新发送" }}
           </button>
-          <button class="primary-button" type="button" @click="goBackToAuth">
+          <button
+            class="primary-button"
+            type="button"
+            :disabled="requestPending"
+            @click="goBackToAuth"
+          >
              返回登录 / 注册
           </button>
         </div>
         
-        <button class="ghost-button" type="button" @click="completeVerification">
-            {{ verificationMode === "register" ? "完成注册" : "验证并登录" }}
+        <button
+          class="ghost-button"
+          type="button"
+          :disabled="requestPending"
+          @click="completeVerification"
+        >
+            {{
+              verifying
+                ? "验证中，请稍候..."
+                : verificationMode === "register"
+                  ? "完成注册"
+                  : "验证并登录"
+            }}
         </button>
 
         <p v-if="verificationMessage" class="helper-text">{{ verificationMessage }}</p>

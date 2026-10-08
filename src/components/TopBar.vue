@@ -1,9 +1,15 @@
 <script setup>
 // 设置栏：只放功能性按钮与进度读数，不承载内容展示。
+import { computed } from "vue";
 import AppIcon from "@/components/AppIcon.vue";
 import { useGameState } from "@/composables/useGameState";
 import { useTheme } from "@/composables/useTheme";
 import { FOLDERS, MAIN_FOLDERS } from "@/config/folders";
+import {
+  apiConfig,
+  apiEnvironment,
+  setApiEnvironment,
+} from "@/config/api";
 
 defineProps({
   inFolder: { type: Boolean, default: false },
@@ -14,12 +20,18 @@ const emit = defineEmits(["go-desktop"]);
 const { state, unlockedCount, completedCount, toggleCluePanel, resetProgress } =
   useGameState();
 const { themeIcon, themeLabel, cycleTheme } = useTheme();
+const isTestEnvironment = computed(() => apiEnvironment.value === "test");
+const testEnvironmentAvailable = Boolean(apiConfig.testTicket);
 
 function handleReset() {
   const confirmed = window.confirm(
     "确定要重置进度吗？已解锁的档案与线索板排布都会被清空。",
   );
   if (confirmed) resetProgress();
+}
+
+function toggleApiEnvironment() {
+  setApiEnvironment(isTestEnvironment.value ? "production" : "test");
 }
 </script>
 
@@ -59,6 +71,22 @@ function handleReset() {
         {{ completedCount }}/{{ MAIN_FOLDERS.length }}
       </span>
       <span class="top-bar__stat">Tips 点 {{ state.tipPoints }}</span>
+      <button
+        class="bar-btn"
+        :class="{ 'is-active': isTestEnvironment }"
+        type="button"
+        role="switch"
+        :aria-checked="isTestEnvironment"
+        :disabled="!testEnvironmentAvailable"
+        :title="
+          testEnvironmentAvailable
+            ? `切换到${isTestEnvironment ? '正式' : '测试'}环境请求头`
+            : '未配置测试票据，无法启用测试环境'
+        "
+        @click="toggleApiEnvironment"
+      >
+        <span>{{ isTestEnvironment ? "测试环境" : "正式环境" }}</span>
+      </button>
       <button
         class="bar-btn"
         type="button"

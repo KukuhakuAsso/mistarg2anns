@@ -8,9 +8,11 @@ import { authApi } from "@/api/auth";
 
 const emit = defineEmits(["close"]);
 
-const { state, loginUser, logoutUser } = useGameState();
+const { state } = useGameState();
 const { loginWithPassword } = useAuth();
 const authMode = ref("login");
+const authSubmitting = ref(false);
+const logoutSubmitting = ref("");
 const healthStatus = ref({
   loading: true,
   ok: null,
@@ -40,18 +42,11 @@ let usernameCheckRequestId = 0;
 const authForm = ref({
   username: "",
   email: "",
-  loginType: "email",
   loginIdentifier: "",
   password: "",
   confirmPassword: "",
 });
 const authMessage = ref("");
-const loginTypeOptions = [
-  { value: "email", label: "邮箱" },
-  { value: "username", label: "用户名" },
-  { value: "player_no", label: "玩家编号" },
-];
-const loginTypeMenuOpen = ref(false);
 
 const currentUserEmail = computed(() => state.user.currentUser?.email || "");
 const currentUsernameDraft = ref("");
@@ -60,10 +55,11 @@ const usernameChangeState = ref({
   message: "",
   submitting: false,
 });
-const selectedLoginTypeLabel = computed(
-  () =>
-    loginTypeOptions.find((option) => option.value === authForm.value.loginType)
-      ?.label ?? "邮箱",
+const detectedLoginType = computed(() =>
+  authForm.value.loginIdentifier.includes("@") ? "email" : "username",
+);
+const detectedLoginTypeLabel = computed(() =>
+  detectedLoginType.value === "email" ? "邮箱" : "用户名",
 );
 
 function normalizeUsername(value) {
@@ -190,7 +186,7 @@ watch(
           usernameChecking.value = false;
         }
       }
-    }, 500);
+    }, 1000);
   },
 );
 
@@ -322,19 +318,6 @@ onMounted(async () => {
   }
 });
 
-onMounted(() => {
-  const handleClickOutside = (event) => {
-    const menuRoot = document.querySelector(".login-type-select");
-    if (!menuRoot || menuRoot.contains(event.target)) {
-      return;
-    }
-    closeLoginTypeMenu();
-  };
-
-  document.addEventListener("click", handleClickOutside);
-  window.__mistargLoginTypeClickHandler = handleClickOutside;
-});
-
 onBeforeUnmount(() => {
   if (usernameCheckTimer.value) {
     clearTimeout(usernameCheckTimer.value);
@@ -347,28 +330,23 @@ onBeforeUnmount(() => {
       // ignore unmount cleanup errors
     }
   }
-  if (window.__mistargLoginTypeClickHandler) {
-    document.removeEventListener(
-      "click",
-      window.__mistargLoginTypeClickHandler,
-    );
-    delete window.__mistargLoginTypeClickHandler;
-  }
   usernameCheckRequestId += 1;
 });
 
 function switchAuthMode(mode) {
+  if (authSubmitting.value) {
+    return;
+  }
+
   authMode.value = mode;
   authMessage.value = "";
   authForm.value = {
     username: "",
     email: "",
-    loginType: "email",
     loginIdentifier: "",
     password: "",
     confirmPassword: "",
   };
-  loginTypeMenuOpen.value = false;
   usernameStatus.value = "idle";
   usernameChecking.value = false;
   captchaResponse.value = "";
@@ -387,19 +365,6 @@ function switchAuthMode(mode) {
   }
 }
 
-function toggleLoginTypeMenu() {
-  loginTypeMenuOpen.value = !loginTypeMenuOpen.value;
-}
-
-function selectLoginType(type) {
-  authForm.value.loginType = type;
-  loginTypeMenuOpen.value = false;
-}
-
-function closeLoginTypeMenu() {
-  loginTypeMenuOpen.value = false;
-}
-
 function validateRegisterForm() {
   const username = String(authForm.value.username ?? "").trim();
   const nickname = String(authForm.value.nickname ?? "").trim();
@@ -407,8 +372,8 @@ function validateRegisterForm() {
   const password = String(authForm.value.password ?? "").trim();
   const confirmPassword = String(authForm.value.confirmPassword ?? "").trim();
 
-  if (!username || !email || !password) {
-    authMessage.value = "用户名、邮箱和密码不能为空。";
+  if (!username || !email) {
+    authMessage.value = "用户名和邮箱不能为空。";
     return null;
   }
 
@@ -424,19 +389,21 @@ function validateRegisterForm() {
     return null;
   }
 
-  if (password.length < 8) {
-    authMessage.value = "密码长度至少需要 8 位。";
-    return null;
-  }
+  if (password || confirmPassword) {
+    if (password.length < 8) {
+      authMessage.value = "密码长度至少需要 8 位。";
+      return null;
+    }
 
-  if (!confirmPassword) {
-    authMessage.value = "确认密码不能为空。";
-    return null;
-  }
+    if (!confirmPassword) {
+      authMessage.value = "请输入确认密码，或将密码留空。";
+      return null;
+    }
 
-  if (password !== confirmPassword) {
-    authMessage.value = "两次输入的密码不一致。";
-    return null;
+    if (password !== confirmPassword) {
+      authMessage.value = "两次输入的密码不一致。";
+      return null;
+    }
   }
 
   const captcha = registrationConfig.value.captcha;
@@ -471,6 +438,10 @@ function proceedToRegistrationVerification({
 }
 
 async function startRegisterVerification() {
+  if (authSubmitting.value) {
+    return;
+  }
+
   const validated = validateRegisterForm();
   if (!validated) {
     return;
@@ -484,6 +455,8 @@ async function startRegisterVerification() {
     return;
   }
 
+  authSubmitting.value = true;
+  authMessage.value = "正在发送验证码，请稍候...";
   try {
     const payload = {
       email,
@@ -514,22 +487,46 @@ async function startRegisterVerification() {
       error?.message ||
       "验证码发送失败，请稍后再试。";
     authMessage.value = serverMessage;
+  } finally {
+    authSubmitting.value = false;
   }
 }
 
 async function handleAuthSubmit() {
-  if (authMode.value === "register") {
-    startRegisterVerification();
+  if (authSubmitting.value) {
     return;
   }
 
-  const loginType = String(authForm.value.loginType ?? "email").trim();
+  if (authMode.value === "register") {
+    await startRegisterVerification();
+    return;
+  }
+
   const identifier = String(authForm.value.loginIdentifier ?? "").trim();
   const password = String(authForm.value.password ?? "").trim();
 
   if (!identifier) {
-    authMessage.value = "登录标识不能为空。";
+    authMessage.value = "请输入邮箱或用户名。";
     return;
+  }
+
+  if (/^M2\d{6}$/i.test(identifier)) {
+    authMessage.value = "不再支持玩家编号登录，请使用邮箱或用户名。";
+    return;
+  }
+
+  const loginType = detectedLoginType.value;
+  if (loginType === "email" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier)) {
+    authMessage.value = "请输入有效的邮箱地址。";
+    return;
+  }
+
+  if (loginType === "username") {
+    const usernameValidation = validateUsernamePattern(identifier);
+    if (!usernameValidation.ok) {
+      authMessage.value = usernameValidation.message;
+      return;
+    }
   }
 
   if (!password) {
@@ -537,6 +534,8 @@ async function handleAuthSubmit() {
     return;
   }
 
+  authSubmitting.value = true;
+  authMessage.value = "正在登录，请稍候...";
   try {
     const result = await loginWithPassword({
       type: loginType,
@@ -566,13 +565,14 @@ async function handleAuthSubmit() {
     authForm.value = {
       username: "",
       email: "",
-      loginType: "email",
       loginIdentifier: "",
       password: "",
       confirmPassword: "",
     };
   } catch (error) {
     authMessage.value = error?.message || "登录失败。";
+  } finally {
+    authSubmitting.value = false;
   }
 }
 
@@ -603,7 +603,7 @@ async function submitUsernameChange() {
   }
 
   usernameChangeState.value.submitting = true;
-  usernameChangeState.value.message = "正在校验用户名...";
+  usernameChangeState.value.message = "正在校验用户名，请稍候...";
 
   try {
     const availability = await authApi.usernameAvailable(nextUsername);
@@ -620,7 +620,7 @@ async function submitUsernameChange() {
       return;
     }
 
-    usernameChangeState.value.message = "正在更新用户名...";
+    usernameChangeState.value.message = "正在更新用户名，请稍候...";
 
     const response = await authApi.changeUsername({ username: nextUsername });
     const account = response?.data?.account ?? response?.account ?? null;
@@ -667,25 +667,27 @@ async function submitUsernameChange() {
   }
 }
 
-async function handleLogout() {
-  try {
-    await authApi.logout();
-    logoutUser();
-    authMessage.value = "已退出当前设备登录。";
-  } catch (error) {
-    logoutUser();
-    authMessage.value = "已退出当前设备登录。";
+async function handleLogout(allDevices = false) {
+  if (logoutSubmitting.value) {
+    return;
   }
-}
 
-async function handleLogoutAll() {
+  logoutSubmitting.value = allDevices ? "all" : "current";
+  authMessage.value = `正在${allDevices ? "退出全部设备登录" : "退出登录"}，请稍候...`;
   try {
-    await authApi.logoutAll();
-    logoutUser();
-    authMessage.value = "已退出全部设备登录。";
+    if (allDevices) {
+      await authApi.logoutAll();
+    } else {
+      await authApi.logout();
+    }
+    authMessage.value = allDevices
+      ? "已退出全部设备登录。"
+      : "已退出当前设备登录。";
   } catch (error) {
-    logoutUser();
-    authMessage.value = "已退出全部设备登录。";
+    authMessage.value = `退出请求失败：${error?.message || "请稍后重试"}。本地登录状态已清除。`;
+  } finally {
+    state.user.currentUser = null;
+    logoutSubmitting.value = "";
   }
 }
 </script>
@@ -729,17 +731,33 @@ async function handleLogoutAll() {
           >
             修改密码
           </button>
-          <button class="secondary-button" type="button" @click="handleLogout">
-            退出登录
+          <button
+            class="secondary-button"
+            type="button"
+            :disabled="Boolean(logoutSubmitting)"
+            @click="handleLogout()"
+          >
+            {{
+              logoutSubmitting === "current"
+                ? "退出中，请稍候..."
+                : "退出登录"
+            }}
           </button>
           <button
             class="secondary-button"
             type="button"
-            @click="handleLogoutAll"
+            :disabled="Boolean(logoutSubmitting)"
+            @click="handleLogout(true)"
           >
-            退出全部设备登录
+            {{
+              logoutSubmitting === "all"
+                ? "正在退出全部设备，请稍候..."
+                : "退出全部设备登录"
+            }}
           </button>
         </div>
+
+        <p v-if="authMessage" class="helper-text">{{ authMessage }}</p>
 
         <div v-if="usernameChangeState.open" class="username-change-form">
           <label class="field">
@@ -776,6 +794,7 @@ async function handleLogoutAll() {
             <button
               class="secondary-button"
               type="button"
+              :disabled="usernameChangeState.submitting"
               @click="resetUsernameEditor"
             >
               取消
@@ -786,7 +805,11 @@ async function handleLogoutAll() {
               :disabled="usernameChangeState.submitting"
               @click="submitUsernameChange"
             >
-              {{ usernameChangeState.submitting ? "保存中..." : "保存用户名" }}
+              {{
+                usernameChangeState.submitting
+                  ? "保存中，请稍候..."
+                  : "保存用户名"
+              }}
             </button>
           </div>
         </div>
@@ -814,6 +837,7 @@ async function handleLogoutAll() {
           <button
             :class="{ 'is-active': authMode === 'login' }"
             type="button"
+            :disabled="authSubmitting"
             @click="switchAuthMode('login')"
           >
             登录
@@ -821,6 +845,7 @@ async function handleLogoutAll() {
           <button
             :class="{ 'is-active': authMode === 'register' }"
             type="button"
+            :disabled="authSubmitting"
             @click="switchAuthMode('register')"
           >
             注册
@@ -830,58 +855,12 @@ async function handleLogoutAll() {
         <form class="auth-form" @submit.prevent="handleAuthSubmit">
           <template v-if="authMode === 'login'">
             <label>
-              <span>登录方式</span>
-              <div
-                class="login-type-select"
-                :class="{ 'is-open': loginTypeMenuOpen }"
-              >
-                <button
-                  type="button"
-                  class="login-type-trigger"
-                  @click.stop="toggleLoginTypeMenu"
-                  aria-haspopup="listbox"
-                  :aria-expanded="loginTypeMenuOpen"
-                >
-                  <span>{{ selectedLoginTypeLabel }}</span>
-                  <span class="login-type-caret" aria-hidden="true">▾</span>
-                </button>
-
-                <ul
-                  v-if="loginTypeMenuOpen"
-                  class="login-type-menu"
-                  role="listbox"
-                  aria-label="登录方式"
-                >
-                  <li
-                    v-for="option in loginTypeOptions"
-                    :key="option.value"
-                    :class="{
-                      'is-selected': authForm.loginType === option.value,
-                    }"
-                    role="option"
-                    :aria-selected="authForm.loginType === option.value"
-                    @click.stop="selectLoginType(option.value)"
-                  >
-                    {{ option.label }}
-                  </li>
-                </ul>
-              </div>
-            </label>
-
-            <label>
-              <span>
-                {{ selectedLoginTypeLabel }}
-              </span>
+              <span>{{ detectedLoginTypeLabel }}</span>
               <input
                 v-model="authForm.loginIdentifier"
                 type="text"
-                :placeholder="
-                  authForm.loginType === 'email'
-                    ? '请输入邮箱地址'
-                    : authForm.loginType === 'player_no'
-                      ? '请输入玩家编号，例如 M2000001'
-                      : '请输入用户名'
-                "
+                :placeholder="`请输入${detectedLoginTypeLabel}`"
+                autocomplete="username"
               />
             </label>
           </template>
@@ -898,7 +877,7 @@ async function handleLogoutAll() {
               class="username-status"
               :class="usernameStatus"
             >
-              <template v-if="usernameChecking">检查中...</template>
+              <template v-if="usernameChecking">检查中，请稍候...</template>
               <template v-else-if="usernameStatus === 'available'"
                 >用户名可用</template
               >
@@ -923,6 +902,28 @@ async function handleLogoutAll() {
             />
           </label>
 
+          <label>
+            <span>{{ authMode === "register" ? "密码（可选）" : "密码" }}</span>
+            <input
+              v-model="authForm.password"
+              type="password"
+              :placeholder="
+                authMode === 'register'
+                  ? '可不填写；如填写，至少 8 位'
+                  : '请输入密码'
+              "
+            />
+          </label>
+
+          <label v-if="authMode === 'register'">
+            <span>确认密码（可选）</span>
+            <input
+              v-model="authForm.confirmPassword"
+              type="password"
+              placeholder="填写密码时请再次输入"
+            />
+          </label>
+
           <div
             v-if="
               authMode === 'register' && registrationConfig.captcha?.enabled
@@ -939,27 +940,17 @@ async function handleLogoutAll() {
             >
           </div>
 
-          <label>
-            <span>密码</span>
-            <input
-              v-model="authForm.password"
-              type="password"
-              placeholder="请输入密码"
-            />
-          </label>
-
-          <label v-if="authMode === 'register'">
-            <span>确认密码</span>
-            <input
-              v-model="authForm.confirmPassword"
-              type="password"
-              placeholder="再次输入密码"
-            />
-          </label>
-
           <div class="auth-footer">
-            <button class="primary-button" type="submit">
-              {{ authMode === "register" ? "发送验证码" : "登录" }}
+            <button class="primary-button" type="submit" :disabled="authSubmitting">
+              {{
+                authSubmitting
+                  ? authMode === "register"
+                    ? "发送中，请稍候..."
+                    : "登录中，请稍候..."
+                  : authMode === "register"
+                    ? "发送验证码"
+                    : "登录"
+              }}
             </button>
             <button
               class="text-link-button"
@@ -1103,77 +1094,8 @@ async function handleLogoutAll() {
     background-color 0.2s ease;
 }
 
-.login-type-select {
-  position: relative;
-  width: 100%;
-}
-
-.login-type-trigger {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: rgba(8, 13, 20, 0.12);
-  color: var(--text);
-  font: inherit;
-  cursor: pointer;
-  transition:
-    border-color 0.2s ease,
-    box-shadow 0.2s ease,
-    background-color 0.2s ease;
-}
-
-.login-type-trigger:hover,
-.login-type-select.is-open .login-type-trigger {
-  border-color: var(--border-strong);
-  background: rgba(18, 24, 36, 0.14);
-}
-
-.login-type-caret {
-  color: var(--text-dim);
-  font-size: 12px;
-  transition: transform 0.2s ease;
-}
-
-.login-type-select.is-open .login-type-caret {
-  transform: rotate(180deg);
-}
-
-.login-type-menu {
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: calc(100% + 6px);
-  margin: 0;
-  padding: 8px;
-  list-style: none;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  box-shadow: 0 18px 30px rgba(0, 0, 0, 0.32);
-  z-index: 20;
-}
-
-.login-type-menu li {
-  padding: 10px 12px;
-  color: var(--text);
-  cursor: pointer;
-  transition:
-    background-color 0.15s ease,
-    color 0.15s ease;
-}
-
-.login-type-menu li:hover,
-.login-type-menu li.is-selected {
-  background: var(--surface);
-  color: var(--text);
-}
-
 .auth-form input:focus,
-.verification-field input:focus,
-.login-type-trigger:focus {
+.verification-field input:focus {
   outline: none;
   border-color: var(--border-strong);
   box-shadow: 0 0 0 3px rgba(110, 171, 255, 0.18);
