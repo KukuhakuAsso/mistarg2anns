@@ -1,4 +1,5 @@
 import request, { setAccessToken, clearAccessToken } from "@/api/request";
+import { getRegistrationHeaders } from "@/config/api";
 
 export const authApi = {
   getRegistrationConfig: () =>
@@ -13,7 +14,8 @@ export const authApi = {
       body: payload,
       skipRefresh: true,
     }).then((result) => {
-      const token = result?.data?.access_token || result?.access_token || result?.token;
+      const token =
+        result?.data?.access_token || result?.access_token || result?.token;
       if (token) {
         setAccessToken(token);
       }
@@ -38,6 +40,7 @@ export const authApi = {
     request("/auth/reg/start", {
       method: "POST",
       body: payload,
+      headers: getRegistrationHeaders(),
       skipRefresh: true,
     }),
 
@@ -47,7 +50,8 @@ export const authApi = {
       body: payload,
       skipRefresh: true,
     }).then((result) => {
-      const token = result?.data?.access_token || result?.access_token || result?.token;
+      const token =
+        result?.data?.access_token || result?.access_token || result?.token;
       if (token) {
         setAccessToken(token);
       }
@@ -87,7 +91,8 @@ export const authApi = {
       method: "POST",
       skipRefresh: true,
     }).then((result) => {
-      const token = result?.data?.access_token || result?.access_token || result?.token;
+      const token =
+        result?.data?.access_token || result?.access_token || result?.token;
       if (token) {
         setAccessToken(token);
       }
@@ -99,7 +104,11 @@ export const authApi = {
       const result = await authApi.refresh();
       const payload = result?.data ?? result ?? {};
       const account = payload.account ?? payload.user ?? null;
-      const token = payload?.access_token || payload?.data?.access_token || payload?.token || "";
+      const token =
+        payload?.access_token ||
+        payload?.data?.access_token ||
+        payload?.token ||
+        "";
 
       if (token) {
         setAccessToken(token);
