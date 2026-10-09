@@ -224,7 +224,9 @@ watch(
       return;
     }
 
-    const currentUsername = normalizeUsername(state.user.currentUser?.username || "");
+    const currentUsername = normalizeUsername(
+      state.user.currentUser?.username || "",
+    );
     if (username.toLowerCase() === currentUsername.toLowerCase()) {
       usernameChangeStatus.value = "unchanged";
       return;
@@ -241,7 +243,8 @@ watch(
         }
 
         const status = response?.data?.status || response?.status;
-        usernameChangeStatus.value = status === "available" || status === "taken" ? status : "idle";
+        usernameChangeStatus.value =
+          status === "available" || status === "taken" ? status : "idle";
       } catch (error) {
         if (requestId === usernameChangeRequestId) {
           usernameChangeStatus.value = "idle";
@@ -361,6 +364,9 @@ function renderTurnstileWidget() {
 }
 
 onMounted(async () => {
+  captchaResponse.value = "";
+  window.__captchaResponse = "";
+
   try {
     await probeHealth();
     healthStatus.value = {
@@ -399,6 +405,9 @@ onBeforeUnmount(() => {
       // ignore unmount cleanup errors
     }
   }
+  turnstileWidgetId.value = null;
+  captchaResponse.value = "";
+  window.__captchaResponse = "";
   usernameCheckRequestId += 1;
 });
 
@@ -419,6 +428,7 @@ function switchAuthMode(mode) {
   usernameStatus.value = "idle";
   usernameChecking.value = false;
   captchaResponse.value = "";
+  window.__captchaResponse = "";
   if (turnstileWidgetId.value !== null && window.turnstile?.remove) {
     try {
       window.turnstile.remove(turnstileWidgetId.value);
@@ -481,13 +491,12 @@ function validateRegisterForm() {
     return null;
   }
 
-  return { username, nickname: username, email, password };
+  return { username, nickname: username, email, password, confirmPassword };
 }
 
 function proceedToRegistrationVerification({
   username,
   email,
-  password,
   sentEmail = email,
   generatedCode = "",
 }) {
@@ -497,7 +506,6 @@ function proceedToRegistrationVerification({
     username,
     nickname: username,
     email,
-    password,
   };
   state.user.auth.pendingLogin = null;
   state.user.auth.generatedCode = generatedCode;
@@ -516,7 +524,7 @@ async function startRegisterVerification() {
     return;
   }
 
-  const { username, email, password } = validated;
+  const { username, email, password, confirmPassword } = validated;
 
   const captcha = registrationConfig.value.captcha;
   if (captcha?.enabled && captcha?.ready && !captchaResponse.value) {
@@ -530,6 +538,7 @@ async function startRegisterVerification() {
     const payload = {
       email,
       username,
+      password,
       captcha: captcha?.enabled
         ? { response: captchaResponse.value }
         : undefined,
@@ -540,13 +549,12 @@ async function startRegisterVerification() {
     proceedToRegistrationVerification({
       username,
       email,
-      password,
       sentEmail: response?.data?.email || email,
       generatedCode: response?.data?.code || "",
     });
   } catch (error) {
     if (error?.status === 429) {
-      proceedToRegistrationVerification({ username, email, password });
+      proceedToRegistrationVerification({ username, email });
       return;
     }
 
@@ -842,11 +850,21 @@ async function handleLogout(allDevices = false) {
               class="username-status"
               :class="usernameChangeStatus"
             >
-              <template v-if="usernameChangeChecking">检查中，请稍候...</template>
-              <template v-else-if="usernameChangeStatus === 'available'">用户名可用</template>
-              <template v-else-if="usernameChangeStatus === 'taken'">用户名已被占用</template>
-              <template v-else-if="usernameChangeStatus === 'unchanged'">这是当前账号用户名</template>
-              <template v-else-if="usernameChangeStatus === 'invalid'">用户名格式不符合规则</template>
+              <template v-if="usernameChangeChecking"
+                >检查中，请稍候...</template
+              >
+              <template v-else-if="usernameChangeStatus === 'available'"
+                >用户名可用</template
+              >
+              <template v-else-if="usernameChangeStatus === 'taken'"
+                >用户名已被占用</template
+              >
+              <template v-else-if="usernameChangeStatus === 'unchanged'"
+                >这是当前账号用户名</template
+              >
+              <template v-else-if="usernameChangeStatus === 'invalid'"
+                >用户名格式不符合规则</template
+              >
             </small>
           </label>
 

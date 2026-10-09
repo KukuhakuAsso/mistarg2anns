@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useGameState } from "@/composables/useGameState";
 import { router } from "@/router";
 import { authApi } from "@/api/auth";
@@ -10,8 +10,34 @@ const verificationMessage = ref("");
 const resending = ref(false);
 const verifying = ref(false);
 const requestPending = computed(() => resending.value || verifying.value);
+const resendCaptchaConfig = ref({
+  code_length: 6,
+  code_ttl_minutes: 10,
+  resend_cooldown_sec: 60,
+  captcha: {
+    enabled: false,
+    ready: false,
+    script: "",
+    widget: null,
+  },
+});
+const resendCaptchaConfigLoaded = ref(false);
+const showResendCaptcha = ref(false);
+const resendCaptchaContainer = ref(null);
+const resendCaptchaWidgetId = ref(null);
+const resendCaptchaResponse = ref("");
+const resendCooldownRemaining = ref(0);
+let resendCooldownTimer = null;
 
 const verificationMode = computed(() => state.user.auth.verificationMode || "login");
+const verificationCodeLength = computed(() => {
+  const codeLength = Number(resendCaptchaConfig.value.code_length);
+  return Number.isInteger(codeLength) && codeLength > 0 ? codeLength : 6;
+});
+const verificationCodeTtlMinutes = computed(() => {
+  const ttlMinutes = Number(resendCaptchaConfig.value.code_ttl_minutes);
+  return Number.isFinite(ttlMinutes) && ttlMinutes > 0 ? ttlMinutes : 10;
+});
 const verificationTarget = computed(() => {
   if (verificationMode.value === "register") {
     return state.user.auth.pendingRegister?.email || "邮箱";
@@ -42,8 +68,19 @@ function enforceVerificationGuard() {
   return true;
 }
 
-onMounted(() => {
-  enforceVerificationGuard();
+onMounted(async () => {
+  if (!enforceVerificationGuard()) {
+    return;
+  }
+
+  if (verificationMode.value === "register" && await loadResendCaptchaConfig()) {
+    startResendCooldown();
+  }
+});
+
+onBeforeUnmount(() => {
+  resetResendCaptcha();
+  clearResendCooldown();
 });
 
 watch(
@@ -61,8 +98,178 @@ watch(
   { deep: true },
 );
 
+function loadTurnstileScript(scriptUrl) {
+  if (!scriptUrl) {
+    return Promise.resolve();
+  }
+
+  const existingScript = document.querySelector(
+    `script[data-turnstile-script="${scriptUrl}"]`,
+  );
+  if (existingScript) {
+    if (window.turnstile) {
+      return Promise.resolve();
+    }
+
+    return new Promise((resolve, reject) => {
+      existingScript.addEventListener("load", () => resolve(), { once: true });
+      existingScript.addEventListener(
+        "error",
+        () => reject(new Error("Turnstile script failed to load.")),
+        { once: true },
+      );
+    });
+  }
+
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = scriptUrl;
+    script.async = true;
+    script.defer = true;
+    script.setAttribute("data-turnstile-script", scriptUrl);
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error("Turnstile script failed to load."));
+    document.head.appendChild(script);
+  });
+}
+
+async function loadResendCaptchaConfig() {
+  if (resendCaptchaConfigLoaded.value) {
+    return true;
+  }
+
+  try {
+    const payload = await authApi.getRegistrationConfig();
+    resendCaptchaConfig.value = {
+      ...resendCaptchaConfig.value,
+      ...(payload?.data || payload || {}),
+    };
+    resendCaptchaConfigLoaded.value = true;
+    return true;
+  } catch (error) {
+    verificationMessage.value = "注册验证配置暂不可用，请稍后再试。";
+    return false;
+  }
+}
+
+function clearResendCooldown() {
+  if (resendCooldownTimer !== null) {
+    clearInterval(resendCooldownTimer);
+    resendCooldownTimer = null;
+  }
+  resendCooldownRemaining.value = 0;
+}
+
+function startResendCooldown() {
+  clearResendCooldown();
+  const cooldownSeconds = Math.max(
+    0,
+    Math.floor(Number(resendCaptchaConfig.value.resend_cooldown_sec) || 0),
+  );
+
+  if (!cooldownSeconds) {
+    return;
+  }
+
+  resendCooldownRemaining.value = cooldownSeconds;
+  resendCooldownTimer = window.setInterval(() => {
+    resendCooldownRemaining.value -= 1;
+    if (resendCooldownRemaining.value <= 0) {
+      clearResendCooldown();
+    }
+  }, 1000);
+}
+
+function resetResendCaptcha() {
+  resendCaptchaResponse.value = "";
+  if (resendCaptchaWidgetId.value !== null && window.turnstile?.remove) {
+    try {
+      window.turnstile.remove(resendCaptchaWidgetId.value);
+    } catch (error) {
+      // ignore removal errors when the widget has already been unmounted
+    }
+  }
+  resendCaptchaWidgetId.value = null;
+  showResendCaptcha.value = false;
+}
+
+function renderResendCaptcha() {
+  const captcha = resendCaptchaConfig.value.captcha;
+  const widget = captcha?.widget;
+  const params = widget?.params || {};
+  const siteKey = params.site_key || captcha?.site_key;
+
+  if (
+    !captcha?.enabled ||
+    !captcha?.ready ||
+    !widget ||
+    !resendCaptchaContainer.value ||
+    !window.turnstile ||
+    !siteKey
+  ) {
+    return;
+  }
+
+  if (resendCaptchaWidgetId.value !== null && window.turnstile?.remove) {
+    try {
+      window.turnstile.remove(resendCaptchaWidgetId.value);
+    } catch (error) {
+      // ignore removal errors and render a new challenge
+    }
+  }
+
+  resendCaptchaWidgetId.value = window.turnstile.render(resendCaptchaContainer.value, {
+    sitekey: siteKey,
+    ...(params && typeof params === "object" ? params : {}),
+    callback: (response) => {
+      resendCaptchaResponse.value = response || "";
+    },
+    "expired-callback": () => {
+      resendCaptchaResponse.value = "";
+    },
+    "error-callback": () => {
+      resendCaptchaResponse.value = "";
+    },
+  });
+}
+
+async function openResendCaptchaChallenge() {
+  const configLoaded = await loadResendCaptchaConfig();
+  if (!configLoaded) {
+    return false;
+  }
+
+  const captcha = resendCaptchaConfig.value.captcha;
+  if (!captcha?.enabled) {
+    return true;
+  }
+
+  if (!captcha.ready || !captcha.widget || !captcha.script) {
+    verificationMessage.value = "人机验证暂不可用，请稍后再试。";
+    return false;
+  }
+
+  resetResendCaptcha();
+  showResendCaptcha.value = true;
+  await nextTick();
+
+  try {
+    await loadTurnstileScript(captcha.script);
+    renderResendCaptcha();
+    return true;
+  } catch (error) {
+    resetResendCaptcha();
+    verificationMessage.value = "人机验证加载失败，请稍后再试。";
+    return false;
+  }
+}
+
 async function resendVerificationCode() {
   if (requestPending.value) {
+    return;
+  }
+
+  if (resendCooldownRemaining.value > 0) {
     return;
   }
 
@@ -77,6 +284,20 @@ async function resendVerificationCode() {
     return;
   }
 
+  const configLoaded = await loadResendCaptchaConfig();
+  if (!configLoaded) {
+    return;
+  }
+
+  const captcha = resendCaptchaConfig.value.captcha;
+  if (captcha?.enabled && !resendCaptchaResponse.value) {
+    const challengeOpened = await openResendCaptchaChallenge();
+    if (challengeOpened && captcha.ready) {
+      verificationMessage.value = "请完成人机验证后再次点击重新发送。";
+    }
+    return;
+  }
+
   resending.value = true;
   verificationMessage.value = "正在重新发送验证码，请稍候...";
   try {
@@ -84,15 +305,17 @@ async function resendVerificationCode() {
       email: pendingRegister.email,
       username: pendingRegister.username,
       ...(import.meta.env.VITE_DEV_TICKET ? { dev_ticket: import.meta.env.VITE_DEV_TICKET } : {}),
-      ...(window.__captchaResponse ? { captcha: { response: window.__captchaResponse } } : {}),
+      ...(captcha?.enabled ? { captcha: { response: resendCaptchaResponse.value } } : {}),
     };
 
     await authApi.sendVerificationCode(payload);
     verificationMessage.value = `验证码已重新发送至 ${pendingRegister.email}。`;
+    startResendCooldown();
   } catch (error) {
     verificationMessage.value = error?.payload?.error?.message || error?.payload?.message || error?.message || "验证码重发失败。";
   } finally {
     resending.value = false;
+    resetResendCaptcha();
   }
 }
 
@@ -116,6 +339,11 @@ async function completeVerification() {
 
   if (!enteredCode) {
     verificationMessage.value = "验证码不能为空。";
+    return;
+  }
+
+  if (verificationMode.value === "register" && enteredCode.length !== verificationCodeLength.value) {
+    verificationMessage.value = `请输入 ${verificationCodeLength.value} 位验证码。`;
     return;
   }
 
@@ -191,20 +419,39 @@ async function completeVerification() {
         <p class="verification-help">
           验证码已发送到 <strong>{{ verificationTarget }}</strong>
         </p>
+        <p v-if="verificationMode === 'register'" class="verification-help">
+          验证码有效期为 {{ verificationCodeTtlMinutes }} 分钟。
+        </p>
 
         <label class="verification-field">
           <span>验证码</span>
-          <input v-model="verificationCode" type="text" maxlength="6" placeholder="请输入 6 位验证码" />
+          <input
+            v-model="verificationCode"
+            type="text"
+            :maxlength="verificationCodeLength"
+            :placeholder="`请输入 ${verificationCodeLength} 位验证码`"
+          />
         </label>
+
+        <div v-if="showResendCaptcha" class="captcha-box">
+          <span>人机验证</span>
+          <div ref="resendCaptchaContainer" class="turnstile-wrap"></div>
+        </div>
 
         <div class="verification-actions">
           <button
             class="secondary-button"
             type="button"
-            :disabled="requestPending"
+            :disabled="requestPending || resendCooldownRemaining > 0"
             @click="resendVerificationCode"
           >
-            {{ resending ? "发送中，请稍候..." : "重新发送" }}
+            {{
+              resending
+                ? "发送中，请稍候..."
+                : resendCooldownRemaining > 0
+                  ? `${resendCooldownRemaining} 秒后可重发`
+                  : "重新发送"
+            }}
           </button>
           <button
             class="primary-button"
@@ -325,6 +572,18 @@ async function completeVerification() {
   background: rgba(8, 13, 20, 0.12);
   color: var(--text);
   box-sizing: border-box;
+}
+
+.captcha-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.turnstile-wrap {
+  min-height: 60px;
 }
 
 .verification-actions {

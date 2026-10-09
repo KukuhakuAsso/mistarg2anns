@@ -32,6 +32,9 @@ async function restoreSessionFromCookie() {
   }
 }
 
-const app = createApp(App);
-app.mount("#app");
-restoreSessionFromCookie();
+async function startApplication() {
+  await restoreSessionFromCookie();
+  createApp(App).mount("#app");
+}
+
+startApplication();

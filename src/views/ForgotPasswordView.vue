@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { authApi } from "@/api/auth";
 import { useGameState } from "@/composables/useGameState";
 import { router } from "@/router";
@@ -20,6 +20,8 @@ const submitting = ref(false);
 const message = ref("");
 const messageType = ref("info");
 const registrationConfig = ref({
+  code_ttl_minutes: 10,
+  resend_cooldown_sec: 60,
   captcha: {
     enabled: false,
     ready: false,
@@ -33,8 +35,14 @@ const registrationConfig = ref({
 });
 const captchaContainer = ref(null);
 const turnstileWidgetId = ref(null);
+const resendCooldownRemaining = ref(0);
+let resendCooldownTimer = null;
 
 const isLoggedIn = computed(() => Boolean(state.user.currentUser));
+const resetTokenTtlMinutes = computed(() => {
+  const ttlMinutes = Number(registrationConfig.value.code_ttl_minutes);
+  return Number.isFinite(ttlMinutes) && ttlMinutes > 0 ? ttlMinutes : 10;
+});
 
 function resetMessage(type = "info", text = "") {
   messageType.value = type;
@@ -158,7 +166,36 @@ onBeforeUnmount(() => {
     }
   }
   turnstileWidgetId.value = null;
+  clearResendCooldown();
 });
+
+function clearResendCooldown() {
+  if (resendCooldownTimer !== null) {
+    clearInterval(resendCooldownTimer);
+    resendCooldownTimer = null;
+  }
+  resendCooldownRemaining.value = 0;
+}
+
+function startResendCooldown() {
+  clearResendCooldown();
+  const cooldownSeconds = Math.max(
+    0,
+    Math.floor(Number(registrationConfig.value.resend_cooldown_sec) || 0),
+  );
+
+  if (!cooldownSeconds) {
+    return;
+  }
+
+  resendCooldownRemaining.value = cooldownSeconds;
+  resendCooldownTimer = window.setInterval(() => {
+    resendCooldownRemaining.value -= 1;
+    if (resendCooldownRemaining.value <= 0) {
+      clearResendCooldown();
+    }
+  }, 1000);
+}
 
 function validateRequestForm() {
   const identifier = String(form.value.identifier ?? "").trim();
@@ -205,6 +242,10 @@ function validateResetForm() {
 }
 
 async function submitForgotRequest() {
+  if (resendCooldownRemaining.value > 0) {
+    return;
+  }
+
   const validationError = validateRequestForm();
   if (validationError) {
     resetMessage("error", validationError);
@@ -228,6 +269,7 @@ async function submitForgotRequest() {
       "success",
       "若该账号存在，我们已发送重置邮件。请在下一步中填写邮件中的令牌并设置新密码。",
     );
+    startResendCooldown();
     step.value = "reset";
   } catch (error) {
     const payload = error?.payload ?? {};
@@ -296,9 +338,21 @@ function goBackToLogin() {
   router.goToRoute("/register");
 }
 
-function goBackToRequest() {
+async function goBackToRequest() {
+  form.value.captchaResponse = "";
+  if (turnstileWidgetId.value !== null && window.turnstile?.remove) {
+    try {
+      window.turnstile.remove(turnstileWidgetId.value);
+    } catch (error) {
+      // ignore removal errors when the previous step has already unmounted the widget
+    }
+  }
+  turnstileWidgetId.value = null;
+
   step.value = "request";
   resetMessage("info", "可以重新填写邮箱并发送重置邮件。");
+  await nextTick();
+  renderTurnstileWidget();
 }
 </script>
 
@@ -349,10 +403,16 @@ function goBackToRequest() {
           <button
             class="primary-button"
             type="button"
-            :disabled="submitting"
+            :disabled="submitting || resendCooldownRemaining > 0"
             @click="submitForgotRequest"
           >
-            {{ submitting ? "发送中，请稍候..." : "发送重置邮件" }}
+            {{
+              submitting
+                ? "发送中，请稍候..."
+                : resendCooldownRemaining > 0
+                  ? `${resendCooldownRemaining} 秒后可重发`
+                  : "发送重置邮件"
+            }}
           </button>
         </div>
 
@@ -365,6 +425,10 @@ function goBackToRequest() {
               placeholder="请输入邮件中的 token"
             />
           </label>
+
+          <p class="reset-help">
+            重置令牌有效期为 {{ resetTokenTtlMinutes }} 分钟。
+          </p>
 
           <label class="field">
             <span>新密码</span>
@@ -397,9 +461,14 @@ function goBackToRequest() {
             <button
               class="secondary-button"
               type="button"
+              :disabled="submitting || resendCooldownRemaining > 0"
               @click="goBackToRequest"
             >
-              重新发送
+              {{
+                resendCooldownRemaining > 0
+                  ? `${resendCooldownRemaining} 秒后可重发`
+                  : "重新发送"
+              }}
             </button>
             <button
               class="primary-button"
