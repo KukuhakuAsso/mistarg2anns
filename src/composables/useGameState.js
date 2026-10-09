@@ -9,6 +9,7 @@ import {
   MAIN_FOLDERS,
 } from "@/config/folders";
 import { CARD_GAP, CARD_H, CARD_W } from "@/config/board";
+import { authApi } from "@/api/auth";
 import { router } from "@/router";
 
 const STORAGE_KEY = "mistarg2anns:state:v1";
@@ -24,14 +25,7 @@ function createDefaultState() {
     board: [],
     user: {
       currentUser: null,
-      users: [
-        {
-          username: "demo",
-          password: "demo123",
-          nickname: "档案员A",
-          email: "demo@example.com",
-        },
-      ],
+      users: [],
       auth: {
         loginFailureCount: 0,
         verificationRequired: false,
@@ -41,22 +35,11 @@ function createDefaultState() {
         pendingLogin: null,
       },
       team: {
-        joined: true,
-        name: "星图调查组",
-        code: "ST-01",
-        members: [
-          { username: "demo", nickname: "档案员A", role: "队长" },
-          { username: "alice", nickname: "Alice", role: "成员" },
-        ],
-        applications: [
-          {
-            id: "app-1",
-            username: "bob",
-            nickname: "Bob",
-            message: "我希望参与档案整理和联络工作。",
-            status: "pending",
-          },
-        ],
+        joined: false,
+        name: "",
+        code: "",
+        members: [],
+        applications: [],
       },
     },
     ui: {
@@ -108,28 +91,6 @@ function loadState() {
       board: Array.isArray(saved.board) ? saved.board.filter(isPlacement) : [],
       user: {
         ...fallback.user,
-        ...(saved.user ?? {}),
-        auth: {
-          ...fallback.user.auth,
-          ...(saved.user?.auth ?? {}),
-          pendingRegister: saved.user?.auth?.pendingRegister ?? null,
-          pendingLogin: saved.user?.auth?.pendingLogin ?? null,
-        },
-        team: {
-          ...fallback.user.team,
-          ...(saved.user?.team ?? {}),
-          joined: Boolean(saved.user?.team?.joined ?? fallback.user.team.joined),
-          members: Array.isArray(saved.user?.team?.members)
-            ? saved.user.team.members
-            : fallback.user.team.members,
-          applications: Array.isArray(saved.user?.team?.applications)
-            ? saved.user.team.applications
-            : fallback.user.team.applications,
-        },
-        users: Array.isArray(saved.user?.users)
-          ? saved.user.users
-          : fallback.user.users,
-        currentUser: saved.user?.currentUser ?? fallback.user.currentUser,
       },
       ui: { ...fallback.ui, ...(saved.ui ?? {}) },
     };
@@ -145,7 +106,18 @@ watch(
   state,
   (value) => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(value));
+      const persistedState = {
+        completedFolders: value.completedFolders,
+        visitedFolders: value.visitedFolders,
+        discoveredClues: value.discoveredClues,
+        tipPoints: value.tipPoints,
+        unreadMessages: value.unreadMessages,
+        unlockedTips: value.unlockedTips,
+        board: value.board,
+        ui: value.ui,
+      };
+
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(persistedState));
     } catch (error) {
       console.warn("[mistarg2anns] 保存本地进度失败", error);
     }
@@ -315,154 +287,13 @@ function resetAuthVerificationState() {
   };
 }
 
-function registerUser({ username, nickname, password, email }) {
-  const trimmedUsername = String(username ?? "").trim();
-  const trimmedNickname = String(nickname ?? "").trim();
-  const trimmedPassword = String(password ?? "").trim();
-  const trimmedEmail = String(email ?? "").trim();
-
-  if (!trimmedUsername || !trimmedPassword || !trimmedEmail) {
-    return { ok: false, message: "用户名、邮箱和密码不能为空。" };
+async function logoutUser() {
+  try {
+    await authApi.logout();
+  } catch (error) {
+    // cookie / server session may already be expired; still clear local app state.
   }
 
-  const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  if (!emailPattern.test(trimmedEmail)) {
-    return { ok: false, message: "请输入有效的邮箱地址。" };
-  }
-
-  const exists = state.user.users.some(
-    (user) =>
-      user.username.toLowerCase() === trimmedUsername.toLowerCase() ||
-      String(user.email ?? "").toLowerCase() === trimmedEmail.toLowerCase(),
-  );
-
-  if (exists) {
-    return { ok: false, message: "该用户名或邮箱已存在。" };
-  }
-
-  state.user.users.push({
-    username: trimmedUsername,
-    password: trimmedPassword,
-    nickname: trimmedNickname || trimmedUsername,
-    email: trimmedEmail,
-  });
-
-  state.user.currentUser = {
-    username: trimmedUsername,
-    nickname: trimmedNickname || trimmedUsername,
-    email: trimmedEmail,
-  };
-
-  resetAuthVerificationState();
-
-  return { ok: true, message: "注册成功。" };
-}
-
-function loginUser({ username, password }) {
-  const trimmedUsername = String(username ?? "").trim();
-  const trimmedPassword = String(password ?? "").trim();
-
-  if (!trimmedUsername || !trimmedPassword) {
-    return { ok: false, message: "用户名/邮箱和密码不能为空。" };
-  }
-
-  const match = state.user.users.find(
-    (user) =>
-      (user.username.toLowerCase() === trimmedUsername.toLowerCase() ||
-        String(user.email ?? "").toLowerCase() === trimmedUsername.toLowerCase()) &&
-      user.password === trimmedPassword,
-  );
-
-  if (!match) {
-    state.user.auth.loginFailureCount += 1;
-    return { ok: false, message: "用户名/邮箱或密码错误。" };
-  }
-
-  if (state.user.auth.loginFailureCount >= 3) {
-    state.user.auth.verificationRequired = true;
-    state.user.auth.verificationMode = "login";
-    state.user.auth.generatedCode = createVerificationCode();
-    state.user.auth.pendingLogin = {
-      username: match.username,
-      password: trimmedPassword,
-    };
-    state.user.auth.pendingRegister = null;
-
-    if (typeof window !== "undefined") {
-      router.goToRoute("/verification");
-    }
-
-    return {
-      ok: false,
-      message: `密码正确，请完成验证码验证。验证码：${state.user.auth.generatedCode}（演示环境）`,
-      requiresVerification: true,
-    };
-  }
-
-  state.user.currentUser = {
-    username: match.username,
-    nickname: match.nickname,
-    email: match.email ?? "",
-  };
-  state.user.auth.loginFailureCount = 0;
-  state.user.auth.verificationRequired = false;
-  state.user.auth.verificationMode = "login";
-  state.user.auth.pendingLogin = null;
-  state.user.auth.pendingRegister = null;
-  state.user.auth.generatedCode = "";
-
-  return { ok: true, message: "登录成功。" };
-}
-
-function completeLoginAfterVerification(username, password) {
-  const trimmedUsername = String(username ?? "").trim();
-  const trimmedPassword = String(password ?? "").trim();
-
-  if (!state.user.auth.verificationRequired || !state.user.auth.pendingLogin) {
-    return { ok: false, message: "当前没有待验证的登录请求。" };
-  }
-
-  const pendingUsername = String(state.user.auth.pendingLogin.username ?? "").trim();
-  const pendingPassword = String(state.user.auth.pendingLogin.password ?? "").trim();
-
-  if (
-    trimmedUsername.toLowerCase() !== pendingUsername.toLowerCase() ||
-    trimmedPassword !== pendingPassword
-  ) {
-    return { ok: false, message: "待验证登录信息与当前账号不一致。" };
-  }
-
-  const match = state.user.users.find(
-    (user) =>
-      user.username.toLowerCase() === pendingUsername.toLowerCase() ||
-      String(user.email ?? "").toLowerCase() === pendingUsername.toLowerCase(),
-  );
-
-  if (!match || match.password !== pendingPassword) {
-    return { ok: false, message: "验证信息无效，请重新登录。" };
-  }
-
-  state.user.currentUser = {
-    username: match.username,
-    nickname: match.nickname,
-    email: match.email ?? "",
-  };
-
-  state.user.auth.loginFailureCount = 0;
-  state.user.auth.verificationRequired = false;
-  state.user.auth.verificationMode = "login";
-  state.user.auth.pendingLogin = null;
-  state.user.auth.pendingRegister = null;
-  state.user.auth.generatedCode = "";
-
-  if (typeof window !== "undefined") {
-    router.goToRoute("/register");
-  }
-
-  return { ok: true, message: "登录成功。" };
-}
-
-function logoutUser() {
   state.user.currentUser = null;
   return { ok: true };
 }
@@ -633,9 +464,6 @@ export function useGameState() {
     addClueToBoard,
     toggleCluePanel,
     resetProgress,
-    registerUser,
-    loginUser,
-    completeLoginAfterVerification,
     logoutUser,
     createTeam,
     joinTeam,

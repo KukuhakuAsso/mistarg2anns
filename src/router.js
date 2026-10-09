@@ -60,6 +60,14 @@ function resolveRoute(path) {
     return { name: "verification", path: "/verification", params: {} };
   }
 
+  if (normalized === "/password") {
+    return { name: "password", path: "/password", params: {} };
+  }
+
+  if (normalized === "/forgot") {
+    return { name: "forgot", path: "/forgot", params: {} };
+  }
+
   const folderMatch = normalized.match(/^\/folder\/([^/]+)$/);
   if (folderMatch) {
     return {

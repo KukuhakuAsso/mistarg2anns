@@ -1,6 +1,6 @@
 <script setup>
 // 伪桌面布局：顶部设置栏 + 主界面（档案） + 右侧线索栏。
-import { computed } from "vue";
+import { computed, watch } from "vue";
 import TopBar from "@/components/TopBar.vue";
 import ClueBoard from "@/components/ClueBoard.vue";
 import DragGhost from "@/components/DragGhost.vue";
@@ -15,10 +15,25 @@ import CommunicationView from "@/views/CommunicationView.vue";
 import ToolsView from "@/views/ToolsView.vue";
 import TimelineView from "@/views/TimelineView.vue";
 import VerificationView from "@/views/VerificationView.vue";
+import ChangePasswordView from "@/views/ChangePasswordView.vue";
+import ForgotPasswordView from "@/views/ForgotPasswordView.vue";
 import { FOLDER_BY_ID } from "@/config/folders";
 import { router } from "@/router";
+import { useGameState } from "@/composables/useGameState";
 
+const { state } = useGameState();
 const currentRoute = computed(() => router.currentRoute);
+
+watch(
+    () => [currentRoute.value.name, state.user.currentUser],
+    ([routeName, currentUser]) => {
+        const allowedPublicRoutes = new Set(["desktop", "register", "verification", "forgot"]);
+        if (!currentUser && !allowedPublicRoutes.has(routeName)) {
+            router.goToRoute("/register");
+        }
+    },
+    { immediate: true },
+);
 
 const activeFolder = computed(() =>
     currentRoute.value.name === "folder"
@@ -37,7 +52,9 @@ const activeFeature = computed(() => {
         routeName === "communication" ||
         routeName === "tools" ||
         routeName === "timeline" ||
-        routeName === "verification"
+        routeName === "verification" ||
+        routeName === "password" ||
+        routeName === "forgot"
     ) {
         return routeName;
     }
@@ -62,6 +79,8 @@ function openFeature(featureName) {
         communication: "/communication",
         tools: "/tools",
         timeline: "/timeline",
+        password: "/password",
+        forgot: "/forgot",
     };
 
     if (routeMap[featureName]) {
@@ -123,6 +142,14 @@ function backToDesktop() {
                 />
                 <VerificationView
                     v-else-if="activeFeature === 'verification'"
+                    @close="backToDesktop"
+                />
+                <ChangePasswordView
+                    v-else-if="activeFeature === 'password'"
+                    @close="backToDesktop"
+                />
+                <ForgotPasswordView
+                    v-else-if="activeFeature === 'forgot'"
                     @close="backToDesktop"
                 />
                 <DesktopView v-else @open="openFolder" @open-page="openFeature" />

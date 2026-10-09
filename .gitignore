@@ -3,3 +3,4 @@ node_modules/
 output/
 .env.local
 .env.*.local
+scripts/reset-test-db.local.mjs
