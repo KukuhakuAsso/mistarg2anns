@@ -711,7 +711,10 @@ async function handleLogout(allDevices = false) {
     </header>
 
     <div class="page-shell__body">
-      <div v-if="state.user.currentUser" class="panel-card panel-card--wide">
+      <div
+        v-if="state.user.currentUser"
+        class="panel-card panel-card--wide account-panel"
+      >
         <p class="panel-card__label">当前账户</p>
         <h2>{{ state.user.currentUser.nickname }}</h2>
         <p>@{{ state.user.currentUser.username }}</p>
@@ -738,9 +741,7 @@ async function handleLogout(allDevices = false) {
             @click="handleLogout()"
           >
             {{
-              logoutSubmitting === "current"
-                ? "退出中，请稍候..."
-                : "退出登录"
+              logoutSubmitting === "current" ? "退出中，请稍候..." : "退出登录"
             }}
           </button>
           <button
@@ -941,7 +942,11 @@ async function handleLogout(allDevices = false) {
           </div>
 
           <div class="auth-footer">
-            <button class="primary-button" type="submit" :disabled="authSubmitting">
+            <button
+              class="primary-button"
+              type="submit"
+              :disabled="authSubmitting"
+            >
               {{
                 authSubmitting
                   ? authMode === "register"
@@ -1019,6 +1024,42 @@ async function handleLogout(allDevices = false) {
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+.account-panel {
+  animation: account-panel-in 0.28s ease both;
+}
+
+.account-panel > * {
+  animation: account-content-in 0.3s ease both;
+}
+
+.account-panel > :nth-child(1) {
+  animation-delay: 0.05s;
+}
+
+.account-panel > :nth-child(2) {
+  animation-delay: 0.09s;
+}
+
+.account-panel > :nth-child(3) {
+  animation-delay: 0.13s;
+}
+
+.account-panel > :nth-child(4) {
+  animation-delay: 0.17s;
+}
+
+.account-panel > :nth-child(5) {
+  animation-delay: 0.21s;
+}
+
+.account-panel > :nth-child(n + 6) {
+  animation-delay: 0.25s;
+}
+
+.account-panel > .username-change-form {
+  animation-delay: 0.05s;
 }
 
 .panel-card__label {
@@ -1260,5 +1301,29 @@ async function handleLogout(allDevices = false) {
 .username-status.unchanged,
 .username-status.checking {
   color: #ffd166;
+}
+
+@keyframes account-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes account-content-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 </style>
