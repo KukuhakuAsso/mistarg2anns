@@ -150,7 +150,10 @@ function closeView() {
               />
             </label>
 
-            <div v-if="message" :class="['status-box', `status-box--${messageType}`]">
+            <div
+              v-if="message"
+              :class="['status-box', `status-box--${messageType}`]"
+            >
               {{ message }}
             </div>
 
@@ -254,7 +257,10 @@ function closeView() {
   color: var(--text);
   box-sizing: border-box;
   font: inherit;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    background-color 0.2s ease;
 }
 
 .field input:focus {
@@ -302,11 +308,14 @@ function closeView() {
   cursor: pointer;
   background: rgba(255, 255, 255, 0.02);
   color: var(--text);
-  transition: filter 0.2s ease, opacity 0.2s ease, border-color 0.2s ease;
+  transition:
+    filter 0.2s ease,
+    opacity 0.2s ease,
+    border-color 0.2s ease;
 }
 
 .primary-button {
-  background: var(--bg);
+  background: var(--surface);
   border-color: var(--border-strong);
   color: var(--text);
 }

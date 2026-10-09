@@ -46,7 +46,9 @@ function loadTurnstileScript(scriptUrl) {
     return Promise.resolve();
   }
 
-  const existingScript = document.querySelector(`script[data-turnstile-script="${scriptUrl}"]`);
+  const existingScript = document.querySelector(
+    `script[data-turnstile-script="${scriptUrl}"]`,
+  );
   if (existingScript) {
     if (window.turnstile) {
       return Promise.resolve();
@@ -54,7 +56,11 @@ function loadTurnstileScript(scriptUrl) {
 
     return new Promise((resolve, reject) => {
       existingScript.addEventListener("load", () => resolve(), { once: true });
-      existingScript.addEventListener("error", () => reject(new Error("Turnstile script failed to load.")), { once: true });
+      existingScript.addEventListener(
+        "error",
+        () => reject(new Error("Turnstile script failed to load.")),
+        { once: true },
+      );
     });
   }
 
@@ -65,7 +71,8 @@ function loadTurnstileScript(scriptUrl) {
     script.defer = true;
     script.setAttribute("data-turnstile-script", scriptUrl);
     script.onload = () => resolve();
-    script.onerror = () => reject(new Error("Turnstile script failed to load."));
+    script.onerror = () =>
+      reject(new Error("Turnstile script failed to load."));
     document.head.appendChild(script);
   });
 }
@@ -76,7 +83,14 @@ function renderTurnstileWidget() {
   const params = widget?.params || {};
   const siteKey = params.site_key || captcha?.site_key;
 
-  if (!captcha?.enabled || !captcha?.ready || !widget || !captchaContainer.value || !window.turnstile || !siteKey) {
+  if (
+    !captcha?.enabled ||
+    !captcha?.ready ||
+    !widget ||
+    !captchaContainer.value ||
+    !window.turnstile ||
+    !siteKey
+  ) {
     return;
   }
 
@@ -113,7 +127,11 @@ async function loadRegistrationConfig() {
 
     const captcha = registrationConfig.value.captcha;
     if (captcha?.enabled && captcha?.ready && captcha?.widget) {
-      if (captcha.widget.driver === "turnstile" && captcha.widget.params?.site_key && captcha.script) {
+      if (
+        captcha.widget.driver === "turnstile" &&
+        captcha.widget.params?.site_key &&
+        captcha.script
+      ) {
         await loadTurnstileScript(captcha.script);
         window.setTimeout(() => {
           renderTurnstileWidget();
@@ -298,7 +316,9 @@ function goBackToRequest() {
 
     <div class="page-shell__body">
       <div class="panel-card panel-card--wide">
-        <p class="panel-card__label">{{ step === "request" ? "发送重置邮件" : "设置新密码" }}</p>
+        <p class="panel-card__label">
+          {{ step === "request" ? "发送重置邮件" : "设置新密码" }}
+        </p>
 
         <div v-if="step === 'request'" class="password-form">
           <label class="field">
@@ -311,12 +331,18 @@ function goBackToRequest() {
             />
           </label>
 
-          <div v-if="registrationConfig.captcha?.enabled" class="field field--captcha">
+          <div
+            v-if="registrationConfig.captcha?.enabled"
+            class="field field--captcha"
+          >
             <span>人机验证</span>
             <div ref="captchaContainer" class="turnstile-wrap"></div>
           </div>
 
-          <div v-if="message" :class="['status-box', `status-box--${messageType}`]">
+          <div
+            v-if="message"
+            :class="['status-box', `status-box--${messageType}`]"
+          >
             {{ message }}
           </div>
 
@@ -360,12 +386,19 @@ function goBackToRequest() {
             />
           </label>
 
-          <div v-if="message" :class="['status-box', `status-box--${messageType}`]">
+          <div
+            v-if="message"
+            :class="['status-box', `status-box--${messageType}`]"
+          >
             {{ message }}
           </div>
 
           <div class="inline-actions">
-            <button class="secondary-button" type="button" @click="goBackToRequest">
+            <button
+              class="secondary-button"
+              type="button"
+              @click="goBackToRequest"
+            >
               重新发送
             </button>
             <button
@@ -468,7 +501,10 @@ function goBackToRequest() {
   color: var(--text);
   box-sizing: border-box;
   font: inherit;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    background-color 0.2s ease;
 }
 
 .field input:focus {
@@ -527,13 +563,16 @@ function goBackToRequest() {
   cursor: pointer;
   background: rgba(255, 255, 255, 0.02);
   color: var(--text);
-  transition: filter 0.2s ease, opacity 0.2s ease, border-color 0.2s ease;
+  transition:
+    filter 0.2s ease,
+    opacity 0.2s ease,
+    border-color 0.2s ease;
 }
 
 .primary-button {
-  background: linear-gradient(135deg, var(--accent), var(--accent-soft));
+  background: var(--surface);
   border-color: var(--border-strong);
-  color: var(--surface);
+  color: var(--text);
 }
 
 .secondary-button {
