@@ -5,7 +5,8 @@
 #   dist     构建产物分支（GitHub Pages 的源）→ 本工作流自动推送，不要手工改
 #   main     稳定分支 → 由主站同步 submodule 指针后聚合渲染（见 notify-main-repo.yml）
 #
-# 部署链路：push 到 preview → 构建（base=/mistarg2anns/）→ 产物推送到 `dist` 分支
+# 部署链路：push 到 preview → 构建（base=/mistarg2anns/，API 指向 CVM 绝对地址）
+#           → 产物推送到 `dist` 分支
 #           → GitHub Pages 以 `dist` 分支为源：https://kukuhakuasso.github.io/mistarg2anns/
 #
 # ⚠️ 与主仓库的聚合部署完全隔离，不会互相干扰：
@@ -68,9 +69,17 @@ jobs:
             # 在主仓库内构建时该变量不存在，base 仍由 ../projects.json 的 subPath 决定。
             # 本地复现：DEPLOY_BASE=mistarg2anns pnpm run build
             # （Git Bash 会把带前导斜杠的值当路径转换，配置里已归一化，故可省略斜杠）
+            #
+            # GitHub Pages 是纯静态托管，没有 CVM 上 nginx 那样的同源反向代理，
+            # 因此独立部署必须把 API 指向 CVM 的绝对地址，否则请求会打到
+            # https://kukuhakuasso.github.io/api/... 上得到 404。
+            # CVM 已放行 https://kukuhakuasso.github.io 的跨域请求。
+            # 主仓库聚合构建不设这两个变量，仍按 .env.production 走同源相对路径。
             - name: Build
               env:
                   DEPLOY_BASE: /mistarg2anns/
+                  VITE_API_BASE_URL: https://www.ku2hakuasso.site/
+                  VITE_API_BASE_PATH: /api-mist
               run: pnpm run build
 
             # 分支源 Pages 默认会走 Jekyll，放 .nojekyll 跳过；
