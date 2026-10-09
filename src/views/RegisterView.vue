@@ -50,11 +50,15 @@ const authMessage = ref("");
 
 const currentUserEmail = computed(() => state.user.currentUser?.email || "");
 const currentUsernameDraft = ref("");
+const usernameChangeChecking = ref(false);
+const usernameChangeStatus = ref("idle");
+const usernameChangeTimer = ref(null);
 const usernameChangeState = ref({
   open: false,
   message: "",
   submitting: false,
 });
+let usernameChangeRequestId = 0;
 const detectedLoginType = computed(() =>
   authForm.value.loginIdentifier.includes("@") ? "email" : "username",
 );
@@ -69,6 +73,8 @@ function normalizeUsername(value) {
 function resetUsernameEditor() {
   usernameChangeState.value = { open: false, message: "", submitting: false };
   currentUsernameDraft.value = "";
+  usernameChangeStatus.value = "idle";
+  usernameChangeChecking.value = false;
 }
 
 function openUsernameEditor() {
@@ -184,6 +190,65 @@ watch(
       } finally {
         if (currentRequestId === usernameCheckRequestId) {
           usernameChecking.value = false;
+        }
+      }
+    }, 1000);
+  },
+);
+
+watch(
+  () => currentUsernameDraft.value,
+  (nextValue) => {
+    if (usernameChangeTimer.value) {
+      clearTimeout(usernameChangeTimer.value);
+      usernameChangeTimer.value = null;
+    }
+
+    const requestId = ++usernameChangeRequestId;
+    usernameChangeChecking.value = false;
+
+    if (!usernameChangeState.value.open) {
+      usernameChangeStatus.value = "idle";
+      return;
+    }
+
+    const username = normalizeUsername(nextValue);
+    if (!username) {
+      usernameChangeStatus.value = "idle";
+      return;
+    }
+
+    const validation = validateUsernamePattern(username);
+    if (!validation.ok) {
+      usernameChangeStatus.value = "invalid";
+      return;
+    }
+
+    const currentUsername = normalizeUsername(state.user.currentUser?.username || "");
+    if (username.toLowerCase() === currentUsername.toLowerCase()) {
+      usernameChangeStatus.value = "unchanged";
+      return;
+    }
+
+    usernameChangeTimer.value = window.setTimeout(async () => {
+      usernameChangeChecking.value = true;
+      usernameChangeStatus.value = "checking";
+
+      try {
+        const response = await authApi.usernameAvailable(username);
+        if (requestId !== usernameChangeRequestId) {
+          return;
+        }
+
+        const status = response?.data?.status || response?.status;
+        usernameChangeStatus.value = status === "available" || status === "taken" ? status : "idle";
+      } catch (error) {
+        if (requestId === usernameChangeRequestId) {
+          usernameChangeStatus.value = "idle";
+        }
+      } finally {
+        if (requestId === usernameChangeRequestId) {
+          usernameChangeChecking.value = false;
         }
       }
     }, 1000);
@@ -322,6 +387,10 @@ onBeforeUnmount(() => {
   if (usernameCheckTimer.value) {
     clearTimeout(usernameCheckTimer.value);
     usernameCheckTimer.value = null;
+  }
+  if (usernameChangeTimer.value) {
+    clearTimeout(usernameChangeTimer.value);
+    usernameChangeTimer.value = null;
   }
   if (turnstileWidgetId.value !== null && window.turnstile?.remove) {
     try {
@@ -768,6 +837,17 @@ async function handleLogout(allDevices = false) {
               type="text"
               placeholder="请输入新用户名"
             />
+            <small
+              v-if="currentUsernameDraft"
+              class="username-status"
+              :class="usernameChangeStatus"
+            >
+              <template v-if="usernameChangeChecking">检查中，请稍候...</template>
+              <template v-else-if="usernameChangeStatus === 'available'">用户名可用</template>
+              <template v-else-if="usernameChangeStatus === 'taken'">用户名已被占用</template>
+              <template v-else-if="usernameChangeStatus === 'unchanged'">这是当前账号用户名</template>
+              <template v-else-if="usernameChangeStatus === 'invalid'">用户名格式不符合规则</template>
+            </small>
           </label>
 
           <div
