@@ -1,7 +1,6 @@
 <script setup>
+// 通讯视图组件
 import { computed, ref } from "vue";
-
-const emit = defineEmits(["close"]);
 
 const conversations = [
   {
@@ -95,7 +94,6 @@ function sendMessage() {
         <p class="eyebrow">通讯</p>
         <h1>消息中心</h1>
       </div>
-      <!-- <button class="ghost-button" type="button" @click="emit('close')">返回桌面</button> -->
     </header>
 
     <div class="communication-app__body">

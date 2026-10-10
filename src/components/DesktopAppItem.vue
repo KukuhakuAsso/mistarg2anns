@@ -1,4 +1,5 @@
 <script setup>
+// 主应用桌面图标组件，玩家进入的第一个页面，点击图标可打开对应应用
 import AppIcon from "@/components/AppIcon.vue";
 
 const props = defineProps({

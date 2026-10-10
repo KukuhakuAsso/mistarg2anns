@@ -2,8 +2,6 @@
 import { computed } from "vue";
 import { MILESTONE_ROWS } from "@/config/milestones";
 
-const emit = defineEmits(["close"]);
-
 const rows = computed(() => MILESTONE_ROWS);
 const completedRows = computed(() => rows.value.filter((row) => row.issueCompletion === "100%").length);
 </script>
@@ -15,9 +13,6 @@ const completedRows = computed(() => rows.value.filter((row) => row.issueComplet
         <p class="page-shell__eyebrow">档案管理</p>
         <h1>里程碑</h1>
       </div>
-      <!-- <button class="ghost-button" type="button" @click="emit('close')">
-        返回桌面
-      </button> -->
     </header>
 
     <div class="page-shell__body">

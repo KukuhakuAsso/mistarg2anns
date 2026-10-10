@@ -10,7 +10,6 @@ import {
 } from "@/config/folders";
 import { CARD_GAP, CARD_H, CARD_W } from "@/config/board";
 import { authApi } from "@/api/auth";
-import { router } from "@/router";
 
 const STORAGE_KEY = "mistarg2anns:state:v1";
 
@@ -27,14 +26,8 @@ function createDefaultState() {
     user: {
       currentUser: null,
       users: [],
-      auth: {
-        loginFailureCount: 0,
-        verificationRequired: false,
-        verificationMode: "login",
-        generatedCode: "",
-        pendingRegister: null,
-        pendingLogin: null,
-      },
+      // 注册验证流程的待验证载荷；为 null 表示当前没有进行中的注册验证。
+      pendingRegistration: null,
       team: {
         joined: false,
         name: "",
@@ -105,6 +98,7 @@ function loadState() {
 
 const state = reactive(loadState());
 
+// 监听游戏状态变化并持久化到 localStorage。
 watch(
   state,
   (value) => {
@@ -292,23 +286,6 @@ function resetProgress() {
   Object.assign(state, createDefaultState(), { ui: state.ui });
 }
 
-// 生成本地 6 位数字验证码（当前后端验证流程下已不再使用，属历史遗留）。
-function createVerificationCode() {
-  return String(Math.floor(100000 + Math.random() * 900000));
-}
-
-// 将认证验证相关状态重置为初始值（历史遗留，当前未被调用）。
-function resetAuthVerificationState() {
-  state.user.auth = {
-    loginFailureCount: 0,
-    verificationRequired: false,
-    verificationMode: "login",
-    generatedCode: "",
-    pendingRegister: null,
-    pendingLogin: null,
-  };
-}
-
 // 调用后端登出接口并清空本地登录用户；即使接口失败也会清空本地状态。
 async function logoutUser() {
   try {
@@ -321,7 +298,7 @@ async function logoutUser() {
   return { ok: true };
 }
 
-// 创建一支本地模拟队伍；名称为空时用当前用户昵称生成默认名称，编号为空时随机生成。
+// 创建一支本地模拟队伍；名称为空时用当前用户名生成默认名称，编号为空时随机生成。
 function createTeam(teamName, teamCode) {
   if (!state.user.currentUser) {
     return { ok: false, message: "请先登录后再创建队伍。" };
@@ -336,12 +313,11 @@ function createTeam(teamName, teamCode) {
 
   state.user.team = {
     joined: true,
-    name: cleanName || `${state.user.currentUser.nickname || state.user.currentUser.username}的队伍`,
+    name: cleanName || `${state.user.currentUser.username}的队伍`,
     code: cleanCode || `TM-${Math.random().toString(36).slice(2, 6).toUpperCase()}`,
     members: [
       {
         username: state.user.currentUser.username,
-        nickname: state.user.currentUser.nickname,
         role: "队长",
       },
     ],
@@ -372,12 +348,11 @@ function joinTeam(teamCode) {
 
   state.user.team = {
     joined: true,
-    name: `${state.user.currentUser.nickname || state.user.currentUser.username}的队伍`,
+    name: `${state.user.currentUser.username}的队伍`,
     code: cleanCode,
     members: [
       {
         username: state.user.currentUser.username,
-        nickname: state.user.currentUser.nickname,
         role: "成员",
       },
     ],
@@ -417,8 +392,8 @@ function submitTeamApplication(message) {
     return { ok: false, message: "请先登录后再申请组队。" };
   }
 
-  if (!state.user.team.joined) {
-    return { ok: false, message: "你当前没有队伍，先创建或加入一个队伍后再申请。" };
+  if (state.user.team.joined) {
+    return { ok: false, message: "你当前有队伍，先退出一个队伍后再申请。" };
   }
 
   const text = String(message ?? "").trim();
@@ -435,7 +410,6 @@ function submitTeamApplication(message) {
   state.user.team.applications.push({
     id: `req-${Date.now()}`,
     username: state.user.currentUser.username,
-    nickname: state.user.currentUser.nickname,
     message: text || "我希望加入队伍，协助完成任务。",
     status: "pending",
   });
@@ -461,7 +435,6 @@ function handleTeamApplication(applicationId, action) {
     if (!exists) {
       state.user.team.members.push({
         username: application.username,
-        nickname: application.nickname,
         role: "成员",
       });
     }

@@ -4,10 +4,11 @@ import { authApi } from "@/api/auth";
 import { useGameState } from "@/composables/useGameState";
 import { router } from "@/router";
 
-const emit = defineEmits(["close"]);
 const { state } = useGameState();
 
+// 当前步骤：request = 填邮箱发送重置邮件，reset = 填令牌并设置新密码。
 const step = ref("request");
+// 表单数据，包括邮箱、验证码、重置令牌和新密码等字段。
 const form = ref({
   type: "email",
   identifier: "",
@@ -16,9 +17,11 @@ const form = ref({
   new_password: "",
   confirm_password: "",
 });
+// 提交状态与提示信息。
 const submitting = ref(false);
 const message = ref("");
 const messageType = ref("info");
+// 注册配置，包括验证码相关设置。
 const registrationConfig = ref({
   code_ttl_minutes: 10,
   resend_cooldown_sec: 60,
@@ -33,22 +36,27 @@ const registrationConfig = ref({
     widget: null,
   },
 });
+// 人机验证相关的 DOM 容器、组件 ID 及重发倒计时等状态。
 const captchaContainer = ref(null);
 const turnstileWidgetId = ref(null);
 const resendCooldownRemaining = ref(0);
 let resendCooldownTimer = null;
 
+// 是否处于登录态：重置成功后要顺带清掉本地用户，避免留在已失效的会话上。
 const isLoggedIn = computed(() => Boolean(state.user.currentUser));
+// 重置令牌有效期（分钟），取自后端配置；未下发或非法时按 10 分钟展示。
 const resetTokenTtlMinutes = computed(() => {
   const ttlMinutes = Number(registrationConfig.value.code_ttl_minutes);
   return Number.isFinite(ttlMinutes) && ttlMinutes > 0 ? ttlMinutes : 10;
 });
-
+// 重置令牌有效期（分钟），取自后端配置；未下发或非法时按 10 分钟展示。
+// 统一设置提示文案与样式类型（info / success / error）。
 function resetMessage(type = "info", text = "") {
   messageType.value = type;
   message.value = text;
 }
 
+// 按需注入 Turnstile 脚本；已注入过则复用（脚本就绪直接返回，否则等它加载完）。
 function loadTurnstileScript(scriptUrl) {
   if (!scriptUrl) {
     return Promise.resolve();
@@ -85,6 +93,7 @@ function loadTurnstileScript(scriptUrl) {
   });
 }
 
+// 在容器中渲染人机验证组件，回调把 token 写回表单；配置未就绪或缺容器/脚本时跳过。
 function renderTurnstileWidget() {
   const captcha = registrationConfig.value.captcha;
   const widget = captcha?.widget;
@@ -125,6 +134,7 @@ function renderTurnstileWidget() {
   });
 }
 
+// 拉取后端的安全验证配置，需要时加载脚本并渲染组件；失败则关掉人机验证并提示用户。
 async function loadRegistrationConfig() {
   try {
     const payload = await authApi.getRegistrationConfig();
@@ -153,10 +163,12 @@ async function loadRegistrationConfig() {
   }
 }
 
+// 进入页面时先取到验证配置，之后才可能渲染出人机验证。
 onMounted(async () => {
   await loadRegistrationConfig();
 });
 
+// 离开页面时销毁验证组件并清理倒计时，避免定时器残留。
 onBeforeUnmount(() => {
   if (turnstileWidgetId.value !== null && window.turnstile?.remove) {
     try {
@@ -169,6 +181,7 @@ onBeforeUnmount(() => {
   clearResendCooldown();
 });
 
+// 停止并归零重发倒计时。
 function clearResendCooldown() {
   if (resendCooldownTimer !== null) {
     clearInterval(resendCooldownTimer);
@@ -177,6 +190,7 @@ function clearResendCooldown() {
   resendCooldownRemaining.value = 0;
 }
 
+// 按后端配置的冷却秒数启动重发倒计时；配置为 0 或非法时不启动。
 function startResendCooldown() {
   clearResendCooldown();
   const cooldownSeconds = Math.max(
@@ -197,6 +211,7 @@ function startResendCooldown() {
   }, 1000);
 }
 
+// 校验第一步表单（邮箱格式 + 人机验证），返回错误文案；空串表示通过。
 function validateRequestForm() {
   const identifier = String(form.value.identifier ?? "").trim();
   const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -217,6 +232,7 @@ function validateRequestForm() {
   return "";
 }
 
+// 校验第二步表单（令牌非空、新密码 ≥ 8 位且两次一致），返回错误文案；空串表示通过。
 function validateResetForm() {
   const token = String(form.value.token ?? "").trim();
   const newPassword = String(form.value.new_password ?? "").trim();
@@ -241,11 +257,12 @@ function validateResetForm() {
   return "";
 }
 
+// 第一步提交：请求发送重置邮件。成功即切到 reset 步骤并开始重发冷却。
 async function submitForgotRequest() {
   if (resendCooldownRemaining.value > 0) {
     return;
   }
-
+ 
   const validationError = validateRequestForm();
   if (validationError) {
     resetMessage("error", validationError);
@@ -286,6 +303,7 @@ async function submitForgotRequest() {
   }
 }
 
+// 第二步提交：用令牌重置密码。成功后清空表单、清掉本地登录态并返回登录页。
 async function submitResetPassword() {
   const validationError = validateResetForm();
   if (validationError) {
@@ -334,10 +352,12 @@ async function submitResetPassword() {
   }
 }
 
+// 返回登录 / 注册页。
 function goBackToLogin() {
   router.goToRoute("/register");
 }
 
+// 退回第一步：清掉上一次的验证结果，并重建人机验证组件（旧组件已随 v-if 卸载）。
 async function goBackToRequest() {
   form.value.captchaResponse = "";
   if (turnstileWidgetId.value !== null && window.turnstile?.remove) {

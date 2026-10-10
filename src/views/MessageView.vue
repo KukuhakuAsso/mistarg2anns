@@ -2,8 +2,6 @@
 import { computed, ref } from "vue";
 import { useGameState } from "@/composables/useGameState";
 
-const emit = defineEmits(["close"]);
-
 const { state } = useGameState();
 const activeTab = ref("inbox");
 const inboxFilter = ref("all");
@@ -11,7 +9,7 @@ const mailEditor = ref(null);
 const messageNotice = ref("");
 
 const recipientLabel = state.user.currentUser
-  ? `${state.user.currentUser.nickname}（${state.user.currentUser.username}）`
+  ? state.user.currentUser.username
   : "管理员";
 
 const inboxItems = ref([

@@ -4,7 +4,7 @@ import "./style.css";
 import { authApi } from "@/api/auth";
 import { clearAccessToken } from "@/api/request";
 import { useGameState } from "@/composables/useGameState";
-
+// 免密登录 cookie 中的会话信息
 async function restoreSessionFromCookie() {
   const { state } = useGameState();
 
@@ -20,9 +20,8 @@ async function restoreSessionFromCookie() {
     state.user.currentUser = {
       id: account.id ?? null,
       username: account.username ?? account.player_no ?? "",
-      nickname: account.nickname ?? account.username ?? account.player_no ?? "",
       email: account.email ?? "",
-      player_no: account.player_no ?? "",
+      playerNo: account.player_no ?? "",
       role: account.role ?? "player",
       team: account.team ?? null,
     };
