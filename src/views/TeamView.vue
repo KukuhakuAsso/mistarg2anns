@@ -2,8 +2,6 @@
 import { ref } from "vue";
 import { useGameState } from "@/composables/useGameState";
 
-const emit = defineEmits(["close"]);
-
 const {
   state,
   createTeam,
@@ -134,7 +132,7 @@ function resolveApplication(applicationId, action) {
 
           <ul class="member-list">
             <li v-for="member in state.user.team.members" :key="member.username">
-              <span>{{ member.nickname }}</span>
+              <span>{{ member.username }}</span>
               <small>{{ member.role }}</small>
             </li>
           </ul>
@@ -161,7 +159,7 @@ function resolveApplication(applicationId, action) {
               class="application-item"
             >
               <div class="application-item__head">
-                <strong>{{ application.nickname }}</strong>
+                <strong>{{ application.username }}</strong>
                 <span :class="`status status--${application.status}`">
                   {{
                     application.status === "pending"

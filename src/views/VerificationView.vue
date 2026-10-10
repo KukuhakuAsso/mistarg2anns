@@ -4,12 +4,17 @@ import { useGameState } from "@/composables/useGameState";
 import { router } from "@/router";
 import { authApi } from "@/api/auth";
 
+// 验证页逻辑：处理验证码输入、重发、以及人机验证挑战。
+// 游戏总体状态，包括当前用户信息和待验证的注册载荷。
 const { state } = useGameState();
+// 验证码相关的响应式状态和配置。
 const verificationCode = ref("");
 const verificationMessage = ref("");
 const resending = ref(false);
 const verifying = ref(false);
+// 是否有请求在途（重发或校验），用于禁用按钮、防止重复提交。
 const requestPending = computed(() => resending.value || verifying.value);
+// 重发验证码的配置，包括冷却时长和人机验证参数。
 const resendCaptchaConfig = ref({
   code_length: 6,
   code_ttl_minutes: 10,
@@ -21,6 +26,7 @@ const resendCaptchaConfig = ref({
     widget: null,
   },
 });
+// 是否已成功加载过重发验证码的配置。
 const resendCaptchaConfigLoaded = ref(false);
 const showResendCaptcha = ref(false);
 const resendCaptchaContainer = ref(null);
@@ -29,37 +35,24 @@ const resendCaptchaResponse = ref("");
 const resendCooldownRemaining = ref(0);
 let resendCooldownTimer = null;
 
-const verificationMode = computed(() => state.user.auth.verificationMode || "login");
+// 验证码位数，取自后端配置；未下发或非法时按 6 位。
 const verificationCodeLength = computed(() => {
   const codeLength = Number(resendCaptchaConfig.value.code_length);
   return Number.isInteger(codeLength) && codeLength > 0 ? codeLength : 6;
 });
+// 验证码有效期（分钟），仅用于页面提示；未下发或非法时按 10 分钟。
 const verificationCodeTtlMinutes = computed(() => {
   const ttlMinutes = Number(resendCaptchaConfig.value.code_ttl_minutes);
   return Number.isFinite(ttlMinutes) && ttlMinutes > 0 ? ttlMinutes : 10;
 });
-const verificationTarget = computed(() => {
-  if (verificationMode.value === "register") {
-    return state.user.auth.pendingRegister?.email || "邮箱";
-  }
+// 注册验证流程的待验证载荷；由 RegisterView 在发码后写入，验证完成后清空。
+const pendingRegistration = computed(() => state.user.pendingRegistration);
+// 验证码收件邮箱，用于文案展示；载荷缺失时退化为占位词。
+const verificationTarget = computed(() => pendingRegistration.value?.email || "邮箱");
 
-  return state.user.auth.pendingLogin?.username || "账户";
-});
-
-const hasValidVerificationState = computed(() => {
-  if (!state.user.auth.verificationRequired) {
-    return false;
-  }
-
-  if (verificationMode.value === "register") {
-    return Boolean(state.user.auth.pendingRegister);
-  }
-
-  return Boolean(state.user.auth.pendingLogin);
-});
-
+// 校验当前是否处于有效的验证流程：没有待验证载荷就退回登录页，返回是否可继续。
 function enforceVerificationGuard() {
-  if (!hasValidVerificationState.value) {
+  if (!pendingRegistration.value) {
     verificationMessage.value = "无效的验证状态，已返回登录页。";
     router.goToRoute("/register");
     return false;
@@ -68,36 +61,34 @@ function enforceVerificationGuard() {
   return true;
 }
 
+// 先过守卫，再取一次配置以启动重发冷却（冷却时长由后端下发）。
 onMounted(async () => {
   if (!enforceVerificationGuard()) {
     return;
   }
 
-  if (verificationMode.value === "register" && await loadResendCaptchaConfig()) {
+  if (await loadResendCaptchaConfig()) {
     startResendCooldown();
   }
 });
 
+// 离开页面时销毁人机验证组件并停掉冷却定时器。
 onBeforeUnmount(() => {
   resetResendCaptcha();
   clearResendCooldown();
 });
 
+// 待验证载荷一旦被清空（例如别处复位了注册流程），立刻退回登录页。
 watch(
-  () => [
-    state.user.auth.verificationRequired,
-    state.user.auth.verificationMode,
-    state.user.auth.pendingRegister,
-    state.user.auth.pendingLogin,
-  ],
+  () => state.user.pendingRegistration,
   () => {
-    if (!hasValidVerificationState.value) {
+    if (!pendingRegistration.value) {
       router.goToRoute("/register");
     }
   },
-  { deep: true },
 );
 
+// 按需注入 Turnstile 脚本；已注入过则复用（脚本就绪直接返回，否则等它加载完）。
 function loadTurnstileScript(scriptUrl) {
   if (!scriptUrl) {
     return Promise.resolve();
@@ -133,6 +124,7 @@ function loadTurnstileScript(scriptUrl) {
   });
 }
 
+// 拉取注册配置（重发冷却时长 + 人机验证参数）；已成功加载过则直接复用，不重复请求。
 async function loadResendCaptchaConfig() {
   if (resendCaptchaConfigLoaded.value) {
     return true;
@@ -152,6 +144,7 @@ async function loadResendCaptchaConfig() {
   }
 }
 
+// 停止重发冷却倒计时并归零。
 function clearResendCooldown() {
   if (resendCooldownTimer !== null) {
     clearInterval(resendCooldownTimer);
@@ -160,6 +153,7 @@ function clearResendCooldown() {
   resendCooldownRemaining.value = 0;
 }
 
+// 按配置的冷却秒数启动重发倒计时；为 0 或非法时不启动。
 function startResendCooldown() {
   clearResendCooldown();
   const cooldownSeconds = Math.max(
@@ -180,6 +174,7 @@ function startResendCooldown() {
   }, 1000);
 }
 
+// 清空人机验证结果、销毁组件，并收起验证区域。
 function resetResendCaptcha() {
   resendCaptchaResponse.value = "";
   if (resendCaptchaWidgetId.value !== null && window.turnstile?.remove) {
@@ -193,6 +188,8 @@ function resetResendCaptcha() {
   showResendCaptcha.value = false;
 }
 
+// 在重发区域渲染人机验证，回调把 token 写回 resendCaptchaResponse；
+// 配置未就绪或缺容器 / 脚本时跳过。
 function renderResendCaptcha() {
   const captcha = resendCaptchaConfig.value.captcha;
   const widget = captcha?.widget;
@@ -233,6 +230,8 @@ function renderResendCaptcha() {
   });
 }
 
+// 为重发准备人机验证：按需取配置、展开验证区域并加载脚本渲染组件。
+// 返回 true 表示可以继续（未启用验证，或验证已就绪）；false 表示本轮先停下。
 async function openResendCaptchaChallenge() {
   const configLoaded = await loadResendCaptchaConfig();
   if (!configLoaded) {
@@ -264,6 +263,8 @@ async function openResendCaptchaChallenge() {
   }
 }
 
+// 重新发送验证码：冷却、配置、人机验证都通过后调接口，成功后重新开始冷却。
+// 启用验证码时，第一次点击只负责展开挑战并提示用户完成后再点一次。
 async function resendVerificationCode() {
   if (requestPending.value) {
     return;
@@ -273,13 +274,8 @@ async function resendVerificationCode() {
     return;
   }
 
-  if (verificationMode.value !== "register") {
-    verificationMessage.value = "登录不使用本地验证码验证，请直接返回登录页重新提交凭据。";
-    return;
-  }
-
-  const pendingRegister = state.user.auth.pendingRegister;
-  if (!pendingRegister) {
+  const registration = pendingRegistration.value;
+  if (!registration) {
     verificationMessage.value = "注册信息已失效，请重新注册。";
     return;
   }
@@ -302,14 +298,14 @@ async function resendVerificationCode() {
   verificationMessage.value = "正在重新发送验证码，请稍候...";
   try {
     const payload = {
-      email: pendingRegister.email,
-      username: pendingRegister.username,
+      email: registration.email,
+      username: registration.username,
       ...(import.meta.env.VITE_DEV_TICKET ? { dev_ticket: import.meta.env.VITE_DEV_TICKET } : {}),
       ...(captcha?.enabled ? { captcha: { response: resendCaptchaResponse.value } } : {}),
     };
 
     await authApi.sendVerificationCode(payload);
-    verificationMessage.value = `验证码已重新发送至 ${pendingRegister.email}。`;
+    verificationMessage.value = `验证码已重新发送至 ${registration.email}。`;
     startResendCooldown();
   } catch (error) {
     verificationMessage.value = error?.payload?.error?.message || error?.payload?.message || error?.message || "验证码重发失败。";
@@ -319,19 +315,24 @@ async function resendVerificationCode() {
   }
 }
 
+// 放弃当前验证流程：清掉待验证载荷并返回登录页。
 function goBackToAuth() {
-  state.user.auth.verificationRequired = false;
-  state.user.auth.verificationMode = "login";
-  state.user.auth.pendingRegister = null;
-  state.user.auth.pendingLogin = null;
-  state.user.auth.generatedCode = "";
+  state.user.pendingRegistration = null;
   verificationCode.value = "";
   verificationMessage.value = "";
   router.goToRoute("/register");
 }
 
+// 用输入的验证码完成注册：成功后写入当前用户、清空待验证载荷并回到登录页。
 async function completeVerification() {
   if (requestPending.value) {
+    return;
+  }
+
+  const registration = pendingRegistration.value;
+  if (!registration) {
+    verificationMessage.value = "注册信息已失效，请重新注册。";
+    router.goToRoute("/register");
     return;
   }
 
@@ -342,64 +343,48 @@ async function completeVerification() {
     return;
   }
 
-  if (verificationMode.value === "register" && enteredCode.length !== verificationCodeLength.value) {
+  if (enteredCode.length !== verificationCodeLength.value) {
     verificationMessage.value = `请输入 ${verificationCodeLength.value} 位验证码。`;
     return;
   }
 
-  if (verificationMode.value === "register") {
-    verifying.value = true;
-    verificationMessage.value = "正在验证并完成注册，请稍候...";
-    try {
-      const response = await authApi.verifyVerificationCode({
-        email: state.user.auth.pendingRegister?.email,
-        code: enteredCode,
-      });
+  verifying.value = true;
+  verificationMessage.value = "正在验证并完成注册，请稍候...";
+  try {
+    const response = await authApi.verifyVerificationCode({
+      email: registration.email,
+      code: enteredCode,
+    });
 
-      const payload = response?.data ?? response ?? {};
-      if (!response?.ok && payload?.ok === false) {
-        verificationMessage.value = payload?.message || "验证码错误，请重新输入。";
-        return;
-      }
-
-      const account = payload?.account ?? response?.account ?? null;
-      if (account) {
-        state.user.currentUser = {
-          id: account.id,
-          username: account.username,
-          nickname: account.username,
-          email: state.user.auth.pendingRegister?.email || "",
-          player_no: account.player_no || "",
-          role: account.role || "player",
-          team: account.team || null,
-        };
-      }
-
-      state.user.auth.verificationRequired = false;
-      state.user.auth.verificationMode = "login";
-      state.user.auth.pendingRegister = null;
-      state.user.auth.pendingLogin = null;
-      state.user.auth.generatedCode = "";
-      verificationCode.value = "";
-      verificationMessage.value = "注册验证已完成。";
-      router.goToRoute("/register");
+    const payload = response?.data ?? response ?? {};
+    if (!response?.ok && payload?.ok === false) {
+      verificationMessage.value = payload?.message || "验证码错误，请重新输入。";
       return;
-    } catch (error) {
-      verificationMessage.value = error?.payload?.error?.message || error?.payload?.message || error?.message || "验证码校验失败。";
-      return;
-    } finally {
-      verifying.value = false;
     }
-  }
 
-  verificationMessage.value = "登录流程已改为直接走后端 cookie / token 验证，请返回登录页重新提交凭据。";
-  state.user.auth.verificationRequired = false;
-  state.user.auth.verificationMode = "login";
-  state.user.auth.pendingRegister = null;
-  state.user.auth.pendingLogin = null;
-  state.user.auth.generatedCode = "";
-  verificationCode.value = "";
-  router.goToRoute("/register");
+    const account = payload?.account ?? response?.account ?? null;
+    if (account) {
+      state.user.currentUser = {
+        id: account.id,
+        username: account.username,
+        email: registration.email || "",
+        playerNo: account.player_no || "",
+        role: account.role || "player",
+        team: account.team || null,
+      };
+    }
+
+    state.user.pendingRegistration = null;
+    verificationCode.value = "";
+    verificationMessage.value = "注册验证已完成。";
+    router.goToRoute("/register");
+    return;
+  } catch (error) {
+    verificationMessage.value = error?.payload?.error?.message || error?.payload?.message || error?.message || "验证码校验失败。";
+    return;
+  } finally {
+    verifying.value = false;
+  }
 }
 </script>
 
@@ -408,7 +393,7 @@ async function completeVerification() {
     <header class="page-shell__head">
       <div class="page-shell__title">
         <p class="page-shell__eyebrow">安全验证</p>
-        <h1>{{ verificationMode === "register" ? "邮箱验证" : "账号验证" }}</h1>
+        <h1>邮箱验证</h1>
       </div>
     </header>
 
@@ -419,7 +404,7 @@ async function completeVerification() {
         <p class="verification-help">
           验证码已发送到 <strong>{{ verificationTarget }}</strong>
         </p>
-        <p v-if="verificationMode === 'register'" class="verification-help">
+        <p class="verification-help">
           验证码有效期为 {{ verificationCodeTtlMinutes }} 分钟。
         </p>
 
@@ -469,13 +454,7 @@ async function completeVerification() {
           :disabled="requestPending"
           @click="completeVerification"
         >
-            {{
-              verifying
-                ? "验证中，请稍候..."
-                : verificationMode === "register"
-                  ? "完成注册"
-                  : "验证并登录"
-            }}
+            {{ verifying ? "验证中，请稍候..." : "完成注册" }}
         </button>
 
         <p v-if="verificationMessage" class="helper-text">{{ verificationMessage }}</p>

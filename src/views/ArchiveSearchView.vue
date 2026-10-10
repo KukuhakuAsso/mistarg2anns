@@ -1,8 +1,7 @@
 <script setup>
+// 档案搜索视图组件
 import { computed, ref } from "vue";
 import { searchArchiveById } from "@/config/archiveDatabase";
-
-const emit = defineEmits(["close"]);
 
 const query = ref("");
 const lastQuery = ref("");
@@ -31,9 +30,6 @@ function handleSubmit(event) {
         <p class="page-shell__eyebrow">档案检索</p>
         <h1>数据库搜索</h1>
       </div>
-      <!-- <button class="ghost-button" type="button" @click="emit('close')">
-        返回桌面
-      </button> -->
     </header>
 
     <div class="page-shell__body">

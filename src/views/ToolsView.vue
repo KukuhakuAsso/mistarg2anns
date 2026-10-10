@@ -1,5 +1,4 @@
 <script setup>
-const emit = defineEmits(["close"]);
 
 const websites = [
   {
@@ -32,7 +31,6 @@ const websites = [
         <p class="eyebrow">工具</p>
         <h1>工具箱</h1>
       </div>
-      <!-- <button class="ghost-button" type="button" @click="emit('close')">返回桌面</button> -->
     </header>
 
     <div class="tools-layout">

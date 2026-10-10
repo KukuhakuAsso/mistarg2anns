@@ -1,4 +1,5 @@
 <script setup>
+// 面板组件，显示用户信息和操作项
 import { computed } from "vue";
 
 const props = defineProps({

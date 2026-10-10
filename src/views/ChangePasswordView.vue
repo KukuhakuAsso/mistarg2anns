@@ -1,4 +1,5 @@
 <script setup>
+// 修改密码视图组件
 import { computed, ref } from "vue";
 import { authApi } from "@/api/auth";
 import { clearAccessToken } from "@/api/request";
@@ -19,6 +20,7 @@ const messageType = ref("info");
 
 const hasLoggedInUser = computed(() => Boolean(state.user.currentUser));
 
+// 表单验证函数
 function validateForm() {
   const oldPassword = String(form.value.old_password ?? "").trim();
   const newPassword = String(form.value.new_password ?? "").trim();
@@ -42,7 +44,7 @@ function validateForm() {
 
   return "";
 }
-
+// 提交修改密码请求函数
 async function submitChangePassword() {
   const validationError = validateForm();
   if (validationError) {
@@ -87,7 +89,7 @@ async function submitChangePassword() {
     submitting.value = false;
   }
 }
-
+// 关闭视图函数
 function closeView() {
   if (state.user.currentUser) {
     router.goToRoute("/register");

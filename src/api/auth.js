@@ -1,12 +1,16 @@
 import request, { setAccessToken, clearAccessToken } from "@/api/request";
 
+//接口具体功能和参数见api文档
+
 export const authApi = {
+  // 获取注册配置（用于注册页面初始化）
   getRegistrationConfig: () =>
     request("/auth/reg/config", {
       method: "GET",
       skipRefresh: true,
     }),
 
+  // 用户登录
   login: (payload) =>
     request("/auth/login", {
       method: "POST",
@@ -21,6 +25,7 @@ export const authApi = {
       return result;
     }),
 
+  // 用户注册
   register: (payload) =>
     request("/auth/register", {
       method: "POST",
@@ -28,6 +33,7 @@ export const authApi = {
       skipRefresh: true,
     }),
 
+  // 检查用户名是否可用
   usernameAvailable: (username) =>
     request("/auth/username-available", {
       method: "POST",
@@ -35,6 +41,7 @@ export const authApi = {
       skipRefresh: true,
     }),
 
+  // 发送邮箱验证码
   sendVerificationCode: (payload) =>
     request("/auth/reg/start", {
       method: "POST",
@@ -42,6 +49,7 @@ export const authApi = {
       skipRefresh: true,
     }),
 
+  // 验证邮箱验证码
   verifyVerificationCode: (payload) =>
     request("/auth/reg/verify", {
       method: "POST",
@@ -56,6 +64,7 @@ export const authApi = {
       return result;
     }),
 
+  // 修改密码
   changePassword: (payload) =>
     request("/auth/password", {
       method: "POST",
@@ -63,6 +72,7 @@ export const authApi = {
       useAuth: true,
     }),
 
+  // 修改用户名
   changeUsername: (payload) =>
     request("/auth/username", {
       method: "POST",
@@ -70,6 +80,7 @@ export const authApi = {
       useAuth: true,
     }),
 
+  // 忘记密码
   forgotPassword: (payload) =>
     request("/auth/forgot", {
       method: "POST",
@@ -77,6 +88,7 @@ export const authApi = {
       skipRefresh: true,
     }),
 
+  // 重置密码
   resetPassword: (payload) =>
     request("/auth/reset", {
       method: "POST",
@@ -84,6 +96,7 @@ export const authApi = {
       skipRefresh: true,
     }),
 
+  // 刷新访问令牌
   refresh: () =>
     request("/auth/refresh", {
       method: "POST",
@@ -97,6 +110,7 @@ export const authApi = {
       return result;
     }),
 
+  // 初始化会话 (用于免密登录)
   bootstrapSession: async () => {
     try {
       const result = await authApi.refresh();
@@ -130,6 +144,7 @@ export const authApi = {
     }
   },
 
+  // 注销当前会话
   logout: () =>
     request("/auth/logout", {
       method: "POST",
@@ -139,6 +154,7 @@ export const authApi = {
       clearAccessToken();
     }),
 
+  // 注销所有会话
   logoutAll: () =>
     request("/auth/logout-all", {
       method: "POST",

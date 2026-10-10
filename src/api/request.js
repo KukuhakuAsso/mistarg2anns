@@ -1,8 +1,11 @@
-import { apiConfig, buildApiUrl, getApiHeaders } from "@/config/api";
+import { buildApiUrl, getApiHeaders } from "@/config/api";
 
+// access token key JWT，2 小时。所有需要登录的接口用 Authorization: Bearer <token>
 const ACCESS_TOKEN_KEY = "mistarg_access_token";
+
 let refreshRequestPromise = null;
 
+// 读取 localStorage；环境不可用（无 window / 隐私模式）时返回 null。
 function readStorage(key) {
   if (typeof window === "undefined") {
     return null;
@@ -15,6 +18,7 @@ function readStorage(key) {
   }
 }
 
+// 写入 localStorage；失败时静默忽略。
 function writeStorage(key, value) {
   if (typeof window === "undefined") {
     return;
@@ -27,6 +31,7 @@ function writeStorage(key, value) {
   }
 }
 
+// 删除 localStorage 中的键；失败时静默忽略。
 function removeStorage(key) {
   if (typeof window === "undefined") {
     return;
@@ -39,10 +44,12 @@ function removeStorage(key) {
   }
 }
 
-export function getAccessToken() {
+// 读取本地 access token；不存在时返回空字符串。
+function getAccessToken() {
   return readStorage(ACCESS_TOKEN_KEY) || "";
 }
 
+// 保存 access token；传入空值时改为清除。
 export function setAccessToken(token) {
   if (!token) {
     removeStorage(ACCESS_TOKEN_KEY);
@@ -52,10 +59,12 @@ export function setAccessToken(token) {
   writeStorage(ACCESS_TOKEN_KEY, token);
 }
 
+// 清除本地 access token。
 export function clearAccessToken() {
   removeStorage(ACCESS_TOKEN_KEY);
 }
 
+// 把查询参数拼接到 URL 上；跳过 undefined / null / 空字符串，数组值按重复键展开。
 function appendQueryString(url, params = {}) {
   const entries = Object.entries(params || {}).filter(([, value]) => value !== undefined && value !== null && value !== "");
   if (!entries.length) {
@@ -75,6 +84,7 @@ function appendQueryString(url, params = {}) {
   return `${url}${separator}${query.toString()}`;
 }
 
+// 从错误响应中提取可读文案：依次尝试 error.message、message、error，都没有时返回兜底文案。
 function extractErrorMessage(payload) {
   if (!payload || typeof payload !== "object") {
     return "Request failed.";
@@ -95,6 +105,7 @@ function extractErrorMessage(payload) {
   return "Request failed.";
 }
 
+// 读取响应体并尽力解析为 JSON；raw 为 true 时额外带上原始 Response 与解析结果。
 async function readResponse(response, raw = false) {
   const text = await response.text();
   if (!text) {
@@ -109,7 +120,8 @@ async function readResponse(response, raw = false) {
   }
 }
 
-export async function refreshAccessToken() {
+// 用 cookie 刷新 access token 并写回本地；并发调用共享同一个请求，失败时清除本地 token 并抛出。
+async function refreshAccessToken() {
   if (refreshRequestPromise) {
     return refreshRequestPromise;
   }
@@ -143,6 +155,8 @@ export async function refreshAccessToken() {
   }
 }
 
+// 统一请求入口：拼接 URL 与请求头后发起 fetch；需鉴权的请求遇到 401 会自动刷新 token 并重试一次，
+// 非 2xx 时抛出带 status / payload / code 的错误。
 export async function request(path, options = {}) {
   const {
     method = "GET",
@@ -155,7 +169,6 @@ export async function request(path, options = {}) {
     signal,
   } = options;
   const url = appendQueryString(buildApiUrl(path), params);
-  console.log("Request URL with query string:", url);
   const requestHeaders = {
     ...getApiHeaders(),
     ...headers,

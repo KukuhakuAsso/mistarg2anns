@@ -1,26 +1,30 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useGameState } from "@/composables/useGameState";
-import { useAuth } from "@/composables/useAuth";
 import { router } from "@/router";
 import { probeHealth } from "@/api/health";
 import { authApi } from "@/api/auth";
+import { loginWithPassword } from "@/config/auth";
 
-const emit = defineEmits(["close"]);
-
+// 注册视图的状态与逻辑，包括登录、注册、用户名修改等功能。
 const { state } = useGameState();
-const { loginWithPassword } = useAuth();
+// 当前的认证模式：login = 登录，register = 注册。
 const authMode = ref("login");
+// 表单提交状态，包括登录、登出等操作。
 const authSubmitting = ref(false);
+// 登出操作的提交状态。
 const logoutSubmitting = ref("");
+// 服务健康检查状态。仅测试使用
 const healthStatus = ref({
   loading: true,
   ok: null,
   message: "正在检查服务状态...",
 });
+// 用户名校验状态，包括是否正在检查、检查结果等。
 const usernameChecking = ref(false);
-const usernameStatus = ref("idle");
+const usernameStatus = ref("idle"); // idle = 未检查, checking = 检查中, ok = 可用, taken = 已被占用
 const usernameCheckTimer = ref(null);
+// 注册配置，包括验证码、短信验证码等设置。
 const registrationConfig = ref({
   captcha: {
     enabled: false,
@@ -38,7 +42,9 @@ const registrationConfig = ref({
 const captchaContainer = ref(null);
 const turnstileWidgetId = ref(null);
 const captchaResponse = ref("");
+// 用户名检查请求的序号，用于防止过期响应覆盖最新状态。
 let usernameCheckRequestId = 0;
+// 表单数据与消息状态，包括登录、注册所需的字段及提示信息。
 const authForm = ref({
   username: "",
   email: "",
@@ -48,8 +54,12 @@ const authForm = ref({
 });
 const authMessage = ref("");
 
+// 当前登录用户的邮箱，用于账号面板展示。
 const currentUserEmail = computed(() => state.user.currentUser?.email || "");
+
+// 当前用户名修改草稿，用于内联编辑器。
 const currentUsernameDraft = ref("");
+// 用户名修改的校验状态，包括是否正在检查、检查结果、请求序号等。
 const usernameChangeChecking = ref(false);
 const usernameChangeStatus = ref("idle");
 const usernameChangeTimer = ref(null);
@@ -58,18 +68,23 @@ const usernameChangeState = ref({
   message: "",
   submitting: false,
 });
+// 用户名修改请求的序号，用于防止过期响应覆盖最新状态。
 let usernameChangeRequestId = 0;
+// 按输入内容推断登录类型：含 @ 视为邮箱，否则按用户名处理。
 const detectedLoginType = computed(() =>
   authForm.value.loginIdentifier.includes("@") ? "email" : "username",
 );
+// 上者对应的中文标签，用于表单提示。
 const detectedLoginTypeLabel = computed(() =>
   detectedLoginType.value === "email" ? "邮箱" : "用户名",
 );
 
+// 用户名统一去除首尾空白，并返回处理后的值。
 function normalizeUsername(value) {
   return String(value ?? "").trim();
 }
 
+// 收起「修改用户名」内联编辑器，并清空草稿与校验状态。
 function resetUsernameEditor() {
   usernameChangeState.value = { open: false, message: "", submitting: false };
   currentUsernameDraft.value = "";
@@ -77,6 +92,7 @@ function resetUsernameEditor() {
   usernameChangeChecking.value = false;
 }
 
+// 打开「修改用户名」编辑器，草稿以当前用户名为起点。
 function openUsernameEditor() {
   if (!state.user.currentUser) {
     return;
@@ -90,6 +106,8 @@ function openUsernameEditor() {
   };
 }
 
+// 校验用户名规则（1–32 字符、字符白名单、禁用字符、禁止玩家编号格式）；
+// 通过返回 { ok: true, value }，否则返回 { ok: false, message }。
 function validateUsernamePattern(value) {
   const username = normalizeUsername(value);
   if (!username) {
@@ -118,6 +136,7 @@ function validateUsernamePattern(value) {
   return { ok: true, value: username };
 }
 
+// 切到注册页签时（含初始化）渲染人机验证组件，此时容器才挂载好。
 watch(
   () => authMode.value,
   (nextMode) => {
@@ -130,6 +149,7 @@ watch(
   { immediate: true },
 );
 
+// 注册用户名防抖查重（800ms）：先本地校验格式，再用请求序号保证只有最新一次响应生效。
 watch(
   () => authForm.value.username,
   (nextValue) => {
@@ -196,6 +216,7 @@ watch(
   },
 );
 
+// 账号面板里「新用户名」草稿的防抖查重，逻辑同上，并先与本机当前用户名比对。
 watch(
   () => currentUsernameDraft.value,
   (nextValue) => {
@@ -258,6 +279,7 @@ watch(
   },
 );
 
+// 拉取后端注册配置，必要时加载 Turnstile 脚本并渲染组件；失败则关掉人机验证并提示用户。
 async function loadRegistrationConfig() {
   try {
     const payload = await authApi.getRegistrationConfig();
@@ -284,6 +306,7 @@ async function loadRegistrationConfig() {
   }
 }
 
+// 按需注入 Turnstile 脚本；已注入过则复用（脚本就绪直接返回，否则等它加载完）。
 function loadTurnstileScript(scriptUrl) {
   if (!scriptUrl) {
     return Promise.resolve();
@@ -320,6 +343,8 @@ function loadTurnstileScript(scriptUrl) {
   });
 }
 
+// 在注册表单的容器里渲染人机验证，回调把 token 写回 captchaResponse（并同步一份到 window 供外部读取）；
+// 配置未就绪或缺容器 / 脚本时跳过。
 function renderTurnstileWidget() {
   const captcha = registrationConfig.value.captcha;
   const widget = captcha?.widget;
@@ -350,22 +375,19 @@ function renderTurnstileWidget() {
     ...(params && typeof params === "object" ? params : {}),
     callback: (response) => {
       captchaResponse.value = response || "";
-      window.__captchaResponse = response || "";
     },
     "expired-callback": () => {
       captchaResponse.value = "";
-      window.__captchaResponse = "";
     },
     "error-callback": () => {
       captchaResponse.value = "";
-      window.__captchaResponse = "";
     },
   });
 }
 
+// 进入页面时清空上一次的验证结果，探测一次服务健康（供状态条展示），再加载注册配置。
 onMounted(async () => {
   captchaResponse.value = "";
-  window.__captchaResponse = "";
 
   try {
     await probeHealth();
@@ -389,6 +411,7 @@ onMounted(async () => {
   }
 });
 
+// 离开页面时清理防抖定时器、销毁人机验证组件，并让在途的查重请求失效。
 onBeforeUnmount(() => {
   if (usernameCheckTimer.value) {
     clearTimeout(usernameCheckTimer.value);
@@ -407,10 +430,10 @@ onBeforeUnmount(() => {
   }
   turnstileWidgetId.value = null;
   captchaResponse.value = "";
-  window.__captchaResponse = "";
   usernameCheckRequestId += 1;
 });
 
+// 切换登录 / 注册页签：清空表单与提示、销毁旧的人机验证并在注册页签下重建；提交过程中不允许切换。
 function switchAuthMode(mode) {
   if (authSubmitting.value) {
     return;
@@ -428,7 +451,6 @@ function switchAuthMode(mode) {
   usernameStatus.value = "idle";
   usernameChecking.value = false;
   captchaResponse.value = "";
-  window.__captchaResponse = "";
   if (turnstileWidgetId.value !== null && window.turnstile?.remove) {
     try {
       window.turnstile.remove(turnstileWidgetId.value);
@@ -444,9 +466,10 @@ function switchAuthMode(mode) {
   }
 }
 
+// 校验注册表单（用户名规则、邮箱格式、可选的两次密码一致、人机验证）；
+// 不通过时已直接写入 authMessage，返回 null 表示失败。
 function validateRegisterForm() {
   const username = String(authForm.value.username ?? "").trim();
-  const nickname = String(authForm.value.nickname ?? "").trim();
   const email = String(authForm.value.email ?? "").trim();
   const password = String(authForm.value.password ?? "").trim();
   const confirmPassword = String(authForm.value.confirmPassword ?? "").trim();
@@ -491,29 +514,19 @@ function validateRegisterForm() {
     return null;
   }
 
-  return { username, nickname: username, email, password, confirmPassword };
+  return { username, email, password, confirmPassword };
 }
 
-function proceedToRegistrationVerification({
-  username,
-  email,
-  sentEmail = email,
-  generatedCode = "",
-}) {
-  state.user.auth.verificationRequired = true;
-  state.user.auth.verificationMode = "register";
-  state.user.auth.pendingRegister = {
-    username,
-    nickname: username,
-    email,
-  };
-  state.user.auth.pendingLogin = null;
-  state.user.auth.generatedCode = generatedCode;
+// 记录待验证的注册载荷并跳到验证页，验证码校验由该页负责。
+function proceedToRegistrationVerification({ username, email, sentEmail = email }) {
+  state.user.pendingRegistration = { username, email };
 
   authMessage.value = `验证码已发送至 ${sentEmail}，请在下一页完成验证。`;
   router.goToRoute("/verification");
 }
 
+// 注册提交：校验表单 → 请求发送验证码 → 跳转验证页。
+// 429 表示发送过于频繁（验证码已发出过），同样直接跳转，让用户去验证页重发。
 async function startRegisterVerification() {
   if (authSubmitting.value) {
     return;
@@ -550,7 +563,6 @@ async function startRegisterVerification() {
       username,
       email,
       sentEmail: response?.data?.email || email,
-      generatedCode: response?.data?.code || "",
     });
   } catch (error) {
     if (error?.status === 429) {
@@ -569,6 +581,7 @@ async function startRegisterVerification() {
   }
 }
 
+// 表单提交总入口：注册模式转交 startRegisterVerification，否则按邮箱 / 用户名走登录。
 async function handleAuthSubmit() {
   if (authSubmitting.value) {
     return;
@@ -624,7 +637,6 @@ async function handleAuthSubmit() {
     if (account) {
       state.user.currentUser = {
         username: account.username ?? account.player_no ?? identifier,
-        nickname: account.username ?? account.player_no ?? identifier,
         email: account.email ?? "",
         playerNo: account.player_no ?? "",
         role: account.role ?? "player",
@@ -632,11 +644,7 @@ async function handleAuthSubmit() {
       };
     }
 
-    state.user.auth.loginFailureCount = 0;
-    state.user.auth.verificationRequired = false;
-    state.user.auth.pendingLogin = null;
-    state.user.auth.pendingRegister = null;
-    state.user.auth.generatedCode = "";
+    state.user.pendingRegistration = null;
 
     authMessage.value = account ? "登录成功。" : "登录成功，正在同步会话状态。";
     authForm.value = {
@@ -653,6 +661,7 @@ async function handleAuthSubmit() {
   }
 }
 
+// 提交用户名修改：先查重再调用接口，成功后同步本地用户信息。
 async function submitUsernameChange() {
   if (!state.user.currentUser) {
     return;
@@ -705,7 +714,6 @@ async function submitUsernameChange() {
 
     if (state.user.currentUser) {
       state.user.currentUser.username = updatedUsername;
-      state.user.currentUser.nickname = updatedUsername;
       if (account?.playerNo || account?.player_no) {
         state.user.currentUser.playerNo =
           account.playerNo ??
@@ -744,6 +752,7 @@ async function submitUsernameChange() {
   }
 }
 
+// 退出登录（当前设备 / 全部设备）；无论接口成败都会清掉本地用户。
 async function handleLogout(allDevices = false) {
   if (logoutSubmitting.value) {
     return;
@@ -793,7 +802,7 @@ async function handleLogout(allDevices = false) {
         class="panel-card panel-card--wide account-panel"
       >
         <p class="panel-card__label">当前账户</p>
-        <h2>{{ state.user.currentUser.nickname }}</h2>
+        <h2>{{ state.user.currentUser.username }}</h2>
         <p>@{{ state.user.currentUser.username }}</p>
         <p v-if="currentUserEmail">{{ currentUserEmail }}</p>
         <div class="current-user-actions">

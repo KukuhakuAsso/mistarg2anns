@@ -5,12 +5,12 @@ import DesktopAppItem from "@/components/DesktopAppItem.vue";
 import FolderItem from "@/components/FolderItem.vue";
 import UserPanel from "@/components/UserPanel.vue";
 import { useGameState } from "@/composables/useGameState";
-import { DESKTOP_APPS } from "@/config/desktop";
+import { DESKTOP_APPS, createDesktopMenu } from "@/config/desktop";
 import { MAIN_FOLDERS } from "@/config/folders";
 
 const emit = defineEmits(["open", "open-page"]);
 
-const { state, folderStates, unlockedCount, completedCount, markFolderVisited } = useGameState();
+const { state, folderStates, completedCount, markFolderVisited } = useGameState();
 const showUserPanel = ref(false);
 const userPanelPosition = ref({ x: 0, y: 0 });
 const activeMenu = ref({
@@ -21,56 +21,15 @@ const activeMenu = ref({
     position: { x: 0, y: 0 },
 });
 
-const menuMap = {
-    user: {
-        title: "用户",
-        subtitle: "个人终端",
-        items: [
-            { id: "team", name: "我的队伍", detail: "当前组队情况" },
-            { id: "register", name: "注册", detail: "登录 / 注册" },
-            { id: "messages", name: "站内信", detail: `${state.unreadMessages ?? 0} 条未读` },
-            // { id: "settings", name: "设置", detail: "界面 · 通知" },
-            // { id: "tips", name: "tips点", detail: `${state.tipPoints} 点可用` },
-            { id: "milestone", name: "里程碑", detail: `${completedCount.value}/${MAIN_FOLDERS.length} 已完成` },
-        ],
-    },
-    archive: {
-        title: "档案",
-        subtitle: "主线数据库",
-        items: [
-            { id: "archive-search", name: "快速检索", detail: "待补充" },
-            { id: "archive-summary", name: "档案摘要", detail: "待补充" },
-            { id: "archive-logs", name: "历史记录", detail: "待补充" },
-        ],
-    },
-    entertainment: {
-        title: "娱乐",
-        subtitle: "休闲入口",
-        items: [
-            { id: "entertainment-1", name: "功能一", detail: "待补充" },
-            { id: "entertainment-2", name: "功能二", detail: "待补充" },
-            { id: "entertainment-3", name: "功能三", detail: "待补充" },
-        ],
-    },
-    communication: {
-        title: "通讯",
-        subtitle: "联络中心",
-        items: [
-            { id: "communication-1", name: "功能一", detail: "待补充" },
-            { id: "communication-2", name: "功能二", detail: "待补充" },
-            { id: "communication-3", name: "功能三", detail: "待补充" },
-        ],
-    },
-    tools: {
-        title: "工具",
-        subtitle: "处理中心",
-        items: [
-            { id: "toolbox", name: "常用工具", detail: "网页与资料检索" },
-            { id: "timeline", name: "时间线", detail: "剧情事件时间轴" },
-        ],
-    },
-};
-
+// 菜单内容按当前进度动态生成：未读条数与完成进度变化时会重新计算。
+const menuMap = computed(() =>
+    createDesktopMenu({
+        unreadMessages: state.unreadMessages ?? 0,
+        completedCount: completedCount.value,
+        folderTotal: MAIN_FOLDERS.length,
+    }),
+);
+// 桌面卡片数据，根据应用和文件夹状态动态生成。
 const desktopCards = computed(() => [
     ...DESKTOP_APPS.map((app) => ({
         id: app.id,
@@ -90,7 +49,7 @@ const desktopCards = computed(() => [
         folder,
     })),
 ]);
-
+// 根据文件夹状态生成提示信息的函数。
 function hintOf(folder) {
     if (folder.unlocked) return "";
     if (folder.hidden) {
@@ -101,21 +60,21 @@ function hintOf(folder) {
     const previous = MAIN_FOLDERS[index - 1];
     return previous ? `完成「${previous.name}」后解锁` : "可直接进入";
 }
-
+// 处理文件夹打开事件。
 function handleFolderOpen(folderId) {
     markFolderVisited(folderId);
     emit("open", folderId);
 }
-
+// 关闭用户面板。
 function closeUserPanel() {
     showUserPanel.value = false;
 }
-
+// 处理桌面快捷方式点击事件。
 function openShortcut(appId, event) {
     const button = event?.currentTarget;
     const rect = button?.getBoundingClientRect?.();
     const panelWidth = 280;
-
+    // 计算面板位置，确保不超出窗口边界。
     if (rect) {
         const x = Math.min(
             Math.max(rect.left, 12),
@@ -124,26 +83,27 @@ function openShortcut(appId, event) {
         const y = Math.min(Math.max(rect.bottom + 10, 12), window.innerHeight - 220);
         userPanelPosition.value = { x, y };
     }
+    // 打开应用对应的页面，注意这里这两个应用没有设置面板。
     if (appId === "archive") {
         emit("open-page", "archive");
         return;
     }
-
     if (appId === "communication") {
         emit("open-page", "communication");
         return;
     }
-
-    const menuConfig = menuMap[appId];
+    // 打开自定义菜单面板。
+    const menuConfig = menuMap.value[appId];
     if (!menuConfig) {
         return;
     }
-
+    // 如果当前已经打开的是同一个菜单，则关闭面板。
     const isSameMenu = showUserPanel.value && activeMenu.value.appId === appId;
     if (isSameMenu) {
         closeUserPanel();
         return;
     }
+    // 否则，设置当前活动菜单并显示用户面板。
 
     activeMenu.value = {
         appId,
@@ -154,56 +114,16 @@ function openShortcut(appId, event) {
     };
     showUserPanel.value = true;
 }
-
+// 处理用户面板菜单项点击事件。
 function handleUserMenuClick(item) {
-    if (!item) return;
+    if (!item) {
+        return;
+    }
 
-
-    console.log(item);
     closeUserPanel();
 
-    if (item.id === "register") {
-        emit("open-page", "register");
-        return;
-    }
-
-    if (item.id === "team") {
-        emit("open-page", "team");
-        return;
-    }
-
-    if (item.id === "messages") {
-        emit("open-page", "messages");
-        return;
-    }
-
-    if (item.id === "milestone") {
-        emit("open-page", "milestone");
-        return;
-    }
-
-    if (item.id === "archive-search") {
-        emit("open-page", "archive");
-        return;
-    }
-
-    if (item.id === "communication-1" || item.id === "communication-2" || item.id === "communication-3") {
-        emit("open-page", "communication");
-        return;
-    }
-
-    if (item.id === "toolbox") {
-        emit("open-page", "tools");
-        return;
-    }
-
-    if (item.id === "timeline") {
-        emit("open-page", "timeline");
-        return;
-    }
-
-    if (item.id === "settings") {
-        emit("open-page", "messages");
+    if (item.page) {
+        emit("open-page", item.page);
     }
 }
 </script>

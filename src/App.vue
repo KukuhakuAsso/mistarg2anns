@@ -18,15 +18,18 @@ import VerificationView from "@/views/VerificationView.vue";
 import ChangePasswordView from "@/views/ChangePasswordView.vue";
 import ForgotPasswordView from "@/views/ForgotPasswordView.vue";
 import { FOLDER_BY_ID } from "@/config/folders";
-import { router } from "@/router";
+import { FEATURE_ROUTES, router } from "@/router";
 import { useGameState } from "@/composables/useGameState";
 
 const { state } = useGameState();
+// 当前路由对象（hash 路由维护的全局响应式状态），下面的派生判断都基于它。
 const currentRoute = computed(() => router.currentRoute);
 
+// 访问守卫：未登录时只放行公开路由，其他路由一律送回登录页；immediate 让首屏也走一次判断。
 watch(
     () => [currentRoute.value.name, state.user.currentUser],
     ([routeName, currentUser]) => {
+        // 未登录也能访问的路由：桌面、登录注册、邮箱验证、找回密码。
         const allowedPublicRoutes = new Set(["desktop", "register", "verification", "forgot"]);
         if (!currentUser && !allowedPublicRoutes.has(routeName)) {
             router.goToRoute("/register");
@@ -35,59 +38,36 @@ watch(
     { immediate: true },
 );
 
+// 当前打开的档案：仅 #/folder/:id 命中，未知 id 视为未打开。
 const activeFolder = computed(() =>
     currentRoute.value.name === "folder"
         ? FOLDER_BY_ID.get(currentRoute.value.params.folderId) ?? null
         : null,
 );
 
-const activeFeature = computed(() => {
-    const routeName = currentRoute.value.name;
-    if (
-        routeName === "register" ||
-        routeName === "team" ||
-        routeName === "messages" ||
-        routeName === "milestone" ||
-        routeName === "archive" ||
-        routeName === "communication" ||
-        routeName === "tools" ||
-        routeName === "timeline" ||
-        routeName === "verification" ||
-        routeName === "password" ||
-        routeName === "forgot"
-    ) {
-        return routeName;
-    }
-    return null;
-});
+// 当前功能页名（模板据此挑选视图组件）；只有登记在 router 名单里的才算，其余返回 null 落回桌面。
+const activeFeature = computed(() =>
+    FEATURE_ROUTES.has(currentRoute.value.name) ? currentRoute.value.name : null,
+);
 
+// 是否处于某个页面内部（非桌面），用于让 TopBar 显示返回入口。
 const inFolder = computed(
     () => currentRoute.value.name !== "desktop" && currentRoute.value.name !== "",
 );
 
+// 打开指定档案。
 function openFolder(folderId) {
     router.goToRoute(`/folder/${folderId}`);
 }
 
+// 打开功能页（功能名即路径片段）；未登记的功能名静默忽略。
 function openFeature(featureName) {
-    const routeMap = {
-        register: "/register",
-        team: "/team",
-        messages: "/messages",
-        milestone: "/milestone",
-        archive: "/archive",
-        communication: "/communication",
-        tools: "/tools",
-        timeline: "/timeline",
-        password: "/password",
-        forgot: "/forgot",
-    };
-
-    if (routeMap[featureName]) {
-        router.goToRoute(routeMap[featureName]);
+    if (FEATURE_ROUTES.has(featureName)) {
+        router.goToRoute(`/${featureName}`);
     }
 }
 
+// 返回桌面。
 function backToDesktop() {
     router.backToDesktop();
 }
@@ -102,6 +82,7 @@ function backToDesktop() {
 
         <div class="app-body">
             <main class="app-main">
+                <!-- 视图切换优先级：档案页 > 功能页（activeFeature）> 桌面 -->
                 <FolderView
                     v-if="activeFolder"
                     :key="activeFolder.id"
@@ -110,31 +91,24 @@ function backToDesktop() {
                 />
                 <RegisterView
                     v-else-if="activeFeature === 'register'"
-                    @close="backToDesktop"
                 />
                 <TeamView
                     v-else-if="activeFeature === 'team'"
-                    @close="backToDesktop"
                 />
                 <MessageView
                     v-else-if="activeFeature === 'messages'"
-                    @close="backToDesktop"
                 />
                 <MilestoneView
                     v-else-if="activeFeature === 'milestone'"
-                    @close="backToDesktop"
                 />
                 <ArchiveSearchView
                     v-else-if="activeFeature === 'archive'"
-                    @close="backToDesktop"
                 />
                 <CommunicationView
                     v-else-if="activeFeature === 'communication'"
-                    @close="backToDesktop"
                 />
                 <ToolsView
                     v-else-if="activeFeature === 'tools'"
-                    @close="backToDesktop"
                 />
                 <TimelineView
                     v-else-if="activeFeature === 'timeline'"
@@ -142,7 +116,6 @@ function backToDesktop() {
                 />
                 <VerificationView
                     v-else-if="activeFeature === 'verification'"
-                    @close="backToDesktop"
                 />
                 <ChangePasswordView
                     v-else-if="activeFeature === 'password'"
@@ -150,11 +123,11 @@ function backToDesktop() {
                 />
                 <ForgotPasswordView
                     v-else-if="activeFeature === 'forgot'"
-                    @close="backToDesktop"
                 />
                 <DesktopView v-else @open="openFolder" @open-page="openFeature" />
             </main>
 
+            <!-- 线索栏与拖拽浮层挂在外层，任何视图下都可用 -->
             <ClueBoard />
         </div>
 
