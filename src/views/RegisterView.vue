@@ -620,7 +620,7 @@ function refreshCaptcha() {
 }
 
 // 回到第一步（保留已填写的表单），并停止重发冷却。
-function backToRegisterForm(message = "可修改邮箱后重新发送验证码。") {
+function backToRegisterForm(message) {
   registerStep.value = "form";
   sentEmail.value = "";
   verificationCode.value = "";
@@ -633,7 +633,6 @@ function enterVerifyStep(email) {
   sentEmail.value = email;
   verificationCode.value = "";
   registerStep.value = "verify";
-  authMessage.value = `验证码已发送至 ${email}，请在下方完成注册。`;
   startResendCooldown();
   refreshCaptcha();
 }
@@ -1282,7 +1281,6 @@ async function handleLogout(allDevices = false) {
             </p>
 
             <label class="verification-field">
-              <span>验证码</span>
               <input
                 v-model="verificationCode"
                 type="text"
@@ -1324,15 +1322,6 @@ async function handleLogout(allDevices = false) {
                   ? `${resendCooldownRemaining} 秒后可重发`
                   : "重新发送验证码"
               }}
-            </button>
-            <button
-              v-if="authMode === 'register' && registerStep === 'verify'"
-              class="text-link-button"
-              type="button"
-              :disabled="authSubmitting"
-              @click="backToRegisterForm()"
-            >
-              修改邮箱
             </button>
             <button
               class="text-link-button"
