@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref } from "vue";
 import { useGameState } from "@/composables/useGameState";
+import UserTabs from "@/components/UserTabs.vue";
 
 const { state } = useGameState();
 const activeTab = ref("inbox");
@@ -204,6 +205,8 @@ function handleSendMessage() {
         <span class="user-chip">{{ recipientLabel }}</span>
       </div>
     </header>
+
+    <UserTabs />
 
     <div v-if="activeTab === 'compose'" class="mail-shell compose-shell">
       <main class="composer">

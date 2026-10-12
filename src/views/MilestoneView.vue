@@ -1,6 +1,7 @@
 <script setup>
 import { computed } from "vue";
 import { MILESTONE_ROWS } from "@/config/milestones";
+import UserTabs from "@/components/UserTabs.vue";
 
 const rows = computed(() => MILESTONE_ROWS);
 const completedRows = computed(() => rows.value.filter((row) => row.issueCompletion === "100%").length);
@@ -14,6 +15,8 @@ const completedRows = computed(() => rows.value.filter((row) => row.issueComplet
         <h1>里程碑</h1>
       </div>
     </header>
+
+    <UserTabs />
 
     <div class="page-shell__body">
       <div class="panel-card panel-card--wide">

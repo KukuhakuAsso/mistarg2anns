@@ -3,6 +3,7 @@
 // 状态全部来自后端：currentTeam 为队伍对象，myJoinRequest 为未入队时的加入申请。
 import { computed, onMounted, ref } from "vue";
 import { useGameState } from "@/composables/useGameState";
+import UserTabs from "@/components/UserTabs.vue";
 
 const {
   state,
@@ -192,6 +193,8 @@ function handleTransfer(member) {
         刷新
       </button>
     </header>
+
+    <UserTabs />
 
     <div class="page-shell__body">
       <!-- 未登录 -->

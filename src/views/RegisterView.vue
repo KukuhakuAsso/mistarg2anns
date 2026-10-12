@@ -5,6 +5,7 @@ import { router } from "@/router";
 import { probeHealth } from "@/api/health";
 import { authApi } from "@/api/auth";
 import { loginWithPassword } from "@/config/auth";
+import UserTabs from "@/components/UserTabs.vue";
 
 // 注册视图的状态与逻辑，包括登录、注册、用户名修改等功能。
 const { state } = useGameState();
@@ -797,6 +798,8 @@ async function handleLogout(allDevices = false) {
         <h1>登录 / 注册</h1>
       </div>
     </header>
+
+    <UserTabs />
 
     <div class="page-shell__body">
       <div
