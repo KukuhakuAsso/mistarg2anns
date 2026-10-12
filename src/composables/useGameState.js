@@ -10,6 +10,7 @@ import {
 } from "@/config/folders";
 import { CARD_GAP, CARD_H, CARD_W } from "@/config/board";
 import { authApi } from "@/api/auth";
+import { teamApi } from "@/api/team";
 
 const STORAGE_KEY = "mistarg2anns:state:v1";
 
@@ -28,12 +29,13 @@ function createDefaultState() {
       users: [],
       // 注册验证流程的待验证载荷；为 null 表示当前没有进行中的注册验证。
       pendingRegistration: null,
+      // 队伍信息全部由后端 /api/team/* 提供：
+      // loaded 表示是否已成功拉取过；team 为已入队时的后端队伍对象；
+      // myJoinRequest 为未入队时的「我的加入申请」。
       team: {
-        joined: false,
-        name: "",
-        code: "",
-        members: [],
-        applications: [],
+        loaded: false,
+        team: null,
+        myJoinRequest: null,
       },
     },
     ui: {
@@ -174,14 +176,39 @@ const boardClues = computed(() =>
     .filter(Boolean),
 );
 
-// 派生：已发现但尚未放到板面上的线索池。);
-
+// 派生：已发现但尚未放到板面上的线索池。
 const poolClues = computed(() => {
   const onBoard = new Set(state.board.map((placement) => placement.clueId));
   return state.discoveredClues
     .filter((clueId) => CLUE_BY_ID.has(clueId) && !onBoard.has(clueId))
     .map((clueId) => CLUE_BY_ID.get(clueId));
 });
+
+// ---------- 队伍派生状态 ----------
+
+// 派生：当前队伍对象；未入队时为 null。
+const currentTeam = computed(() => state.user.team.team);
+
+// 派生：我的加入申请；未入队时才可能有值。
+const myJoinRequest = computed(() => state.user.team.myJoinRequest);
+
+// 派生：我是否是当前队伍的队长。
+const isTeamCaptain = computed(() => {
+  const team = currentTeam.value;
+  const me = state.user.currentUser;
+  if (!team || !me) {
+    return false;
+  }
+  return String(team.captainId) === String(me.id);
+});
+
+// 派生：队伍是否已确认参赛并进入锁定态。
+const teamLocked = computed(() => Boolean(currentTeam.value?.confirmedAt));
+
+// 派生：待处理的加入申请列表（仅队长能拿到）。
+const teamPendingRequests = computed(
+  () => currentTeam.value?.pendingRequests ?? [],
+);
 
 // ---------- 操作 ----------
 
@@ -295,153 +322,217 @@ async function logoutUser() {
   }
 
   state.user.currentUser = null;
+  // 登出后清空队伍缓存，避免切换账号时残留上一个账号的队伍信息。
+  state.user.team = { loaded: false, team: null, myJoinRequest: null };
   return { ok: true };
 }
 
-// 创建一支本地模拟队伍；名称为空时用当前用户名生成默认名称，编号为空时随机生成。
-function createTeam(teamName, teamCode) {
+// ---------- 队伍操作 ----------
+
+// 从后端错误对象提取可读文案，优先使用后端返回的 error.message。
+function teamErrorMessage(error, fallback) {
+  return (
+    error?.payload?.error?.message ||
+    error?.payload?.message ||
+    error?.message ||
+    fallback
+  );
+}
+
+// 拉取「我的队伍 + 我的加入申请」并写入本地状态（GET /api/team/me）。
+async function loadMyTeam() {
+  if (!state.user.currentUser) {
+    return { ok: false, message: "请先登录后再查看队伍。" };
+  }
+
+  try {
+    const response = await teamApi.getMyTeam();
+    const data = response?.data ?? {};
+    state.user.team.team = data.team ?? null;
+    state.user.team.myJoinRequest = data.myJoinRequest ?? null;
+    state.user.team.loaded = true;
+    return { ok: true, data };
+  } catch (error) {
+    return { ok: false, message: teamErrorMessage(error, "获取队伍信息失败。") };
+  }
+}
+
+// 创建队伍（POST /api/team），成功后重新拉取我的队伍。
+async function createTeam(name, intro = "") {
   if (!state.user.currentUser) {
     return { ok: false, message: "请先登录后再创建队伍。" };
   }
 
-  if (state.user.team.joined) {
-    return { ok: false, message: "你已经在队伍中，无法重复创建队伍。" };
+  const cleanName = String(name ?? "").trim();
+  if (!cleanName) {
+    return { ok: false, message: "请填写队伍名称。" };
   }
 
-  const cleanName = String(teamName ?? "").trim();
-  const cleanCode = String(teamCode ?? "").trim();
-
-  state.user.team = {
-    joined: true,
-    name: cleanName || `${state.user.currentUser.username}的队伍`,
-    code: cleanCode || `TM-${Math.random().toString(36).slice(2, 6).toUpperCase()}`,
-    members: [
-      {
-        username: state.user.currentUser.username,
-        role: "队长",
-      },
-    ],
-    applications: [],
-  };
-
-  return {
-    ok: true,
-    message: `队伍创建成功，编号 ${state.user.team.code}。`,
-  };
+  try {
+    await teamApi.createTeam({
+      name: cleanName,
+      intro: String(intro ?? "").trim(),
+    });
+    await loadMyTeam();
+    return { ok: true, message: `队伍「${cleanName}」创建成功。` };
+  } catch (error) {
+    return { ok: false, message: teamErrorMessage(error, "创建队伍失败。") };
+  }
 }
 
-// 通过队伍编号加入一支本地模拟队伍，并把当前用户加入成员列表。
-function joinTeam(teamCode) {
+// 凭邀请码申请加入队伍（POST /api/team/join）；是否直接入队取决于队伍的自动审批设置。
+async function joinTeam(code) {
   if (!state.user.currentUser) {
     return { ok: false, message: "请先登录后再加入队伍。" };
   }
 
-  if (state.user.team.joined) {
-    return { ok: false, message: "你已经在队伍中。" };
-  }
-
-  const cleanCode = String(teamCode ?? "").trim();
-
+  const cleanCode = String(code ?? "").trim();
   if (!cleanCode) {
-    return { ok: false, message: "队伍编号不能为空。" };
+    return { ok: false, message: "请输入邀请码。" };
   }
 
-  state.user.team = {
-    joined: true,
-    name: `${state.user.currentUser.username}的队伍`,
-    code: cleanCode,
-    members: [
-      {
-        username: state.user.currentUser.username,
-        role: "成员",
-      },
-    ],
-    applications: [],
-  };
-
-  return {
-    ok: true,
-    message: `已加入队伍 ${cleanCode}。`,
-  };
-}
-// 退出当前本地模拟队伍，重置队伍数据。
-
-function leaveTeam() {
-  if (!state.user.currentUser) {
-    return { ok: false, message: "请先登录后再退出队伍。" };
+  try {
+    const response = await teamApi.applyJoin(cleanCode);
+    const data = response?.data ?? {};
+    await loadMyTeam();
+    return {
+      ok: true,
+      joined: Boolean(data.joined),
+      message: data.joined
+        ? `已加入队伍${data.teamName ? `「${data.teamName}」` : ""}。`
+        : `已提交加入申请${data.teamName ? `：${data.teamName}` : ""}，等待队长确认。`,
+      data,
+    };
+  } catch (error) {
+    return { ok: false, message: teamErrorMessage(error, "加入队伍失败。") };
   }
-
-  if (!state.user.team.joined) {
-    return { ok: false, message: "你当前并没有加入任何队伍。" };
-  }
-
-  state.user.team = {
-    joined: false,
-    name: "",
-    code: "",
-    members: [],
-    applications: [],
-  };
-
-  return { ok: true, message: "已退出当前队伍。" };
-}
-// 提交一份本地模拟组队申请，并阻止重复申请。
-
-function submitTeamApplication(message) {
-  if (!state.user.currentUser) {
-    return { ok: false, message: "请先登录后再申请组队。" };
-  }
-
-  if (state.user.team.joined) {
-    return { ok: false, message: "你当前有队伍，先退出一个队伍后再申请。" };
-  }
-
-  const text = String(message ?? "").trim();
-  const alreadyApplied = state.user.team.applications.some(
-    (application) =>
-      application.username === state.user.currentUser.username &&
-      application.status === "pending",
-  );
-
-  if (alreadyApplied) {
-    return { ok: false, message: "你已经提交过组队申请了。" };
-  }
-
-  state.user.team.applications.push({
-    id: `req-${Date.now()}`,
-    username: state.user.currentUser.username,
-    message: text || "我希望加入队伍，协助完成任务。",
-    status: "pending",
-  });
-
-  return { ok: true, message: "组队申请已提交。" };
 }
 
-// 处理一条本地模拟组队申请：接受时把申请人加入成员，随后将申请标记为已接受或已拒绝。
-function handleTeamApplication(applicationId, action) {
-  const application = state.user.team.applications.find(
-    (item) => item.id === applicationId,
-  );
-
-  if (!application) {
-    return { ok: false, message: "申请不存在。" };
+// 队长更换邀请码（POST /api/team/invite），旧码立即失效。
+async function rotateInviteCode() {
+  try {
+    await teamApi.rotateInvite();
+    await loadMyTeam();
+    return { ok: true, message: "邀请码已更新。" };
+  } catch (error) {
+    return { ok: false, message: teamErrorMessage(error, "更换邀请码失败。") };
   }
+}
 
-  if (action === "accept") {
-    const exists = state.user.team.members.some(
-      (member) => member.username === application.username,
-    );
-
-    if (!exists) {
-      state.user.team.members.push({
-        username: application.username,
-        role: "成员",
-      });
-    }
+// 队长开关自动审批（POST /api/team/join/auto-approve）。
+async function setAutoApprove(enabled) {
+  try {
+    await teamApi.setAutoApprove(Boolean(enabled));
+    await loadMyTeam();
+    return {
+      ok: true,
+      message: enabled ? "已开启自动审批。" : "已关闭自动审批。",
+    };
+  } catch (error) {
+    return { ok: false, message: teamErrorMessage(error, "设置自动审批失败。") };
   }
+}
+// 退队（POST /api/team/leave）；队长且没有其他成员时会顺带解散队伍。
+async function leaveTeam() {
+  try {
+    const response = await teamApi.leaveTeam();
+    const dissolved = Boolean(response?.data?.dissolved);
+    await loadMyTeam();
+    return {
+      ok: true,
+      message: dissolved ? "你已退出并解散了队伍。" : "已退出队伍。",
+    };
+  } catch (error) {
+    return { ok: false, message: teamErrorMessage(error, "退出队伍失败。") };
+  }
+}
 
-  application.status = action === "accept" ? "accepted" : "rejected";
-  return { ok: true, message: action === "accept" ? "已接受申请" : "已拒绝申请" };
+// 队长同意某条加入申请（POST /api/team/join/confirm）。
+async function confirmJoinRequest(requestId) {
+  try {
+    await teamApi.confirmJoin(requestId);
+    await loadMyTeam();
+    return { ok: true, message: "已同意该加入申请。" };
+  } catch (error) {
+    return { ok: false, message: teamErrorMessage(error, "同意申请失败。") };
+  }
+}
+
+// 队长拒绝某条加入申请（POST /api/team/join/reject）。
+async function rejectJoinRequest(requestId) {
+  try {
+    await teamApi.rejectJoin(requestId);
+    await loadMyTeam();
+    return { ok: true, message: "已拒绝该加入申请。" };
+  } catch (error) {
+    return { ok: false, message: teamErrorMessage(error, "拒绝申请失败。") };
+  }
+}
+
+// 申请人取消自己的待确认申请（POST /api/team/join/cancel）。
+async function cancelJoinRequest() {
+  try {
+    await teamApi.cancelJoin();
+    await loadMyTeam();
+    return { ok: true, message: "已取消加入申请。" };
+  } catch (error) {
+    return { ok: false, message: teamErrorMessage(error, "取消申请失败。") };
+  }
+}
+
+// 队长确认参赛（POST /api/team/start），确认后队伍进入锁定态。
+async function startTeam() {
+  try {
+    await teamApi.startTeam();
+    await loadMyTeam();
+    return { ok: true, message: "已确认参赛，队伍进入锁定态。" };
+  } catch (error) {
+    return { ok: false, message: teamErrorMessage(error, "确认参赛失败。") };
+  }
+}
+
+// 队长取消确认参赛（POST /api/team/start/cancel），仅官方开赛前可用。
+async function cancelStartTeam() {
+  try {
+    await teamApi.cancelStart();
+    await loadMyTeam();
+    return { ok: true, message: "已取消确认参赛。" };
+  } catch (error) {
+    return { ok: false, message: teamErrorMessage(error, "取消确认参赛失败。") };
+  }
+}
+
+// 队长移出成员（DELETE /api/team/member/:id），accountId 为被移除成员的账号 ID。
+async function removeMember(accountId) {
+  try {
+    await teamApi.removeMember(accountId);
+    await loadMyTeam();
+    return { ok: true, message: "已移出该成员。" };
+  } catch (error) {
+    return { ok: false, message: teamErrorMessage(error, "移出成员失败。") };
+  }
+}
+
+// 队长转让队长（POST /api/team/transfer），accountId 为目标成员的账号 ID。
+async function transferCaptain(accountId) {
+  try {
+    await teamApi.transferCaptain(accountId);
+    await loadMyTeam();
+    return { ok: true, message: "已转让队长。" };
+  } catch (error) {
+    return { ok: false, message: teamErrorMessage(error, "转让队长失败。") };
+  }
+}
+
+// 队长解散队伍（POST /api/team/dissolve）。
+async function dissolveTeam() {
+  try {
+    await teamApi.dissolveTeam();
+    await loadMyTeam();
+    return { ok: true, message: "队伍已解散。" };
+  } catch (error) {
+    return { ok: false, message: teamErrorMessage(error, "解散队伍失败。") };
+  }
 }
 
 // 组合式函数入口：任何组件调用都会获得同一份全局状态与同一组操作函数。
@@ -453,6 +544,12 @@ export function useGameState() {
     completedCount,
     boardClues,
     poolClues,
+    // 队伍派生状态
+    currentTeam,
+    myJoinRequest,
+    isTeamCaptain,
+    teamLocked,
+    teamPendingRequests,
     setFolderCompleted,
     markFolderVisited,
     discoverClue,
@@ -467,10 +564,20 @@ export function useGameState() {
     toggleCluePanel,
     resetProgress,
     logoutUser,
+    // 队伍接口操作
+    loadMyTeam,
     createTeam,
     joinTeam,
+    rotateInviteCode,
+    setAutoApprove,
+    confirmJoinRequest,
+    rejectJoinRequest,
+    cancelJoinRequest,
+    startTeam,
+    cancelStartTeam,
+    removeMember,
     leaveTeam,
-    submitTeamApplication,
-    handleTeamApplication,
+    transferCaptain,
+    dissolveTeam,
   };
 }
