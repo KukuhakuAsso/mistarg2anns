@@ -42,6 +42,25 @@ export const DESKTOP_CARD_SIZE = {
   gap: 12,
 };
 
+// 用户区的四个页面：桌面「用户」菜单与页面间的导航标签共用这一份定义，
+// id 同时就是路由名（/team、/register、/messages、/milestone）。
+export const USER_TABS = [
+  { id: "team", name: "我的队伍" },
+  { id: "register", name: "注册" },
+  { id: "messages", name: "站内信" },
+  { id: "milestone", name: "里程碑" },
+];
+
+// 「用户」菜单各入口的副标题；与 USER_TABS 的 id 一一对应。
+function userMenuDetails({ unreadMessages, completedCount, folderTotal }) {
+  return {
+    team: "当前组队情况",
+    register: "登录 / 注册",
+    messages: `${unreadMessages} 条未读`,
+    milestone: `${completedCount}/${folderTotal} 已完成`,
+  };
+}
+
 // 桌面各应用弹出的菜单内容。page 是该入口要打开的功能页（与 App 的 openFeature 路由名一致），
 // null 表示入口尚未接线，点击只会关闭面板。
 // 未读条数、完成进度等运行期数字由调用方传入，避免 config 反向依赖游戏状态。
@@ -50,18 +69,25 @@ export function createDesktopMenu({
   completedCount = 0,
   folderTotal = 0,
 } = {}) {
+  const userDetails = userMenuDetails({
+    unreadMessages,
+    completedCount,
+    folderTotal,
+  });
+
   return {
     user: {
       title: "用户",
       subtitle: "个人终端",
       items: [
-        { id: "team", name: "我的队伍", detail: "当前组队情况", page: "team" },
-        { id: "register", name: "注册", detail: "登录 / 注册", page: "register" },
-        { id: "messages", name: "站内信", detail: `${unreadMessages} 条未读`, page: "messages" },
+        ...USER_TABS.map((tab) => ({
+          ...tab,
+          detail: userDetails[tab.id],
+          page: tab.id,
+        })),
         // 暂未接线，保留原设计意图：
         // { id: "settings", name: "设置", detail: "界面 · 通知", page: null },
         // { id: "tips", name: "tips点", detail: "tips 点可用", page: null },
-        { id: "milestone", name: "里程碑", detail: `${completedCount}/${folderTotal} 已完成`, page: "milestone" },
       ],
     },
     archive: {

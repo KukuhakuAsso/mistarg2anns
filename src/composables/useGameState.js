@@ -9,6 +9,7 @@ import {
   MAIN_FOLDERS,
 } from "@/config/folders";
 import { CARD_GAP, CARD_H, CARD_W } from "@/config/board";
+import { validateTeamName } from "@/config/team";
 import { authApi } from "@/api/auth";
 import { teamApi } from "@/api/team";
 
@@ -384,20 +385,31 @@ async function createTeam(name, intro = "") {
     return { ok: false, message: "请先登录后再创建队伍。" };
   }
 
-  const cleanName = String(name ?? "").trim();
-  if (!cleanName) {
-    return { ok: false, message: "请填写队伍名称。" };
+  // 建队前先按同一套规则本地校验，避免明显不合规的队名白跑一次接口。
+  const validation = validateTeamName(name);
+  if (!validation.ok) {
+    return { ok: false, message: validation.message };
   }
 
   try {
     await teamApi.createTeam({
-      name: cleanName,
+      name: validation.value,
       intro: String(intro ?? "").trim(),
     });
     await loadMyTeam();
-    return { ok: true, message: `队伍「${cleanName}」创建成功。` };
+    return { ok: true, message: `队伍「${validation.value}」创建成功。` };
   } catch (error) {
-    return { ok: false, message: teamErrorMessage(error, "创建队伍失败。") };
+    const payload = error?.payload ?? {};
+    const detail = payload?.detail ?? payload?.error?.detail ?? {};
+
+    return {
+      ok: false,
+      message: teamErrorMessage(error, "创建队伍失败。"),
+      status: error?.status,
+      code: payload?.code || payload?.error?.code || error?.code || "",
+      // 400 E_VALIDATION 时后端会在 detail.fields.name 写明队名不合规的具体原因。
+      nameError: detail?.fields?.name || "",
+    };
   }
 }
 
