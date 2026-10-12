@@ -746,16 +746,25 @@ textarea {
   color: var(--text);
 }
 
+/* 队伍操作结果提示：与内容列同宽居中，做成独立提示条，避免看起来像漂在页面里的一行小字。 */
 .helper-text--note {
-  padding-top: 4px;
+  width: min(700px, 100%);
+  margin: 0 auto;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  font-size: 13px;
+  line-height: 1.5;
 }
 
+/* 语义色只落在文字上，底色与描边沿用主题令牌，两种主题下都保持可读的对比度。 */
 .helper-text--success {
-  color: #6ed791;
+  color: var(--success);
 }
 
 .helper-text--error {
-  color: #ff9d9d;
+  color: var(--danger);
 }
 
 .helper-text--info {
