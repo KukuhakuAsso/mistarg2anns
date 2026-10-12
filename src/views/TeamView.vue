@@ -238,6 +238,7 @@ function handleTransfer(member) {
               type="text"
               maxlength="64"
               placeholder="队伍名称（必填，1–64 字）"
+              aria-label="队伍名称"
               class="team-input"
             />
             <input
@@ -245,6 +246,7 @@ function handleTransfer(member) {
               type="text"
               maxlength="200"
               placeholder="队伍简介（可选，最多 200 字）"
+              aria-label="队伍简介"
               class="team-input"
             />
             <button
@@ -263,6 +265,7 @@ function handleTransfer(member) {
           <div class="team-action-group">
             <input
               v-model="joinCode"
+              aria-label="邀请码"
               type="text"
               placeholder="请输入 8 位邀请码"
               class="team-input"

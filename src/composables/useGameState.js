@@ -124,6 +124,15 @@ watch(
   { deep: true },
 );
 
+// 当前用户身份变化（登录 / 登出 / 切换账号）时集中清空队伍缓存。
+// 不会在新账号的 /team/me 失败时继续渲染上一个账号的队伍、成员与邀请码。
+watch(
+  () => state.user.currentUser?.id ?? state.user.currentUser?.username ?? null,
+  () => {
+    state.user.team = { loaded: false, team: null, myJoinRequest: null };
+  },
+);
+
 // ---------- 派生状态 ----------
 //派生：当前已解锁的档案 ID 集合。主线档案依次解锁，隐藏档案在主线全部完成后解锁。
 // 解锁规则：主线档案依次解锁，隐藏档案在主线全部完成后解锁
@@ -313,20 +322,6 @@ function resetProgress() {
   Object.assign(state, createDefaultState(), { ui: state.ui });
 }
 
-// 调用后端登出接口并清空本地登录用户；即使接口失败也会清空本地状态。
-async function logoutUser() {
-  try {
-    await authApi.logout();
-  } catch (error) {
-    // cookie / server session may already be expired; still clear local app state.
-  }
-
-  state.user.currentUser = null;
-  // 登出后清空队伍缓存，避免切换账号时残留上一个账号的队伍信息。
-  state.user.team = { loaded: false, team: null, myJoinRequest: null };
-  return { ok: true };
-}
-
 // ---------- 队伍操作 ----------
 
 // 从后端错误对象提取可读文案，优先使用后端返回的 error.message。
@@ -353,7 +348,10 @@ async function loadMyTeam() {
     state.user.team.loaded = true;
     return { ok: true, data };
   } catch (error) {
-    return { ok: false, message: teamErrorMessage(error, "获取队伍信息失败。") };
+    return {
+      ok: false,
+      message: teamErrorMessage(error, "获取队伍信息失败。"),
+    };
   }
 }
 
@@ -429,7 +427,10 @@ async function setAutoApprove(enabled) {
       message: enabled ? "已开启自动审批。" : "已关闭自动审批。",
     };
   } catch (error) {
-    return { ok: false, message: teamErrorMessage(error, "设置自动审批失败。") };
+    return {
+      ok: false,
+      message: teamErrorMessage(error, "设置自动审批失败。"),
+    };
   }
 }
 // 退队（POST /api/team/leave）；队长且没有其他成员时会顺带解散队伍。
@@ -498,7 +499,10 @@ async function cancelStartTeam() {
     await loadMyTeam();
     return { ok: true, message: "已取消确认参赛。" };
   } catch (error) {
-    return { ok: false, message: teamErrorMessage(error, "取消确认参赛失败。") };
+    return {
+      ok: false,
+      message: teamErrorMessage(error, "取消确认参赛失败。"),
+    };
   }
 }
 
@@ -563,7 +567,6 @@ export function useGameState() {
     addClueToBoard,
     toggleCluePanel,
     resetProgress,
-    logoutUser,
     // 队伍接口操作
     loadMyTeam,
     createTeam,
