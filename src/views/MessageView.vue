@@ -181,28 +181,31 @@ function handleSendMessage() {
 </script>
 
 <template>
-  <section class="mail-app">
-    <header class="topbar">
-
-      <div class="topbar__nav">
-        <button
-          type="button"
-          :class="['nav-btn', { 'is-active': activeTab === 'compose' }]"
-          @click="switchTab('compose')"
-        >
-          写信
-        </button>
-        <button
-          type="button"
-          :class="['nav-btn', { 'is-active': activeTab === 'inbox' }]"
-          @click="switchTab('inbox')"
-        >
-          收信
-        </button>
+  <section class="page-shell">
+    <header class="page-shell__head">
+      <div class="page-shell__title">
+        <p class="page-shell__eyebrow">通讯中心</p>
+        <h1>站内信</h1>
       </div>
 
-      <div class="topbar__right">
+      <div class="page-shell__actions">
         <span class="user-chip">{{ recipientLabel }}</span>
+        <div class="page-shell__nav">
+          <button
+            type="button"
+            :class="['nav-btn', { 'is-active': activeTab === 'compose' }]"
+            @click="switchTab('compose')"
+          >
+            写信
+          </button>
+          <button
+            type="button"
+            :class="['nav-btn', { 'is-active': activeTab === 'inbox' }]"
+            @click="switchTab('inbox')"
+          >
+            收信
+          </button>
+        </div>
       </div>
     </header>
 
@@ -370,57 +373,54 @@ function handleSendMessage() {
   background: var(--bg);
 }
 
-.mail-app {
+.page-shell {
   display: flex;
   flex-direction: column;
+  gap: 18px;
   height: 100%;
+  min-height: 0;
   background: var(--bg);
   color: var(--text);
 }
 
-.topbar {
+.page-shell__head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 18px;
-  border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--bg) 82%, transparent);
-  backdrop-filter: blur(8px);
+  gap: 14px;
 }
 
-.brand-wrap {
+.page-shell__title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.page-shell__title h1 {
+  margin: 0;
+  font-size: 28px;
+}
+
+.page-shell__eyebrow {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.page-shell__actions {
   display: flex;
   align-items: center;
-  gap: 8px;
-  min-width: 180px;
+  gap: 10px;
 }
 
-.brand-mark {
-  width: 28px;
-  height: 28px;
-  display: grid;
-  place-items: center;
-  border-radius: 8px;
-  background: linear-gradient(135deg, #1d9bf0, #0d6adf);
-  color: white;
-  font-weight: 700;
-}
-
-.brand-text {
-  font-size: 24px;
-  font-weight: 700;
-  color: #1d6fe7;
-}
-
-.topbar__nav {
+.page-shell__nav {
   display: flex;
   gap: 8px;
-  flex: 1;
-  justify-content: center;
 }
 
 .nav-btn,
-.mini-btn,
 .primary-btn,
 .soft-btn {
   border: 1px solid transparent;
@@ -441,24 +441,12 @@ function handleSendMessage() {
   border-color: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
-.topbar__right {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
 .user-chip {
   padding: 6px 10px;
   border-radius: 999px;
   background: var(--surface-alt);
   font-size: 12px;
   color: var(--text-dim);
-}
-
-.mini-btn {
-  padding: 7px 12px;
-  background: var(--surface);
-  border-color: var(--border);
 }
 
 .mail-shell {
@@ -559,7 +547,7 @@ function handleSendMessage() {
 }
 
 .inbox-shell {
-  padding: 18px 0 0;
+  padding: 0;
 }
 
 .inbox-panel {
@@ -621,6 +609,7 @@ function handleSendMessage() {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  overflow: auto;
 }
 
 .inbox-row {

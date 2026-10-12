@@ -46,25 +46,34 @@ function openTab(tab) {
 <style scoped>
 .user-tabs {
   display: flex;
-  gap: 8px;
-  padding: 4px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.02);
+  gap: 20px;
+  border-bottom: 1px solid var(--border);
 }
 
 .user-tabs__btn {
-  flex: 1;
-  padding: 8px 10px;
-  border: 1px solid transparent;
-  border-radius: 8px;
+  position: relative;
+  padding: 8px 2px 10px;
+  border: none;
   background: transparent;
   color: var(--text-dim);
   font: inherit;
+  white-space: nowrap;
   cursor: pointer;
-  transition:
-    color 0.18s ease,
-    background-color 0.18s ease;
+  transition: color 0.18s ease;
+}
+
+/* 当前页标记：压在分隔线上的粗线。 */
+.user-tabs__btn::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 3px;
+  border-radius: 3px 3px 0 0;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity 0.18s ease;
 }
 
 .user-tabs__btn:hover:not(:disabled):not(.is-active) {
@@ -72,9 +81,12 @@ function openTab(tab) {
 }
 
 .user-tabs__btn.is-active {
-  border-color: var(--border-strong);
-  background: rgba(255, 255, 255, 0.04);
   color: var(--text);
+  font-weight: 600;
+}
+
+.user-tabs__btn.is-active::after {
+  opacity: 1;
 }
 
 .user-tabs__btn:disabled {

@@ -18,6 +18,15 @@ export const teamApi = {
       useAuth: true,
     }),
 
+  // 队名可用性检查（POST /api/team/name-available）——本章唯一不需要登录的接口。
+  // 只作提前提示：通过后仍可能被并发抢注，建队的 409 仍须处理。
+  nameAvailable: (name) =>
+    request("/team/name-available", {
+      method: "POST",
+      body: { name },
+      skipRefresh: true,
+    }),
+
   // 创建队伍（POST /api/team），body: { name, intro? }
   createTeam: ({ name, intro } = {}) =>
     request("/team", {
