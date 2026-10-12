@@ -13,7 +13,7 @@ function readStorage(key) {
 
   try {
     return window.localStorage.getItem(key);
-  } catch (error) {
+  } catch {
     return null;
   }
 }
@@ -26,7 +26,7 @@ function writeStorage(key, value) {
 
   try {
     window.localStorage.setItem(key, value);
-  } catch (error) {
+  } catch {
     // localStorage may be unavailable in private browsing or restricted environments.
   }
 }
@@ -39,7 +39,7 @@ function removeStorage(key) {
 
   try {
     window.localStorage.removeItem(key);
-  } catch (error) {
+  } catch {
     // localStorage may be unavailable in private browsing or restricted environments.
   }
 }
@@ -115,7 +115,7 @@ async function readResponse(response, raw = false) {
   try {
     const json = JSON.parse(text);
     return raw ? { response, data: json } : json;
-  } catch (error) {
+  } catch {
     return raw ? { response, data: text } : text;
   }
 }

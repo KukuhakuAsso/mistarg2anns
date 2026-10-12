@@ -9,7 +9,6 @@ import {
   MAIN_FOLDERS,
 } from "@/config/folders";
 import { CARD_GAP, CARD_H, CARD_W } from "@/config/board";
-import { authApi } from "@/api/auth";
 import { teamApi } from "@/api/team";
 
 const STORAGE_KEY = "mistarg2anns:state:v1";
