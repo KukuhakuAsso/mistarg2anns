@@ -163,8 +163,8 @@ export async function request(path, options = {}) {
     body,
     headers = {},
     params = {},
-    useAuth = false,
-    skipRefresh = false,
+    useAuth = false,  // 是否使用鉴权，即是否在请求头中带上 access token
+    skipRefresh = false, // 是否跳过刷新 access token 的逻辑
     raw = false,
     signal,
   } = options;
