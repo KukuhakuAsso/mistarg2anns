@@ -857,6 +857,8 @@ async function handleAuthSubmit() {
     const account = result?.account ?? null;
     if (account) {
       state.user.currentUser = {
+        // id 用于判定队长身份与后端 accountId 比对，必须保存。
+        id: account.id ?? null,
         username: account.username ?? account.player_no ?? identifier,
         email: account.email ?? "",
         playerNo: account.player_no ?? "",
