@@ -760,11 +760,11 @@ textarea {
 
 /* 语义色只落在文字上，底色与描边沿用主题令牌，两种主题下都保持可读的对比度。 */
 .helper-text--success {
-  color: var(--success);
+  color: #6ed791;
 }
 
 .helper-text--error {
-  color: var(--danger);
+  color: #d27575;
 }
 
 .helper-text--info {
