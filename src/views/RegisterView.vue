@@ -43,6 +43,15 @@ const registrationConfig = ref({
 const captchaContainer = ref(null);
 const turnstileWidgetId = ref(null);
 const captchaResponse = ref("");
+// 注册流程的当前阶段：form = 填写表单并发送验证码，verify = 填写验证码完成注册。
+const registerStep = ref("form");
+// 验证码实际发送到的邮箱（以后端回传为准），用于第二步文案与重发。
+const sentEmail = ref("");
+// 第二步输入的验证码。
+const verificationCode = ref("");
+// 重发验证码的冷却剩余秒数。
+const resendCooldownRemaining = ref(0);
+let resendCooldownTimer = null;
 // 用户名检查请求的序号，用于防止过期响应覆盖最新状态。
 let usernameCheckRequestId = 0;
 // 表单数据与消息状态，包括登录、注册所需的字段及提示信息。
@@ -79,6 +88,16 @@ const detectedLoginType = computed(() =>
 const detectedLoginTypeLabel = computed(() =>
   detectedLoginType.value === "email" ? "邮箱" : "用户名",
 );
+// 验证码位数，取自后端注册配置；未下发或非法时按 6 位。
+const verificationCodeLength = computed(() => {
+  const codeLength = Number(registrationConfig.value.code_length);
+  return Number.isInteger(codeLength) && codeLength > 0 ? codeLength : 6;
+});
+// 验证码有效期（分钟），仅用于第二步提示；未下发或非法时按 10 分钟。
+const verificationCodeTtlMinutes = computed(() => {
+  const ttlMinutes = Number(registrationConfig.value.code_ttl_minutes);
+  return Number.isFinite(ttlMinutes) && ttlMinutes > 0 ? ttlMinutes : 10;
+});
 
 // 用户名统一去除首尾空白，并返回处理后的值。
 function normalizeUsername(value) {
@@ -148,6 +167,16 @@ watch(
     }
   },
   { immediate: true },
+);
+
+// 第一步发码后再改邮箱会使已发出的验证码失效：退回第一步，提示重新发送。
+watch(
+  () => authForm.value.email,
+  () => {
+    if (authMode.value === "register" && registerStep.value === "verify") {
+      backToRegisterForm("邮箱已修改，请重新发送验证码。");
+    }
+  },
 );
 
 // 注册用户名防抖查重（800ms）：先本地校验格式，再用请求序号保证只有最新一次响应生效。
@@ -412,8 +441,9 @@ onMounted(async () => {
   }
 });
 
-// 离开页面时清理防抖定时器、销毁人机验证组件，并让在途的查重请求失效。
+// 离开页面时清理防抖定时器与重发冷却、销毁人机验证组件，并让在途的查重请求失效。
 onBeforeUnmount(() => {
+  clearResendCooldown();
   if (usernameCheckTimer.value) {
     clearTimeout(usernameCheckTimer.value);
     usernameCheckTimer.value = null;
@@ -434,7 +464,7 @@ onBeforeUnmount(() => {
   usernameCheckRequestId += 1;
 });
 
-// 切换登录 / 注册页签：清空表单与提示、销毁旧的人机验证并在注册页签下重建；提交过程中不允许切换。
+// 切换登录 / 注册页签：清空表单与提示、重置注册流程、销毁旧的人机验证并在注册页签下重建；提交过程中不允许切换。
 function switchAuthMode(mode) {
   if (authSubmitting.value) {
     return;
@@ -442,6 +472,10 @@ function switchAuthMode(mode) {
 
   authMode.value = mode;
   authMessage.value = "";
+  registerStep.value = "form";
+  sentEmail.value = "";
+  verificationCode.value = "";
+  clearResendCooldown();
   authForm.value = {
     username: "",
     email: "",
@@ -467,7 +501,31 @@ function switchAuthMode(mode) {
   }
 }
 
-// 校验注册表单（用户名规则、邮箱格式、可选的两次密码一致、人机验证）；
+// 校验发送验证码所需字段：邮箱格式 + 人机验证；不通过时已写入 authMessage，返回 null。
+function validateEmailField() {
+  const email = String(authForm.value.email ?? "").trim();
+
+  if (!email) {
+    authMessage.value = "请输入邮箱地址。";
+    return null;
+  }
+
+  const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailPattern.test(email)) {
+    authMessage.value = "请输入有效的邮箱地址。";
+    return null;
+  }
+
+  const captcha = registrationConfig.value.captcha;
+  if (captcha?.enabled && captcha?.ready && !captchaResponse.value) {
+    authMessage.value = "请完成人机验证后再继续。";
+    return null;
+  }
+
+  return email;
+}
+
+// 校验完成注册所需字段（用户名规则、邮箱格式、可选的两次密码一致）；
 // 不通过时已直接写入 authMessage，返回 null 表示失败。
 function validateRegisterForm() {
   const username = String(authForm.value.username ?? "").trim();
@@ -509,26 +567,153 @@ function validateRegisterForm() {
     }
   }
 
+  return { username, email, password };
+}
+
+// 发送验证码请求体：只提交邮箱、人机验证与开发票据三个参数。
+function buildSendCodePayload(email) {
   const captcha = registrationConfig.value.captcha;
-  if (captcha?.enabled && captcha?.ready && !captchaResponse.value) {
-    authMessage.value = "请完成人机验证后再继续。";
-    return null;
+
+  return {
+    email,
+    captcha: captcha?.enabled
+      ? { response: String(captchaResponse.value ?? "").trim() }
+      : undefined,
+    dev_ticket: import.meta.env.VITE_DEV_TICKET || "",
+  };
+}
+
+// 停止重发冷却倒计时并归零。
+function clearResendCooldown() {
+  if (resendCooldownTimer !== null) {
+    clearInterval(resendCooldownTimer);
+    resendCooldownTimer = null;
+  }
+  resendCooldownRemaining.value = 0;
+}
+
+// 按后端配置的冷却秒数启动重发倒计时；为 0 或非法时不启动。
+function startResendCooldown() {
+  clearResendCooldown();
+  const cooldownSeconds = Math.max(
+    0,
+    Math.floor(Number(registrationConfig.value.resend_cooldown_sec) || 0),
+  );
+
+  if (!cooldownSeconds) {
+    return;
   }
 
-  return { username, email, password, confirmPassword };
+  resendCooldownRemaining.value = cooldownSeconds;
+  resendCooldownTimer = window.setInterval(() => {
+    resendCooldownRemaining.value -= 1;
+    if (resendCooldownRemaining.value <= 0) {
+      clearResendCooldown();
+    }
+  }, 1000);
 }
 
-// 记录待验证的注册载荷并跳到验证页，验证码校验由该页负责。
-function proceedToRegistrationVerification({ username, email, sentEmail = email }) {
-  state.user.pendingRegistration = { username, email };
-
-  authMessage.value = `验证码已发送至 ${sentEmail}，请在下一页完成验证。`;
-  router.goToRoute("/verification");
+// 换一张新的验证码 token：Turnstile 的 token 是一次性的，每次发码后都要重新取。
+function refreshCaptcha() {
+  captchaResponse.value = "";
+  renderTurnstileWidget();
 }
 
-// 注册提交：校验表单 → 请求发送验证码 → 跳转验证页。
-// 429 表示发送过于频繁（验证码已发出过），同样直接跳转，让用户去验证页重发。
-async function startRegisterVerification() {
+// 回到第一步（保留已填写的表单），并停止重发冷却。
+function backToRegisterForm(message) {
+  registerStep.value = "form";
+  sentEmail.value = "";
+  verificationCode.value = "";
+  clearResendCooldown();
+  authMessage.value = message;
+}
+
+// 进入第二步：记录收件邮箱、清空验证码、开始冷却，并换一张新 token 以备重发。
+function enterVerifyStep(email) {
+  sentEmail.value = email;
+  verificationCode.value = "";
+  registerStep.value = "verify";
+  startResendCooldown();
+  refreshCaptcha();
+}
+
+// 第一步：邮箱格式与人机验证通过即请求发送验证码。
+// 429 表示发送过于频繁（验证码已发出过），按发送成功处理，直接进入第二步。
+async function sendRegisterCode() {
+  if (authSubmitting.value) {
+    return;
+  }
+
+  const email = validateEmailField();
+  if (!email) {
+    return;
+  }
+
+  authSubmitting.value = true;
+  authMessage.value = "正在发送验证码，请稍候...";
+  try {
+    const response = await authApi.sendVerificationCode(
+      buildSendCodePayload(email),
+    );
+    enterVerifyStep(response?.data?.email || email);
+  } catch (error) {
+    if (error?.status === 429) {
+      enterVerifyStep(email);
+      return;
+    }
+
+    authMessage.value =
+      error?.payload?.error?.message ||
+      error?.payload?.message ||
+      error?.message ||
+      "验证码发送失败，请稍后再试。";
+  } finally {
+    authSubmitting.value = false;
+  }
+}
+
+// 第二步重发：冷却结束且人机验证通过后，再次请求发送验证码。
+async function resendRegisterCode() {
+  if (
+    authSubmitting.value ||
+    registerStep.value !== "verify" ||
+    resendCooldownRemaining.value > 0
+  ) {
+    return;
+  }
+
+  const email = sentEmail.value;
+  if (!email) {
+    backToRegisterForm("注册信息已失效，请重新发送验证码。");
+    return;
+  }
+
+  const captcha = registrationConfig.value.captcha;
+  if (captcha?.enabled && captcha?.ready && !captchaResponse.value) {
+    authMessage.value = "请先完成人机验证，再点击重新发送。";
+    return;
+  }
+
+  authSubmitting.value = true;
+  authMessage.value = "正在重新发送验证码，请稍候...";
+  try {
+    await authApi.sendVerificationCode(buildSendCodePayload(email));
+    authMessage.value = `验证码已重新发送至 ${email}。`;
+    startResendCooldown();
+    refreshCaptcha();
+  } catch (error) {
+    authMessage.value =
+      error?.payload?.error?.message ||
+      error?.payload?.message ||
+      error?.message ||
+      "验证码重发失败。";
+  } finally {
+    authSubmitting.value = false;
+  }
+}
+
+// 第二步：校验账号信息与验证码后提交注册；成功后写入当前用户并回到第一步。
+async function submitRegisterVerification() {
   if (authSubmitting.value) {
     return;
   }
@@ -538,58 +723,93 @@ async function startRegisterVerification() {
     return;
   }
 
-  const { username, email, password, confirmPassword } = validated;
-
-  const captcha = registrationConfig.value.captcha;
-  if (captcha?.enabled && captcha?.ready && !captchaResponse.value) {
-    authMessage.value = "请完成人机验证后再发送验证码。";
+  const code = String(verificationCode.value ?? "").trim();
+  if (!code) {
+    authMessage.value = "验证码不能为空。";
     return;
   }
 
+  if (code.length !== verificationCodeLength.value) {
+    authMessage.value = `请输入 ${verificationCodeLength.value} 位验证码。`;
+    return;
+  }
+
+  const { username, email, password } = validated;
+
   authSubmitting.value = true;
-  authMessage.value = "正在发送验证码，请稍候...";
+  authMessage.value = "正在验证并完成注册，请稍候...";
   try {
-    const payload = {
+    // 完成注册时需要带上第一步未提交的账号信息。
+    const response = await authApi.verifyVerificationCode({
       email,
       username,
       password,
-      captcha: captcha?.enabled
-        ? { response: captchaResponse.value }
-        : undefined,
       dev_ticket: import.meta.env.VITE_DEV_TICKET || "",
-    };
-
-    const response = await authApi.sendVerificationCode(payload);
-    proceedToRegistrationVerification({
-      username,
-      email,
-      sentEmail: response?.data?.email || email,
+      code,
     });
-  } catch (error) {
-    if (error?.status === 429) {
-      proceedToRegistrationVerification({ username, email });
+
+    const payload = response?.data ?? response ?? {};
+    if (!response?.ok && payload?.ok === false) {
+      authMessage.value = payload?.message || "验证码错误，请重新输入。";
       return;
     }
 
-    const serverMessage =
-      error?.payload?.error?.message ||
-      error?.payload?.message ||
+    const account = payload?.account ?? response?.account ?? null;
+    if (account) {
+      state.user.currentUser = {
+        id: account.id ?? null,
+        username: account.username ?? username,
+        email: account.email ?? email,
+        playerNo: account.player_no ?? "",
+        role: account.role ?? "player",
+        team: account.team ?? null,
+      };
+    }
+
+    // 成功后 currentUser 已写入，页面会切到账户面板，这里只需复位注册流程。
+    const doneMessage = account
+      ? "注册验证已完成。"
+      : "注册验证已完成，正在同步会话状态。";
+    backToRegisterForm(doneMessage);
+    authForm.value = {
+      username: "",
+      email: "",
+      loginIdentifier: "",
+      password: "",
+      confirmPassword: "",
+    };
+  } catch (error) {
+    const payload = error?.payload ?? {};
+    const errorCode =
+      payload?.code || payload?.error?.code || error?.code || "";
+
+    if (errorCode === "E_AUTH") {
+      authMessage.value = "验证码无效或已过期，请重新发送验证码。";
+      return;
+    }
+
+    authMessage.value =
+      payload?.error?.message ||
+      payload?.message ||
       error?.message ||
-      "验证码发送失败，请稍后再试。";
-    authMessage.value = serverMessage;
+      "验证码校验失败。";
   } finally {
     authSubmitting.value = false;
   }
 }
 
-// 表单提交总入口：注册模式转交 startRegisterVerification，否则按邮箱 / 用户名走登录。
+// 表单提交总入口：注册模式按当前阶段走发码 / 完成注册，否则按邮箱 / 用户名走登录。
 async function handleAuthSubmit() {
   if (authSubmitting.value) {
     return;
   }
 
   if (authMode.value === "register") {
-    await startRegisterVerification();
+    if (registerStep.value === "verify") {
+      await submitRegisterVerification();
+    } else {
+      await sendRegisterCode();
+    }
     return;
   }
 
@@ -646,8 +866,6 @@ async function handleAuthSubmit() {
         team: account.team ?? null,
       };
     }
-
-    state.user.pendingRegistration = null;
 
     authMessage.value = account ? "登录成功。" : "登录成功，正在同步会话状态。";
     authForm.value = {
@@ -1053,6 +1271,25 @@ async function handleLogout(allDevices = false) {
             >
           </div>
 
+          <div
+            v-if="authMode === 'register' && registerStep === 'verify'"
+            class="verification-panel"
+          >
+            <p class="verification-help">
+              验证码已发送到 <strong>{{ sentEmail }}</strong
+              >，有效期为 {{ verificationCodeTtlMinutes }} 分钟。
+            </p>
+
+            <label class="verification-field">
+              <input
+                v-model="verificationCode"
+                type="text"
+                :maxlength="verificationCodeLength"
+                :placeholder="`请输入 ${verificationCodeLength} 位验证码`"
+              />
+            </label>
+          </div>
+
           <div class="auth-footer">
             <button
               class="primary-button"
@@ -1062,11 +1299,28 @@ async function handleLogout(allDevices = false) {
               {{
                 authSubmitting
                   ? authMode === "register"
-                    ? "发送中，请稍候..."
+                    ? registerStep === "verify"
+                      ? "验证中，请稍候..."
+                      : "发送中，请稍候..."
                     : "登录中，请稍候..."
                   : authMode === "register"
-                    ? "发送验证码"
+                    ? registerStep === "verify"
+                      ? "完成注册"
+                      : "发送验证码"
                     : "登录"
+              }}
+            </button>
+            <button
+              v-if="authMode === 'register' && registerStep === 'verify'"
+              class="text-link-button"
+              type="button"
+              :disabled="authSubmitting || resendCooldownRemaining > 0"
+              @click="resendRegisterCode"
+            >
+              {{
+                resendCooldownRemaining > 0
+                  ? `${resendCooldownRemaining} 秒后可重发`
+                  : "重新发送验证码"
               }}
             </button>
             <button
@@ -1282,12 +1536,6 @@ async function handleLogout(allDevices = false) {
   line-height: 1.6;
 }
 
-.verification-actions {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-}
-
 .primary-button,
 .secondary-button,
 .bar-btn {
@@ -1385,6 +1633,11 @@ async function handleLogout(allDevices = false) {
   font-size: 12px;
   line-height: 1.5;
   cursor: pointer;
+}
+
+.text-link-button:disabled {
+  color: var(--text-dim);
+  cursor: not-allowed;
 }
 
 .helper-text {
