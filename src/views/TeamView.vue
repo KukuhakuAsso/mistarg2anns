@@ -1,10 +1,12 @@
 <script setup>
 // 我的队伍页：对接 /api/team/* 系列接口。
 // 状态全部来自后端：currentTeam 为队伍对象，myJoinRequest 为未入队时的加入申请。
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { useGameState } from "@/composables/useGameState";
+import { useNameAvailability } from "@/composables/useNameAvailability";
 import { teamApi } from "@/api/team";
 import { normalizeTeamName, validateTeamName } from "@/config/team";
+import NameStatus from "@/components/NameStatus.vue";
 import UserTabs from "@/components/UserTabs.vue";
 
 const {
@@ -39,89 +41,30 @@ const createTeamName = ref("");
 const createTeamIntro = ref("");
 const joinCode = ref("");
 
-// 队名实时校验状态：idle / checking / available / taken / invalid。
-const teamNameStatus = ref("idle");
-const teamNameMessage = ref("");
-let teamNameCheckTimer = null;
-// 请求序号：只让最新一次检查的结果生效，避免乱序响应覆盖。
-let teamNameCheckRequestId = 0;
+// 队名实时查重：本地规则即时反馈（emoji / 换行等不必等提交），规则通过后防抖查唯一性。
+const {
+  status: teamNameStatus,
+  message: teamNameMessage,
+  reset: resetTeamNameState,
+  setStatus: setTeamNameState,
+} = useNameAvailability({
+  value: createTeamName,
+  validate: validateTeamName,
+  normalize: normalizeTeamName,
+  check: (name) => teamApi.nameAvailable(name),
+  // 后端返回的是 NFC + 去首尾空白后的值，必要时回写输入框。
+  writeBack: true,
+  messages: {
+    checking: "正在检查队名...",
+    available: "队名可以使用。",
+    taken: "该队名已被占用，换一个吧。",
+    error: "队名检查暂不可用，可直接尝试建队。",
+  },
+});
 
 const isLoggedIn = computed(() => Boolean(state.user.currentUser));
 const members = computed(() => currentTeam.value?.members ?? []);
 const currentAccountId = computed(() => state.user.currentUser?.id ?? null);
-
-function clearTeamNameCheck() {
-  if (teamNameCheckTimer) {
-    clearTimeout(teamNameCheckTimer);
-    teamNameCheckTimer = null;
-  }
-  teamNameCheckRequestId += 1;
-}
-
-function setTeamNameState(status, message = "") {
-  teamNameStatus.value = status;
-  teamNameMessage.value = message;
-}
-
-// 队名输入即校验：先按本地规则即时反馈（emoji / 换行等不必等提交），
-// 规则通过后再防抖调用 name-available 做唯一性提示。
-watch(createTeamName, (value) => {
-  clearTeamNameCheck();
-
-  const name = normalizeTeamName(value);
-  if (!name) {
-    setTeamNameState("idle");
-    return;
-  }
-
-  const validation = validateTeamName(name);
-  if (!validation.ok) {
-    setTeamNameState("invalid", validation.message);
-    return;
-  }
-
-  const requestId = teamNameCheckRequestId;
-  setTeamNameState("checking", "正在检查队名...");
-
-  teamNameCheckTimer = window.setTimeout(async () => {
-    try {
-      const response = await teamApi.nameAvailable(validation.value);
-      if (requestId !== teamNameCheckRequestId) {
-        return;
-      }
-
-      const data = response?.data ?? {};
-      // 后端返回的是 NFC + 去首尾空白后的值；若与输入不同则回写输入框。
-      if (data.name && data.name !== createTeamName.value) {
-        createTeamName.value = data.name;
-      }
-
-      const taken = data.status === "taken" || data.available === false;
-      setTeamNameState(
-        taken ? "taken" : "available",
-        taken ? "该队名已被占用，换一个吧。" : "队名可以使用。",
-      );
-    } catch (error) {
-      if (requestId !== teamNameCheckRequestId) {
-        return;
-      }
-
-      // 400 时会带上队名不合规的具体原因；其余错误（如 429 频控）留在提示行里。
-      const fieldMessage =
-        error?.payload?.error?.detail?.fields?.name ||
-        error?.payload?.detail?.fields?.name ||
-        "";
-      if (fieldMessage) {
-        setTeamNameState("invalid", fieldMessage);
-        return;
-      }
-
-      setTeamNameState("idle", error?.message || "队名检查暂不可用，可直接尝试建队。");
-    }
-  }, 600);
-});
-
-onBeforeUnmount(clearTeamNameCheck);
 
 // 我的加入申请状态文案。
 const joinRequestStatusLabel = computed(() => {
@@ -216,7 +159,7 @@ async function handleCreateTeam() {
     result.code === "E_CONFLICT" && String(result.message || "").includes("队名");
   const nameError = result.nameError || (conflictOnName ? result.message : "");
   if (nameError) {
-    clearTeamNameCheck();
+    resetTeamNameState();
     setTeamNameState("taken", nameError);
   }
 }
@@ -338,20 +281,22 @@ function handleTransfer(member) {
           <p class="panel-card__label">创建队伍</p>
           <div class="team-action-group">
             <input
+              id="create-team-name"
               v-model="createTeamName"
               type="text"
               maxlength="32"
               placeholder="队伍名称（必填，1–32 字）"
               aria-label="队伍名称"
               class="team-input"
+              :aria-describedby="
+                teamNameMessage ? 'create-team-name-status' : undefined
+              "
             />
-            <small
-              v-if="teamNameMessage"
-              class="team-name-status"
-              :class="`is-${teamNameStatus}`"
-            >
-              {{ teamNameMessage }}
-            </small>
+            <NameStatus
+              id="create-team-name-status"
+              :status="teamNameStatus"
+              :message="teamNameMessage"
+            />
             <input
               v-model="createTeamIntro"
               type="text"
@@ -651,21 +596,6 @@ function handleTransfer(member) {
   display: flex;
   flex-direction: column;
   gap: 10px;
-}
-
-.team-name-status {
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--text-dim);
-}
-
-.team-name-status.is-available {
-  color: var(--accent);
-}
-
-.team-name-status.is-taken,
-.team-name-status.is-invalid {
-  color: var(--danger);
 }
 
 .team-input,
