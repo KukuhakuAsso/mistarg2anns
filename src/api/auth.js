@@ -25,14 +25,6 @@ export const authApi = {
       return result;
     }),
 
-  // 用户注册
-  register: (payload) =>
-    request("/auth/register", {
-      method: "POST",
-      body: payload,
-      skipRefresh: true,
-    }),
-
   // 检查用户名是否可用
   usernameAvailable: (username) =>
     request("/auth/username-available", {
@@ -41,7 +33,7 @@ export const authApi = {
       skipRefresh: true,
     }),
 
-  // 发送邮箱验证码
+  // 发送邮箱验证码（注册第一步）：仅需 email / captcha / dev_ticket
   sendVerificationCode: (payload) =>
     request("/auth/reg/start", {
       method: "POST",
@@ -49,7 +41,7 @@ export const authApi = {
       skipRefresh: true,
     }),
 
-  // 验证邮箱验证码
+  // 校验邮箱验证码并完成注册（注册第二步）：email / username / password / dev_ticket / code
   verifyVerificationCode: (payload) =>
     request("/auth/reg/verify", {
       method: "POST",
