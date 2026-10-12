@@ -1,10 +1,12 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useGameState } from "@/composables/useGameState";
+import { useNameAvailability } from "@/composables/useNameAvailability";
 import { router } from "@/router";
 import { probeHealth } from "@/api/health";
 import { authApi } from "@/api/auth";
 import { loginWithPassword } from "@/config/auth";
+import NameStatus from "@/components/NameStatus.vue";
 import UserTabs from "@/components/UserTabs.vue";
 
 // 注册视图的状态与逻辑，包括登录、注册、用户名修改等功能。
@@ -21,10 +23,6 @@ const healthStatus = ref({
   ok: null,
   message: "正在检查服务状态...",
 });
-// 用户名校验状态，包括是否正在检查、检查结果等。
-const usernameChecking = ref(false);
-const usernameStatus = ref("idle"); // idle = 未检查, checking = 检查中, ok = 可用, taken = 已被占用
-const usernameCheckTimer = ref(null);
 // 注册配置，包括验证码、短信验证码等设置。
 const registrationConfig = ref({
   captcha: {
@@ -52,8 +50,6 @@ const verificationCode = ref("");
 // 重发验证码的冷却剩余秒数。
 const resendCooldownRemaining = ref(0);
 let resendCooldownTimer = null;
-// 用户名检查请求的序号，用于防止过期响应覆盖最新状态。
-let usernameCheckRequestId = 0;
 // 表单数据与消息状态，包括登录、注册所需的字段及提示信息。
 const authForm = ref({
   username: "",
@@ -69,17 +65,12 @@ const currentUserEmail = computed(() => state.user.currentUser?.email || "");
 
 // 当前用户名修改草稿，用于内联编辑器。
 const currentUsernameDraft = ref("");
-// 用户名修改的校验状态，包括是否正在检查、检查结果、请求序号等。
-const usernameChangeChecking = ref(false);
-const usernameChangeStatus = ref("idle");
-const usernameChangeTimer = ref(null);
+// 用户名修改的提交状态（查重状态由 useNameAvailability 提供）。
 const usernameChangeState = ref({
   open: false,
   message: "",
   submitting: false,
 });
-// 用户名修改请求的序号，用于防止过期响应覆盖最新状态。
-let usernameChangeRequestId = 0;
 // 按输入内容推断登录类型：含 @ 视为邮箱，否则按用户名处理。
 const detectedLoginType = computed(() =>
   authForm.value.loginIdentifier.includes("@") ? "email" : "username",
@@ -108,8 +99,7 @@ function normalizeUsername(value) {
 function resetUsernameEditor() {
   usernameChangeState.value = { open: false, message: "", submitting: false };
   currentUsernameDraft.value = "";
-  usernameChangeStatus.value = "idle";
-  usernameChangeChecking.value = false;
+  resetUsernameChangeCheck();
 }
 
 // 打开「修改用户名」编辑器，草稿以当前用户名为起点。
@@ -179,135 +169,48 @@ watch(
   },
 );
 
-// 注册用户名防抖查重（800ms）：先本地校验格式，再用请求序号保证只有最新一次响应生效。
-watch(
-  () => authForm.value.username,
-  (nextValue) => {
-    if (authMode.value !== "register") {
-      usernameStatus.value = "idle";
-      return;
-    }
-
-    const sanitized = normalizeUsername(nextValue);
-    if (!sanitized) {
-      usernameStatus.value = "idle";
-      if (usernameCheckTimer.value) {
-        clearTimeout(usernameCheckTimer.value);
-        usernameCheckTimer.value = null;
-      }
-      return;
-    }
-
-    const validation = validateUsernamePattern(sanitized);
-    if (!validation.ok) {
-      usernameStatus.value = "invalid";
-      if (usernameCheckTimer.value) {
-        clearTimeout(usernameCheckTimer.value);
-        usernameCheckTimer.value = null;
-      }
-      return;
-    }
-
-    if (usernameCheckTimer.value) {
-      clearTimeout(usernameCheckTimer.value);
-    }
-
-    usernameCheckTimer.value = window.setTimeout(async () => {
-      const currentRequestId = ++usernameCheckRequestId;
-      usernameChecking.value = true;
-      usernameStatus.value = "checking";
-
-      try {
-        const response = await authApi.usernameAvailable(sanitized);
-        if (currentRequestId !== usernameCheckRequestId) {
-          return;
-        }
-
-        const status = response?.data?.status || response?.status;
-        if (status === "available") {
-          usernameStatus.value = "available";
-        } else if (status === "taken") {
-          usernameStatus.value = "taken";
-        } else if (status === "unchanged") {
-          usernameStatus.value = "unchanged";
-        } else {
-          usernameStatus.value = "idle";
-        }
-      } catch (error) {
-        if (currentRequestId === usernameCheckRequestId) {
-          usernameStatus.value = "idle";
-        }
-      } finally {
-        if (currentRequestId === usernameCheckRequestId) {
-          usernameChecking.value = false;
-        }
-      }
-    }, 800);
+// 注册用户名校验：本地规则即时反馈，规则通过后防抖查唯一性（共用 useNameAvailability）。
+const {
+  status: usernameStatus,
+  message: usernameStatusMessage,
+  reset: resetUsernameCheck,
+} = useNameAvailability({
+  value: () => authForm.value.username,
+  validate: validateUsernamePattern,
+  normalize: normalizeUsername,
+  check: (name) => authApi.usernameAvailable(name),
+  // 仅在注册页签下查重：切到登录页签即回落为空闲，不显示旧结论。
+  enabled: () => authMode.value === "register",
+  // 已被当前账号占用：注册场景不会命中，保留给「修改用户名」那一处使用。
+  messages: {
+    checking: "检查中，请稍候...",
+    available: "用户名可用",
+    taken: "用户名已被占用",
   },
-);
+});
 
-// 账号面板里「新用户名」草稿的防抖查重，逻辑同上，并先与本机当前用户名比对。
-watch(
-  () => currentUsernameDraft.value,
-  (nextValue) => {
-    if (usernameChangeTimer.value) {
-      clearTimeout(usernameChangeTimer.value);
-      usernameChangeTimer.value = null;
-    }
-
-    const requestId = ++usernameChangeRequestId;
-    usernameChangeChecking.value = false;
-
-    if (!usernameChangeState.value.open) {
-      usernameChangeStatus.value = "idle";
-      return;
-    }
-
-    const username = normalizeUsername(nextValue);
-    if (!username) {
-      usernameChangeStatus.value = "idle";
-      return;
-    }
-
-    const validation = validateUsernamePattern(username);
-    if (!validation.ok) {
-      usernameChangeStatus.value = "invalid";
-      return;
-    }
-
-    const currentUsername = normalizeUsername(
-      state.user.currentUser?.username || "",
-    );
-    if (username.toLowerCase() === currentUsername.toLowerCase()) {
-      usernameChangeStatus.value = "unchanged";
-      return;
-    }
-
-    usernameChangeTimer.value = window.setTimeout(async () => {
-      usernameChangeChecking.value = true;
-      usernameChangeStatus.value = "checking";
-
-      try {
-        const response = await authApi.usernameAvailable(username);
-        if (requestId !== usernameChangeRequestId) {
-          return;
-        }
-
-        const status = response?.data?.status || response?.status;
-        usernameChangeStatus.value =
-          status === "available" || status === "taken" ? status : "idle";
-      } catch (error) {
-        if (requestId === usernameChangeRequestId) {
-          usernameChangeStatus.value = "idle";
-        }
-      } finally {
-        if (requestId === usernameChangeRequestId) {
-          usernameChangeChecking.value = false;
-        }
-      }
-    }, 800);
+// 账号面板里「新用户名」草稿的查重：与本机当前用户名相同时提示 unchanged，其余同上。
+const {
+  status: usernameChangeStatus,
+  message: usernameChangeStatusMessage,
+  reset: resetUsernameChangeCheck,
+} = useNameAvailability({
+  value: currentUsernameDraft,
+  validate: validateUsernamePattern,
+  normalize: normalizeUsername,
+  check: (name) => authApi.usernameAvailable(name),
+  // 编辑器收起时不做任何检查。
+  enabled: () => usernameChangeState.value.open,
+  unchanged: (name) =>
+    name.toLowerCase() ===
+    normalizeUsername(state.user.currentUser?.username || "").toLowerCase(),
+  messages: {
+    checking: "检查中，请稍候...",
+    available: "用户名可用",
+    taken: "用户名已被占用",
+    unchanged: "这是当前账号用户名",
   },
-);
+});
 
 // 拉取后端注册配置，必要时加载 Turnstile 脚本并渲染组件；失败则关掉人机验证并提示用户。
 async function loadRegistrationConfig() {
@@ -441,17 +344,9 @@ onMounted(async () => {
   }
 });
 
-// 离开页面时清理防抖定时器与重发冷却、销毁人机验证组件，并让在途的查重请求失效。
+// 离开页面时停止重发冷却、销毁人机验证组件（查重定时器由 useNameAvailability 自行清理）。
 onBeforeUnmount(() => {
   clearResendCooldown();
-  if (usernameCheckTimer.value) {
-    clearTimeout(usernameCheckTimer.value);
-    usernameCheckTimer.value = null;
-  }
-  if (usernameChangeTimer.value) {
-    clearTimeout(usernameChangeTimer.value);
-    usernameChangeTimer.value = null;
-  }
   if (turnstileWidgetId.value !== null && window.turnstile?.remove) {
     try {
       window.turnstile.remove(turnstileWidgetId.value);
@@ -461,7 +356,6 @@ onBeforeUnmount(() => {
   }
   turnstileWidgetId.value = null;
   captchaResponse.value = "";
-  usernameCheckRequestId += 1;
 });
 
 // 切换登录 / 注册页签：清空表单与提示、重置注册流程、销毁旧的人机验证并在注册页签下重建；提交过程中不允许切换。
@@ -483,8 +377,7 @@ function switchAuthMode(mode) {
     password: "",
     confirmPassword: "",
   };
-  usernameStatus.value = "idle";
-  usernameChecking.value = false;
+  resetUsernameCheck();
   captchaResponse.value = "";
   if (turnstileWidgetId.value !== null && window.turnstile?.remove) {
     try {
@@ -1073,31 +966,21 @@ async function handleLogout(allDevices = false) {
           <label class="field">
             <span>新用户名</span>
             <input
+              id="rename-username"
               v-model="currentUsernameDraft"
               type="text"
               placeholder="请输入新用户名"
+              :aria-describedby="
+                usernameChangeStatusMessage
+                  ? 'rename-username-status'
+                  : undefined
+              "
             />
-            <small
-              v-if="currentUsernameDraft"
-              class="username-status"
-              :class="usernameChangeStatus"
-            >
-              <template v-if="usernameChangeChecking"
-                >检查中，请稍候...</template
-              >
-              <template v-else-if="usernameChangeStatus === 'available'"
-                >用户名可用</template
-              >
-              <template v-else-if="usernameChangeStatus === 'taken'"
-                >用户名已被占用</template
-              >
-              <template v-else-if="usernameChangeStatus === 'unchanged'"
-                >这是当前账号用户名</template
-              >
-              <template v-else-if="usernameChangeStatus === 'invalid'"
-                >用户名格式不符合规则</template
-              >
-            </small>
+            <NameStatus
+              id="rename-username-status"
+              :status="usernameChangeStatus"
+              :message="usernameChangeStatusMessage"
+            />
           </label>
 
           <div
@@ -1199,29 +1082,19 @@ async function handleLogout(allDevices = false) {
           <label v-else>
             <span>用户名</span>
             <input
+              id="register-username"
               v-model="authForm.username"
               type="text"
               placeholder="请输入用户名"
+              :aria-describedby="
+                usernameStatusMessage ? 'register-username-status' : undefined
+              "
             />
-            <small
-              v-if="authForm.username"
-              class="username-status"
-              :class="usernameStatus"
-            >
-              <template v-if="usernameChecking">检查中，请稍候...</template>
-              <template v-else-if="usernameStatus === 'available'"
-                >用户名可用</template
-              >
-              <template v-else-if="usernameStatus === 'taken'"
-                >用户名已被占用</template
-              >
-              <template v-else-if="usernameStatus === 'unchanged'"
-                >这是当前账号用户名</template
-              >
-              <template v-else-if="usernameStatus === 'invalid'"
-                >用户名格式不符合规则</template
-              >
-            </small>
+            <NameStatus
+              id="register-username-status"
+              :status="usernameStatus"
+              :message="usernameStatusMessage"
+            />
           </label>
 
           <label v-if="authMode === 'register'">
@@ -1645,27 +1518,6 @@ async function handleLogout(allDevices = false) {
   font-size: 12px;
   line-height: 1.6;
   color: var(--text-dim);
-}
-
-.username-status {
-  display: block;
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--text-dim);
-}
-
-.username-status.available {
-  color: #6ce39b;
-}
-
-.username-status.taken,
-.username-status.invalid {
-  color: #ff8a80;
-}
-
-.username-status.unchanged,
-.username-status.checking {
-  color: #ffd166;
 }
 
 @keyframes account-panel-in {

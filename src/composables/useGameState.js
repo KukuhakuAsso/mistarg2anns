@@ -28,6 +28,9 @@ function createDefaultState() {
     user: {
       currentUser: null,
       users: [],
+      // 队伍信息全部由后端 /api/team/* 提供：
+      // loaded 表示是否已成功拉取过；team 为已入队时的后端队伍对象；
+      // myJoinRequest 为未入队时的「我的加入申请」。
       team: {
         loaded: false,
         team: null,
