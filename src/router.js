@@ -33,7 +33,6 @@ export const FEATURE_ROUTES = new Set([
   "communication",
   "tools",
   "timeline",
-  "verification",
   "password",
   "forgot",
 ]);

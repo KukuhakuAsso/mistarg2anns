@@ -26,8 +26,6 @@ function createDefaultState() {
     user: {
       currentUser: null,
       users: [],
-      // 注册验证流程的待验证载荷；为 null 表示当前没有进行中的注册验证。
-      pendingRegistration: null,
       team: {
         joined: false,
         name: "",

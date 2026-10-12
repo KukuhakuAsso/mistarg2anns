@@ -14,7 +14,6 @@ import ArchiveSearchView from "@/views/ArchiveSearchView.vue";
 import CommunicationView from "@/views/CommunicationView.vue";
 import ToolsView from "@/views/ToolsView.vue";
 import TimelineView from "@/views/TimelineView.vue";
-import VerificationView from "@/views/VerificationView.vue";
 import ChangePasswordView from "@/views/ChangePasswordView.vue";
 import ForgotPasswordView from "@/views/ForgotPasswordView.vue";
 import { FOLDER_BY_ID } from "@/config/folders";
@@ -29,8 +28,8 @@ const currentRoute = computed(() => router.currentRoute);
 watch(
     () => [currentRoute.value.name, state.user.currentUser],
     ([routeName, currentUser]) => {
-        // 未登录也能访问的路由：桌面、登录注册、邮箱验证、找回密码。
-        const allowedPublicRoutes = new Set(["desktop", "register", "verification", "forgot"]);
+        // 未登录也能访问的路由：桌面、登录注册、找回密码。
+        const allowedPublicRoutes = new Set(["desktop", "register", "forgot"]);
         if (!currentUser && !allowedPublicRoutes.has(routeName)) {
             router.goToRoute("/register");
         }
@@ -113,9 +112,6 @@ function backToDesktop() {
                 <TimelineView
                     v-else-if="activeFeature === 'timeline'"
                     @close="backToDesktop"
-                />
-                <VerificationView
-                    v-else-if="activeFeature === 'verification'"
                 />
                 <ChangePasswordView
                     v-else-if="activeFeature === 'password'"
