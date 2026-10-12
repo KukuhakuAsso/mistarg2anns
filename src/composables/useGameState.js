@@ -334,14 +334,37 @@ function teamErrorMessage(error, fallback) {
   );
 }
 
+// 当前登录账号的身份标识，用于判断异步响应是否仍属于当前活跃账号。
+function currentAccountKey() {
+  const user = state.user.currentUser;
+  if (!user) {
+    return null;
+  }
+  return user.id ?? user.username ?? null;
+}
+
+// 队伍请求代号：每次发起新的 loadMyTeam 时递增，用于丢弃更早发出的过期响应。
+let teamRequestGeneration = 0;
+
 // 拉取「我的队伍 + 我的加入申请」并写入本地状态（GET /api/team/me）。
 async function loadMyTeam() {
   if (!state.user.currentUser) {
     return { ok: false, message: "请先登录后再查看队伍。" };
   }
 
+  // 记录发起时的账号与请求代号；响应回来时若已不匹配，说明账号已切换或有更新的请求，直接丢弃。
+  const accountKey = currentAccountKey();
+  const requestId = ++teamRequestGeneration;
+
   try {
     const response = await teamApi.getMyTeam();
+    if (
+      requestId !== teamRequestGeneration ||
+      accountKey !== currentAccountKey()
+    ) {
+      return { ok: false, stale: true, message: "队伍信息已过期。" };
+    }
+
     const data = response?.data ?? {};
     state.user.team.team = data.team ?? null;
     state.user.team.myJoinRequest = data.myJoinRequest ?? null;
