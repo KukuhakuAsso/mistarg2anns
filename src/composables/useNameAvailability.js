@@ -1,4 +1,5 @@
 import { onScopeDispose, ref, watch } from "vue";
+import { extractFieldMessages } from "@/api/errors";
 
 // 名称查重（用户名 / 队名共用）：本地规则即时校验 + 防抖查唯一性 + 序号防竞态。
 // 判定采用「正向确认制」：只有接口明确回 available / taken 才落状态，未知响应保持中性。
@@ -109,10 +110,7 @@ export function useNameAvailability({
         }
 
         // 400 时后端会在 detail.fields.<字段> 写明不合规的具体原因。
-        const fieldMessage =
-          error?.payload?.error?.detail?.fields?.name ||
-          error?.payload?.detail?.fields?.name ||
-          "";
+        const fieldMessage = extractFieldMessages(error)[0] || "";
         if (fieldMessage) {
           setStatus("invalid", fieldMessage);
           return;

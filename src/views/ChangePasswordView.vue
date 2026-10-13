@@ -4,7 +4,10 @@ import { computed, ref } from "vue";
 import { authApi } from "@/api/auth";
 import { clearAccessToken } from "@/api/request";
 import { useGameState } from "@/composables/useGameState";
+import { useStatusMessage } from "@/composables/useStatusMessage";
+import { extractErrorMessage, extractFieldMessages } from "@/api/errors";
 import { router } from "@/router";
+import StatusMessage from "@/components/StatusMessage.vue";
 
 const emit = defineEmits(["close"]);
 const { state } = useGameState();
@@ -15,8 +18,12 @@ const form = ref({
   confirm_password: "",
 });
 const submitting = ref(false);
-const message = ref("");
-const messageType = ref("info");
+// 修改密码的结果提示：文案与语义色统一由 useStatusMessage 管理。
+const {
+  message,
+  tone: messageType,
+  set: setMessage,
+} = useStatusMessage();
 
 const hasLoggedInUser = computed(() => Boolean(state.user.currentUser));
 
@@ -48,14 +55,12 @@ function validateForm() {
 async function submitChangePassword() {
   const validationError = validateForm();
   if (validationError) {
-    message.value = validationError;
-    messageType.value = "error";
+    setMessage("error", validationError);
     return;
   }
 
   submitting.value = true;
-  message.value = "正在更新密码，请稍候...";
-  messageType.value = "info";
+  setMessage("pending", "正在更新密码，请稍候...");
 
   try {
     await authApi.changePassword({
@@ -63,8 +68,7 @@ async function submitChangePassword() {
       new_password: String(form.value.new_password ?? "").trim(),
     });
 
-    message.value = "密码修改成功，当前会话已失效，请重新登录。";
-    messageType.value = "success";
+    setMessage("success", "密码修改成功，当前会话已失效，请重新登录。");
     clearAccessToken();
     state.user.currentUser = null;
 
@@ -75,16 +79,17 @@ async function submitChangePassword() {
     const payload = error?.payload ?? {};
     const code = payload?.code || payload?.error?.code || error?.code || "";
     const detail = payload?.detail ?? payload?.error?.detail ?? {};
+    // 400 时后端在 detail.fields 里写明不合规的具体原因，优先展示它。
+    const fieldText = extractFieldMessages(error).join("；");
 
-    if (code === "E_VALIDATION") {
-      message.value = "新密码格式不正确，至少 8 位字符。";
-    } else if (code === "E_AUTH") {
-      message.value = detail?.reason || "原密码不正确。";
-    } else {
-      message.value = error?.message || "密码修改失败，请稍后再试。";
-    }
+    const failureMessage =
+      code === "E_VALIDATION"
+        ? fieldText || "新密码格式不正确，至少 8 位字符。"
+        : code === "E_AUTH"
+          ? detail?.reason || "原密码不正确。"
+          : extractErrorMessage(error, "密码修改失败，请稍后再试。");
 
-    messageType.value = "error";
+    setMessage("error", failureMessage);
   } finally {
     submitting.value = false;
   }
@@ -152,12 +157,7 @@ function closeView() {
               />
             </label>
 
-            <div
-              v-if="message"
-              :class="['status-box', `status-box--${messageType}`]"
-            >
-              {{ message }}
-            </div>
+            <StatusMessage :message="message" :tone="messageType" />
 
             <button
               class="primary-button"
@@ -270,31 +270,6 @@ function closeView() {
   border-color: var(--border-strong);
   box-shadow: 0 0 0 3px rgba(110, 171, 255, 0.18);
   background: rgba(18, 24, 36, 0.14);
-}
-
-.status-box {
-  padding: 10px 12px;
-  border-radius: 10px;
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-.status-box--info {
-  background: rgba(95, 124, 255, 0.08);
-  border: 1px solid rgba(95, 124, 255, 0.25);
-  color: var(--text);
-}
-
-.status-box--success {
-  background: rgba(61, 200, 128, 0.08);
-  border: 1px solid rgba(61, 200, 128, 0.3);
-  color: #7fe0a8;
-}
-
-.status-box--error {
-  background: rgba(255, 93, 93, 0.08);
-  border: 1px solid rgba(255, 93, 93, 0.25);
-  color: #ff9f9f;
 }
 
 .primary-button,

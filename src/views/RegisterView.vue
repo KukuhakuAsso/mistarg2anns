@@ -2,11 +2,14 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useGameState } from "@/composables/useGameState";
 import { useNameAvailability } from "@/composables/useNameAvailability";
+import { useStatusMessage } from "@/composables/useStatusMessage";
 import { router } from "@/router";
 import { probeHealth } from "@/api/health";
 import { authApi } from "@/api/auth";
+import { extractErrorMessage, extractFieldMessages } from "@/api/errors";
 import { loginWithPassword } from "@/config/auth";
 import NameStatus from "@/components/NameStatus.vue";
+import StatusMessage from "@/components/StatusMessage.vue";
 import UserTabs from "@/components/UserTabs.vue";
 
 // 注册视图的状态与逻辑，包括登录、注册、用户名修改等功能。
@@ -41,6 +44,9 @@ const registrationConfig = ref({
 const captchaContainer = ref(null);
 const turnstileWidgetId = ref(null);
 const captchaResponse = ref("");
+// 当前凭据是否已被某次发码请求消耗掉：人机验证凭据是一次性的，
+// 用掉后组件仍停在「已验证」，必须重置组件才能再拿到一份。
+const captchaTokenUsed = ref(false);
 // 注册流程的当前阶段：form = 填写表单并发送验证码，verify = 填写验证码完成注册。
 const registerStep = ref("form");
 // 验证码实际发送到的邮箱（以后端回传为准），用于第二步文案与重发。
@@ -58,7 +64,13 @@ const authForm = ref({
   password: "",
   confirmPassword: "",
 });
-const authMessage = ref("");
+// 全局提示（登录 / 注册 / 账号操作共用）：文案与语义色统一由 useStatusMessage 管理。
+const {
+  message: authMessage,
+  tone: authMessageTone,
+  set: setAuthMessage,
+  clear: clearAuthMessage,
+} = useStatusMessage();
 
 // 当前登录用户的邮箱，用于账号面板展示。
 const currentUserEmail = computed(() => state.user.currentUser?.email || "");
@@ -68,9 +80,15 @@ const currentUsernameDraft = ref("");
 // 用户名修改的提交状态（查重状态由 useNameAvailability 提供）。
 const usernameChangeState = ref({
   open: false,
-  message: "",
   submitting: false,
 });
+// 用户名修改的结果提示：文案与语义色统一由 useStatusMessage 管理。
+const {
+  message: usernameChangeMessage,
+  tone: usernameChangeMessageTone,
+  set: setUsernameChangeMessage,
+  clear: clearUsernameChangeMessage,
+} = useStatusMessage();
 // 按输入内容推断登录类型：含 @ 视为邮箱，否则按用户名处理。
 const detectedLoginType = computed(() =>
   authForm.value.loginIdentifier.includes("@") ? "email" : "username",
@@ -97,9 +115,10 @@ function normalizeUsername(value) {
 
 // 收起「修改用户名」内联编辑器，并清空草稿与校验状态。
 function resetUsernameEditor() {
-  usernameChangeState.value = { open: false, message: "", submitting: false };
+  usernameChangeState.value = { open: false, submitting: false };
   currentUsernameDraft.value = "";
   resetUsernameChangeCheck();
+  clearUsernameChangeMessage();
 }
 
 // 打开「修改用户名」编辑器，草稿以当前用户名为起点。
@@ -109,11 +128,8 @@ function openUsernameEditor() {
   }
 
   currentUsernameDraft.value = state.user.currentUser.username || "";
-  usernameChangeState.value = {
-    open: true,
-    message: "",
-    submitting: false,
-  };
+  usernameChangeState.value = { open: true, submitting: false };
+  clearUsernameChangeMessage();
 }
 
 // 校验用户名规则（1–32 字符、字符白名单、禁用字符、禁止玩家编号格式）；
@@ -235,7 +251,7 @@ async function loadRegistrationConfig() {
   } catch (error) {
     registrationConfig.value.captcha.enabled = false;
     registrationConfig.value.captcha.ready = false;
-    authMessage.value = "注册配置暂不可用，请稍后再试。";
+    setAuthMessage("error", "注册配置暂不可用，请稍后再试。");
   }
 }
 
@@ -276,8 +292,7 @@ function loadTurnstileScript(scriptUrl) {
   });
 }
 
-// 在注册表单的容器里渲染人机验证，回调把 token 写回 captchaResponse（并同步一份到 window 供外部读取）；
-// 配置未就绪或缺容器 / 脚本时跳过。
+// 在注册表单的容器里渲染人机验证，回调把凭据写回 captchaResponse；配置未就绪或缺容器 / 脚本时跳过。
 function renderTurnstileWidget() {
   const captcha = registrationConfig.value.captcha;
   const widget = captcha?.widget;
@@ -308,12 +323,15 @@ function renderTurnstileWidget() {
     ...(params && typeof params === "object" ? params : {}),
     callback: (response) => {
       captchaResponse.value = response || "";
+      captchaTokenUsed.value = false;
     },
     "expired-callback": () => {
       captchaResponse.value = "";
+      captchaTokenUsed.value = false;
     },
     "error-callback": () => {
       captchaResponse.value = "";
+      captchaTokenUsed.value = false;
     },
   });
 }
@@ -365,7 +383,7 @@ function switchAuthMode(mode) {
   }
 
   authMode.value = mode;
-  authMessage.value = "";
+  clearAuthMessage();
   registerStep.value = "form";
   sentEmail.value = "";
   verificationCode.value = "";
@@ -379,6 +397,7 @@ function switchAuthMode(mode) {
   };
   resetUsernameCheck();
   captchaResponse.value = "";
+  captchaTokenUsed.value = false;
   if (turnstileWidgetId.value !== null && window.turnstile?.remove) {
     try {
       window.turnstile.remove(turnstileWidgetId.value);
@@ -394,24 +413,22 @@ function switchAuthMode(mode) {
   }
 }
 
-// 校验发送验证码所需字段：邮箱格式 + 人机验证；不通过时已写入 authMessage，返回 null。
+// 校验发送验证码所需字段：邮箱格式 + 人机验证；不通过时已写入提示，返回 null。
 function validateEmailField() {
   const email = String(authForm.value.email ?? "").trim();
 
   if (!email) {
-    authMessage.value = "请输入邮箱地址。";
+    setAuthMessage("error", "请输入邮箱地址。");
     return null;
   }
 
   const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   if (!emailPattern.test(email)) {
-    authMessage.value = "请输入有效的邮箱地址。";
+    setAuthMessage("error", "请输入有效的邮箱地址。");
     return null;
   }
 
-  const captcha = registrationConfig.value.captcha;
-  if (captcha?.enabled && captcha?.ready && !captchaResponse.value) {
-    authMessage.value = "请完成人机验证后再继续。";
+  if (!ensureCaptchaToken()) {
     return null;
   }
 
@@ -419,7 +436,7 @@ function validateEmailField() {
 }
 
 // 校验完成注册所需字段（用户名规则、邮箱格式、可选的两次密码一致）；
-// 不通过时已直接写入 authMessage，返回 null 表示失败。
+// 不通过时已直接写入提示，返回 null 表示失败。
 function validateRegisterForm() {
   const username = String(authForm.value.username ?? "").trim();
   const email = String(authForm.value.email ?? "").trim();
@@ -427,35 +444,35 @@ function validateRegisterForm() {
   const confirmPassword = String(authForm.value.confirmPassword ?? "").trim();
 
   if (!username || !email) {
-    authMessage.value = "用户名和邮箱不能为空。";
+    setAuthMessage("error", "用户名和邮箱不能为空。");
     return null;
   }
 
   const usernamePatternResult = validateUsernamePattern(username);
   if (!usernamePatternResult.ok) {
-    authMessage.value = usernamePatternResult.message;
+    setAuthMessage("error", usernamePatternResult.message);
     return null;
   }
 
   const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   if (!emailPattern.test(email)) {
-    authMessage.value = "请输入有效的邮箱地址。";
+    setAuthMessage("error", "请输入有效的邮箱地址。");
     return null;
   }
 
   if (password || confirmPassword) {
     if (password.length < 8) {
-      authMessage.value = "密码长度至少需要 8 位。";
+      setAuthMessage("error", "密码长度至少需要 8 位。");
       return null;
     }
 
     if (!confirmPassword) {
-      authMessage.value = "请输入确认密码，或将密码留空。";
+      setAuthMessage("error", "请输入确认密码，或将密码留空。");
       return null;
     }
 
     if (password !== confirmPassword) {
-      authMessage.value = "两次输入的密码不一致。";
+      setAuthMessage("error", "两次输入的密码不一致。");
       return null;
     }
   }
@@ -506,28 +523,62 @@ function startResendCooldown() {
   }, 1000);
 }
 
-// 换一张新的验证码 token：Turnstile 的 token 是一次性的，每次发码后都要重新取。
+// 重置人机验证组件，回到「待验证」状态（需要一份新凭据时调用）。
 function refreshCaptcha() {
   captchaResponse.value = "";
+  captchaTokenUsed.value = false;
   renderTurnstileWidget();
 }
 
+// 发码成功后凭据已被后端用掉：只清空本地凭据并标记为已用，不立刻重渲染组件，
+// 否则用户什么都没点就会看到又要重新验证一次。
+function markCaptchaTokenUsed() {
+  captchaResponse.value = "";
+  captchaTokenUsed.value = true;
+}
+
+// 发码前确保手里有一份可用凭据：没有时提示；若上一次凭据已被用掉，顺带重置组件让用户能重新验证。
+function ensureCaptchaToken() {
+  const captcha = registrationConfig.value.captcha;
+  if (!captcha?.enabled || !captcha?.ready) {
+    return true;
+  }
+
+  if (captchaResponse.value) {
+    return true;
+  }
+
+  if (captchaTokenUsed.value) {
+    refreshCaptcha();
+    setAuthMessage(
+      "info",
+      "上一次的人机验证已被使用，请重新验证后再发送验证码。",
+    );
+    return false;
+  }
+
+  setAuthMessage("error", "请先完成人机验证，再发送验证码。");
+  return false;
+}
+
 // 回到第一步（保留已填写的表单），并停止重发冷却。
-function backToRegisterForm(message) {
+function backToRegisterForm(message, tone = "info") {
   registerStep.value = "form";
   sentEmail.value = "";
   verificationCode.value = "";
   clearResendCooldown();
-  authMessage.value = message;
+  setAuthMessage(tone, message);
 }
 
-// 进入第二步：记录收件邮箱、清空验证码、开始冷却，并换一张新 token 以备重发。
-function enterVerifyStep(email) {
+// 进入第二步：记录收件邮箱、清空验证码、开始冷却，并写入结果提示。
+// 本次发码已用掉人机验证凭据，这里只标记为已用；用户真的点「重新发送」时才重置组件要求重新验证。
+function enterVerifyStep(email, message, tone) {
   sentEmail.value = email;
   verificationCode.value = "";
   registerStep.value = "verify";
   startResendCooldown();
-  refreshCaptcha();
+  markCaptchaTokenUsed();
+  setAuthMessage(tone, message);
 }
 
 // 第一步：邮箱格式与人机验证通过即请求发送验证码。
@@ -543,23 +594,26 @@ async function sendRegisterCode() {
   }
 
   authSubmitting.value = true;
-  authMessage.value = "正在发送验证码，请稍候...";
+  setAuthMessage("pending", "正在发送验证码，请稍候...");
   try {
     const response = await authApi.sendVerificationCode(
       buildSendCodePayload(email),
     );
-    enterVerifyStep(response?.data?.email || email);
+    enterVerifyStep(
+      response?.data?.email || email,
+      "验证码已发送，请查收邮箱后填写。",
+      "success",
+    );
   } catch (error) {
     if (error?.status === 429) {
-      enterVerifyStep(email);
+      enterVerifyStep(email, "验证码此前已发送，请查收邮箱后填写。", "info");
       return;
     }
 
-    authMessage.value =
-      error?.payload?.error?.message ||
-      error?.payload?.message ||
-      error?.message ||
-      "验证码发送失败，请稍后再试。";
+    setAuthMessage(
+      "error",
+      extractErrorMessage(error, "验证码发送失败，请稍后再试。"),
+    );
   } finally {
     authSubmitting.value = false;
   }
@@ -577,29 +631,24 @@ async function resendRegisterCode() {
 
   const email = sentEmail.value;
   if (!email) {
-    backToRegisterForm("注册信息已失效，请重新发送验证码。");
+    backToRegisterForm("注册信息已失效，请重新发送验证码。", "error");
     return;
   }
 
-  const captcha = registrationConfig.value.captcha;
-  if (captcha?.enabled && captcha?.ready && !captchaResponse.value) {
-    authMessage.value = "请先完成人机验证，再点击重新发送。";
+  // 重发要一份新凭据：上一次发码已把凭据用掉，这里会重置组件并提示重新验证。
+  if (!ensureCaptchaToken()) {
     return;
   }
 
   authSubmitting.value = true;
-  authMessage.value = "正在重新发送验证码，请稍候...";
+  setAuthMessage("pending", "正在重新发送验证码，请稍候...");
   try {
     await authApi.sendVerificationCode(buildSendCodePayload(email));
-    authMessage.value = `验证码已重新发送至 ${email}。`;
+    setAuthMessage("success", `验证码已重新发送至 ${email}。`);
     startResendCooldown();
-    refreshCaptcha();
+    markCaptchaTokenUsed();
   } catch (error) {
-    authMessage.value =
-      error?.payload?.error?.message ||
-      error?.payload?.message ||
-      error?.message ||
-      "验证码重发失败。";
+    setAuthMessage("error", extractErrorMessage(error, "验证码重发失败。"));
   } finally {
     authSubmitting.value = false;
   }
@@ -618,19 +667,22 @@ async function submitRegisterVerification() {
 
   const code = String(verificationCode.value ?? "").trim();
   if (!code) {
-    authMessage.value = "验证码不能为空。";
+    setAuthMessage("error", "验证码不能为空。");
     return;
   }
 
   if (code.length !== verificationCodeLength.value) {
-    authMessage.value = `请输入 ${verificationCodeLength.value} 位验证码。`;
+    setAuthMessage(
+      "error",
+      `请输入 ${verificationCodeLength.value} 位验证码。`,
+    );
     return;
   }
 
   const { username, email, password } = validated;
 
   authSubmitting.value = true;
-  authMessage.value = "正在验证并完成注册，请稍候...";
+  setAuthMessage("pending", "正在验证并完成注册，请稍候...");
   try {
     // 完成注册时需要带上第一步未提交的账号信息。
     const response = await authApi.verifyVerificationCode({
@@ -643,7 +695,10 @@ async function submitRegisterVerification() {
 
     const payload = response?.data ?? response ?? {};
     if (!response?.ok && payload?.ok === false) {
-      authMessage.value = payload?.message || "验证码错误，请重新输入。";
+      setAuthMessage(
+        "error",
+        extractErrorMessage(payload, "验证码错误，请重新输入。"),
+      );
       return;
     }
 
@@ -663,7 +718,7 @@ async function submitRegisterVerification() {
     const doneMessage = account
       ? "注册验证已完成。"
       : "注册验证已完成，正在同步会话状态。";
-    backToRegisterForm(doneMessage);
+    backToRegisterForm(doneMessage, "success");
     authForm.value = {
       username: "",
       email: "",
@@ -677,15 +732,11 @@ async function submitRegisterVerification() {
       payload?.code || payload?.error?.code || error?.code || "";
 
     if (errorCode === "E_AUTH") {
-      authMessage.value = "验证码无效或已过期，请重新发送验证码。";
+      setAuthMessage("error", "验证码无效或已过期，请重新发送验证码。");
       return;
     }
 
-    authMessage.value =
-      payload?.error?.message ||
-      payload?.message ||
-      error?.message ||
-      "验证码校验失败。";
+    setAuthMessage("error", extractErrorMessage(error, "验证码校验失败。"));
   } finally {
     authSubmitting.value = false;
   }
@@ -710,36 +761,36 @@ async function handleAuthSubmit() {
   const password = String(authForm.value.password ?? "").trim();
 
   if (!identifier) {
-    authMessage.value = "请输入邮箱或用户名。";
+    setAuthMessage("error", "请输入邮箱或用户名。");
     return;
   }
 
   if (/^M2\d{6}$/i.test(identifier)) {
-    authMessage.value = "不再支持玩家编号登录，请使用邮箱或用户名。";
+    setAuthMessage("error", "不再支持玩家编号登录，请使用邮箱或用户名。");
     return;
   }
 
   const loginType = detectedLoginType.value;
   if (loginType === "email" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier)) {
-    authMessage.value = "请输入有效的邮箱地址。";
+    setAuthMessage("error", "请输入有效的邮箱地址。");
     return;
   }
 
   if (loginType === "username") {
     const usernameValidation = validateUsernamePattern(identifier);
     if (!usernameValidation.ok) {
-      authMessage.value = usernameValidation.message;
+      setAuthMessage("error", usernameValidation.message);
       return;
     }
   }
 
   if (!password) {
-    authMessage.value = "密码不能为空。";
+    setAuthMessage("error", "密码不能为空。");
     return;
   }
 
   authSubmitting.value = true;
-  authMessage.value = "正在登录，请稍候...";
+  setAuthMessage("pending", "正在登录，请稍候...");
   try {
     const result = await loginWithPassword({
       type: loginType,
@@ -760,7 +811,10 @@ async function handleAuthSubmit() {
       };
     }
 
-    authMessage.value = account ? "登录成功。" : "登录成功，正在同步会话状态。";
+    setAuthMessage(
+      "success",
+      account ? "登录成功。" : "登录成功，正在同步会话状态。",
+    );
     authForm.value = {
       username: "",
       email: "",
@@ -769,7 +823,7 @@ async function handleAuthSubmit() {
       confirmPassword: "",
     };
   } catch (error) {
-    authMessage.value = error?.message || "登录失败。";
+    setAuthMessage("error", extractErrorMessage(error, "登录失败。"));
   } finally {
     authSubmitting.value = false;
   }
@@ -785,12 +839,12 @@ async function submitUsernameChange() {
   const validation = validateUsernamePattern(nextUsername);
 
   if (!nextUsername) {
-    usernameChangeState.value.message = "用户名不能为空。";
+    setUsernameChangeMessage("error", "用户名不能为空。");
     return;
   }
 
   if (!validation.ok) {
-    usernameChangeState.value.message = validation.message;
+    setUsernameChangeMessage("error", validation.message);
     return;
   }
 
@@ -798,12 +852,12 @@ async function submitUsernameChange() {
     state.user.currentUser.username || "",
   );
   if (nextUsername.toLowerCase() === currentUsername.toLowerCase()) {
-    usernameChangeState.value.message = "新用户名与当前用户名相同，无需修改。";
+    setUsernameChangeMessage("info", "新用户名与当前用户名相同，无需修改。");
     return;
   }
 
   usernameChangeState.value.submitting = true;
-  usernameChangeState.value.message = "正在校验用户名，请稍候...";
+  setUsernameChangeMessage("pending", "正在校验用户名，请稍候...");
 
   try {
     const availability = await authApi.usernameAvailable(nextUsername);
@@ -811,16 +865,16 @@ async function submitUsernameChange() {
       availability?.data?.status ?? availability?.status ?? "";
 
     if (availabilityStatus === "taken") {
-      usernameChangeState.value.message = "该用户名已被占用，请换一个用户名。";
+      setUsernameChangeMessage("error", "该用户名已被占用，请换一个用户名。");
       return;
     }
 
     if (availabilityStatus === "invalid") {
-      usernameChangeState.value.message = "用户名格式不符合规则。";
+      setUsernameChangeMessage("error", "用户名格式不符合规则。");
       return;
     }
 
-    usernameChangeState.value.message = "正在更新用户名，请稍候...";
+    setUsernameChangeMessage("pending", "正在更新用户名，请稍候...");
 
     const response = await authApi.changeUsername({ username: nextUsername });
     const account = response?.data?.account ?? response?.account ?? null;
@@ -839,27 +893,31 @@ async function submitUsernameChange() {
       }
     }
 
-    usernameChangeState.value.message = "用户名已更新。";
+    setUsernameChangeMessage("success", "用户名已更新。");
     window.setTimeout(() => {
       resetUsernameEditor();
     }, 500);
   } catch (error) {
     const payload = error?.payload ?? {};
     const code = payload?.code || payload?.error?.code || error?.code || "";
-    const detail = payload?.detail ?? payload?.error?.detail ?? {};
 
     if (code === "E_VALIDATION") {
-      usernameChangeState.value.message =
-        detail?.fields?.username || "用户名格式不符合规则。";
+      // 400 时后端在 detail.fields 里写明不合规的具体原因（此处只可能涉及 username）。
+      setUsernameChangeMessage(
+        "error",
+        extractFieldMessages(error)[0] || "用户名格式不符合规则。",
+      );
     } else if (code === "E_AUTH") {
-      usernameChangeState.value.message = "未登录或令牌失效，无法修改用户名。";
+      setUsernameChangeMessage("error", "未登录或令牌失效，无法修改用户名。");
     } else if (code === "E_BANNED") {
-      usernameChangeState.value.message = "账号已被封禁，不能修改用户名。";
+      setUsernameChangeMessage("error", "账号已被封禁，不能修改用户名。");
     } else if (code === "E_CONFLICT") {
-      usernameChangeState.value.message = "该用户名已被占用，请换一个用户名。";
+      setUsernameChangeMessage("error", "该用户名已被占用，请换一个用户名。");
     } else {
-      usernameChangeState.value.message =
-        error?.message || "用户名修改失败，请稍后再试。";
+      setUsernameChangeMessage(
+        "error",
+        extractErrorMessage(error, "用户名修改失败，请稍后再试。"),
+      );
     }
   } finally {
     usernameChangeState.value.submitting = false;
@@ -873,18 +931,25 @@ async function handleLogout(allDevices = false) {
   }
 
   logoutSubmitting.value = allDevices ? "all" : "current";
-  authMessage.value = `正在${allDevices ? "退出全部设备登录" : "退出登录"}，请稍候...`;
+  setAuthMessage(
+    "pending",
+    `正在${allDevices ? "退出全部设备登录" : "退出登录"}，请稍候...`,
+  );
   try {
     if (allDevices) {
       await authApi.logoutAll();
     } else {
       await authApi.logout();
     }
-    authMessage.value = allDevices
-      ? "已退出全部设备登录。"
-      : "已退出当前设备登录。";
+    setAuthMessage(
+      "success",
+      allDevices ? "已退出全部设备登录。" : "已退出当前设备登录。",
+    );
   } catch (error) {
-    authMessage.value = `退出请求失败：${error?.message || "请稍后重试"}。本地登录状态已清除。`;
+    setAuthMessage(
+      "error",
+      `退出请求失败：${extractErrorMessage(error, "请稍后重试")}。本地登录状态已清除。`,
+    );
   } finally {
     state.user.currentUser = null;
     logoutSubmitting.value = "";
@@ -960,7 +1025,7 @@ async function handleLogout(allDevices = false) {
           </button>
         </div>
 
-        <p v-if="authMessage" class="helper-text">{{ authMessage }}</p>
+        <StatusMessage :message="authMessage" :tone="authMessageTone" />
 
         <div v-if="usernameChangeState.open" class="username-change-form">
           <label class="field">
@@ -983,26 +1048,10 @@ async function handleLogout(allDevices = false) {
             />
           </label>
 
-          <div
-            v-if="usernameChangeState.message"
-            class="status-box"
-            :class="{
-              'status-box--error':
-                usernameChangeState.message.includes('失败') ||
-                usernameChangeState.message.includes('不可') ||
-                usernameChangeState.message.includes('已被') ||
-                usernameChangeState.message.includes('不符合') ||
-                usernameChangeState.message.includes('无效') ||
-                usernameChangeState.message.includes('相同') ||
-                usernameChangeState.message.includes('被封禁') ||
-                usernameChangeState.message.includes('失效') ||
-                usernameChangeState.message.includes('占用'),
-              'status-box--success':
-                usernameChangeState.message.includes('已更新'),
-            }"
-          >
-            {{ usernameChangeState.message }}
-          </div>
+          <StatusMessage
+            :message="usernameChangeMessage"
+            :tone="usernameChangeMessageTone"
+          />
 
           <div class="inline-actions">
             <button
@@ -1206,7 +1255,7 @@ async function handleLogout(allDevices = false) {
           </div>
         </form>
 
-        <p v-if="authMessage" class="helper-text">{{ authMessage }}</p>
+        <StatusMessage :message="authMessage" :tone="authMessageTone" />
       </div>
     </div>
   </section>
@@ -1463,28 +1512,6 @@ async function handleLogout(allDevices = false) {
   background: rgba(18, 24, 36, 0.14);
 }
 
-.status-box {
-  padding: 10px 12px;
-  border-radius: 10px;
-  font-size: 12px;
-  line-height: 1.5;
-  border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.02);
-  color: var(--text);
-}
-
-.status-box--success {
-  border-color: rgba(61, 200, 128, 0.3);
-  background: rgba(61, 200, 128, 0.08);
-  color: #7fe0a8;
-}
-
-.status-box--error {
-  border-color: rgba(255, 93, 93, 0.25);
-  background: rgba(255, 93, 93, 0.08);
-  color: #ff9f9f;
-}
-
 .inline-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1511,13 +1538,6 @@ async function handleLogout(allDevices = false) {
 .text-link-button:disabled {
   color: var(--text-dim);
   cursor: not-allowed;
-}
-
-.helper-text {
-  margin: 0;
-  font-size: 12px;
-  line-height: 1.6;
-  color: var(--text-dim);
 }
 
 @keyframes account-panel-in {

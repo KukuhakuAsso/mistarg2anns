@@ -2,7 +2,10 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { authApi } from "@/api/auth";
 import { useGameState } from "@/composables/useGameState";
+import { useStatusMessage } from "@/composables/useStatusMessage";
+import { extractErrorMessage, extractFieldMessages } from "@/api/errors";
 import { router } from "@/router";
+import StatusMessage from "@/components/StatusMessage.vue";
 
 const { state } = useGameState();
 
@@ -17,10 +20,14 @@ const form = ref({
   new_password: "",
   confirm_password: "",
 });
-// 提交状态与提示信息。
+// 提交状态与提示信息（文案与语义色统一由 useStatusMessage 管理）。
+// resetMessage(tone, text) 为各步骤共用的写入入口。
 const submitting = ref(false);
-const message = ref("");
-const messageType = ref("info");
+const {
+  message,
+  tone: messageType,
+  set: resetMessage,
+} = useStatusMessage();
 // 注册配置，包括验证码相关设置。
 const registrationConfig = ref({
   code_ttl_minutes: 10,
@@ -49,13 +56,6 @@ const resetTokenTtlMinutes = computed(() => {
   const ttlMinutes = Number(registrationConfig.value.code_ttl_minutes);
   return Number.isFinite(ttlMinutes) && ttlMinutes > 0 ? ttlMinutes : 10;
 });
-// 重置令牌有效期（分钟），取自后端配置；未下发或非法时按 10 分钟展示。
-// 统一设置提示文案与样式类型（info / success / error）。
-function resetMessage(type = "info", text = "") {
-  messageType.value = type;
-  message.value = text;
-}
-
 // 按需注入 Turnstile 脚本；已注入过则复用（脚本就绪直接返回，否则等它加载完）。
 function loadTurnstileScript(scriptUrl) {
   if (!scriptUrl) {
@@ -270,7 +270,7 @@ async function submitForgotRequest() {
   }
 
   submitting.value = true;
-  resetMessage("info", "正在发送重置邮件...");
+  resetMessage("pending", "正在发送重置邮件...");
 
   try {
     const email = String(form.value.identifier ?? "").trim();
@@ -293,11 +293,19 @@ async function submitForgotRequest() {
     const code = payload?.code || payload?.error?.code || error?.code || "";
 
     if (code === "E_VALIDATION") {
-      resetMessage("error", "找回密码请求格式不正确。请检查邮箱与验证信息。");
+      // 400 时后端在 detail.fields 里写明不合规的具体原因，优先展示它。
+      const fieldText = extractFieldMessages(error).join("；");
+      resetMessage(
+        "error",
+        fieldText || "找回密码请求格式不正确。请检查邮箱与验证信息。",
+      );
       return;
     }
 
-    resetMessage("error", error?.message || "发送重置邮件失败，请稍后再试。");
+    resetMessage(
+      "error",
+      extractErrorMessage(error, "发送重置邮件失败，请稍后再试。"),
+    );
   } finally {
     submitting.value = false;
   }
@@ -312,7 +320,7 @@ async function submitResetPassword() {
   }
 
   submitting.value = true;
-  resetMessage("info", "正在重置密码...");
+  resetMessage("pending", "正在重置密码...");
 
   try {
     await authApi.resetPassword({
@@ -343,9 +351,14 @@ async function submitResetPassword() {
     if (code === "E_AUTH") {
       resetMessage("error", "重置令牌无效或已过期，请重新获取邮件链接。");
     } else if (code === "E_VALIDATION") {
-      resetMessage("error", "新密码格式不正确，至少 8 位字符。");
+      // 400 时后端在 detail.fields 里写明不合规的具体原因，优先展示它。
+      const fieldText = extractFieldMessages(error).join("；");
+      resetMessage("error", fieldText || "新密码格式不正确，至少 8 位字符。");
     } else {
-      resetMessage("error", error?.message || "密码重置失败，请稍后再试。");
+      resetMessage(
+        "error",
+        extractErrorMessage(error, "密码重置失败，请稍后再试。"),
+      );
     }
   } finally {
     submitting.value = false;
@@ -413,12 +426,7 @@ async function goBackToRequest() {
             <div ref="captchaContainer" class="turnstile-wrap"></div>
           </div>
 
-          <div
-            v-if="message"
-            :class="['status-box', `status-box--${messageType}`]"
-          >
-            {{ message }}
-          </div>
+          <StatusMessage :message="message" :tone="messageType" />
 
           <button
             class="primary-button"
@@ -470,12 +478,7 @@ async function goBackToRequest() {
             />
           </label>
 
-          <div
-            v-if="message"
-            :class="['status-box', `status-box--${messageType}`]"
-          >
-            {{ message }}
-          </div>
+          <StatusMessage :message="message" :tone="messageType" />
 
           <div class="inline-actions">
             <button
@@ -612,31 +615,6 @@ async function goBackToRequest() {
 
 .turnstile-wrap {
   min-height: 60px;
-}
-
-.status-box {
-  padding: 10px 12px;
-  border-radius: 10px;
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-.status-box--info {
-  background: rgba(95, 124, 255, 0.08);
-  border: 1px solid rgba(95, 124, 255, 0.25);
-  color: var(--text);
-}
-
-.status-box--success {
-  background: rgba(61, 200, 128, 0.08);
-  border: 1px solid rgba(61, 200, 128, 0.3);
-  color: #7fe0a8;
-}
-
-.status-box--error {
-  background: rgba(255, 93, 93, 0.08);
-  border: 1px solid rgba(255, 93, 93, 0.25);
-  color: #ff9f9f;
 }
 
 .primary-button,

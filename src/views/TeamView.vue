@@ -4,9 +4,12 @@
 import { computed, onMounted, ref } from "vue";
 import { useGameState } from "@/composables/useGameState";
 import { useNameAvailability } from "@/composables/useNameAvailability";
+import { useStatusMessage } from "@/composables/useStatusMessage";
+import { extractErrorMessage } from "@/api/errors";
 import { teamApi } from "@/api/team";
 import { normalizeTeamName, validateTeamName } from "@/config/team";
 import NameStatus from "@/components/NameStatus.vue";
+import StatusMessage from "@/components/StatusMessage.vue";
 import UserTabs from "@/components/UserTabs.vue";
 
 const {
@@ -34,8 +37,12 @@ const {
 
 const loading = ref(false);
 const busy = ref("");
-const teamNotice = ref("");
-const noticeType = ref("info");
+// 队伍操作结果提示：文案与语义色统一由 useStatusMessage 管理。
+const {
+  message: teamNotice,
+  tone: noticeType,
+  set: setNotice,
+} = useStatusMessage();
 
 const createTeamName = ref("");
 const createTeamIntro = ref("");
@@ -80,11 +87,6 @@ const joinRequestStatusLabel = computed(() => {
   }
 });
 
-function setNotice(type, text) {
-  noticeType.value = type;
-  teamNotice.value = text;
-}
-
 // 统一执行一个队伍操作：串行化并显示忙状态，成功/失败都写入提示。
 async function run(key, action) {
   if (busy.value) {
@@ -97,7 +99,7 @@ async function run(key, action) {
     setNotice(result?.ok ? "success" : "error", result?.message ?? "");
     return result ?? { ok: false };
   } catch (error) {
-    setNotice("error", error?.message || "操作失败，请稍后再试。");
+    setNotice("error", extractErrorMessage(error, "操作失败，请稍后再试。"));
     return { ok: false };
   } finally {
     busy.value = "";
@@ -499,12 +501,11 @@ function handleTransfer(member) {
       </div>
     </div>
 
-    <p
-      v-if="teamNotice"
-      :class="['helper-text', 'helper-text--note', `helper-text--${noticeType}`]"
-    >
-      {{ teamNotice }}
-    </p>
+    <StatusMessage
+      class="team-notice"
+      :message="teamNotice"
+      :tone="noticeType"
+    />
   </section>
 </template>
 
@@ -746,28 +747,9 @@ textarea {
   color: var(--text);
 }
 
-/* 队伍操作结果提示：与内容列同宽居中，做成独立提示条，避免看起来像漂在页面里的一行小字。 */
-.helper-text--note {
+/* 队伍操作结果提示：与内容列同宽居中。 */
+.team-notice {
   width: min(700px, 100%);
   margin: 0 auto;
-  padding: 10px 14px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--surface);
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-/* 语义色只落在文字上，底色与描边沿用主题令牌，两种主题下都保持可读的对比度。 */
-.helper-text--success {
-  color: #6ed791;
-}
-
-.helper-text--error {
-  color: #d27575;
-}
-
-.helper-text--info {
-  color: var(--text-dim);
 }
 </style>

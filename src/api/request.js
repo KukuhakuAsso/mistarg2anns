@@ -1,4 +1,5 @@
 import { buildApiUrl, getApiHeaders } from "@/config/api";
+import { extractErrorMessage } from "@/api/errors";
 
 // access token key JWT，2 小时。所有需要登录的接口用 Authorization: Bearer <token>
 const ACCESS_TOKEN_KEY = "mistarg_access_token";
@@ -85,26 +86,6 @@ function appendQueryString(url, params = {}) {
 }
 
 // 从错误响应中提取可读文案：依次尝试 error.message、message、error，都没有时返回兜底文案。
-function extractErrorMessage(payload) {
-  if (!payload || typeof payload !== "object") {
-    return "Request failed.";
-  }
-
-  if (typeof payload.error?.message === "string" && payload.error.message.trim()) {
-    return payload.error.message;
-  }
-
-  if (typeof payload.message === "string" && payload.message.trim()) {
-    return payload.message;
-  }
-
-  if (typeof payload.error === "string" && payload.error.trim()) {
-    return payload.error;
-  }
-
-  return "Request failed.";
-}
-
 // 读取响应体并尽力解析为 JSON；raw 为 true 时额外带上原始 Response 与解析结果。
 async function readResponse(response, raw = false) {
   const text = await response.text();

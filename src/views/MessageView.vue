@@ -1,13 +1,21 @@
 <script setup>
 import { computed, ref } from "vue";
 import { useGameState } from "@/composables/useGameState";
+import { useStatusMessage } from "@/composables/useStatusMessage";
+import StatusMessage from "@/components/StatusMessage.vue";
 import UserTabs from "@/components/UserTabs.vue";
 
 const { state } = useGameState();
 const activeTab = ref("inbox");
 const inboxFilter = ref("all");
 const mailEditor = ref(null);
-const messageNotice = ref("");
+// 发信结果提示：文案与语义色统一由 useStatusMessage 管理。
+const {
+  message: messageNotice,
+  tone: messageNoticeTone,
+  set: setMessageNotice,
+  clear: clearMessageNotice,
+} = useStatusMessage();
 
 const recipientLabel = state.user.currentUser
   ? state.user.currentUser.username
@@ -88,7 +96,7 @@ const selectedMessage = computed(() =>
 
 function switchTab(tab) {
   activeTab.value = tab;
-  messageNotice.value = "";
+  clearMessageNotice();
 }
 
 function setInboxFilter(filter) {
@@ -170,12 +178,12 @@ function handleSendMessage() {
   const content = (mailEditor.value?.innerText ?? "").replace(/\s+/g, " ").trim();
 
   if (!content) {
-    messageNotice.value = "正文不能为空。";
+    setMessageNotice("error", "正文不能为空。");
     return;
   }
 
   state.unreadMessages = 0;
-  messageNotice.value = `已发送站内信给 ${recipientLabel}。`;
+  setMessageNotice("success", `已发送站内信给 ${recipientLabel}。`);
   mailEditor.value.innerHTML = "";
 }
 </script>
@@ -243,7 +251,11 @@ function handleSendMessage() {
           </button>
         </div>
 
-        <p v-if="messageNotice" class="helper-text">{{ messageNotice }}</p>
+        <StatusMessage
+          class="composer-notice"
+          :message="messageNotice"
+          :tone="messageNoticeTone"
+        />
       </main>
     </div>
 
@@ -540,10 +552,8 @@ function handleSendMessage() {
   font-weight: 600;
 }
 
-.helper-text {
+.composer-notice {
   margin: 0 18px 18px;
-  color: var(--text-dim);
-  font-size: 12px;
 }
 
 .inbox-shell {
