@@ -11,7 +11,7 @@ import {
 import { CARD_GAP, CARD_H, CARD_W } from "@/config/board";
 import { validateTeamName } from "@/config/team";
 import { authApi } from "@/api/auth";
-import { extractErrorMessage, extractFieldMessages } from "@/api/errors";
+import { extractErrorMessage, extractFieldMessage } from "@/api/errors";
 import { teamApi } from "@/api/team";
 
 const STORAGE_KEY = "mistarg2anns:state:v1";
@@ -400,8 +400,9 @@ async function createTeam(name, intro = "") {
       message: teamErrorMessage(error, "创建队伍失败。"),
       status: error?.status,
       code: payload?.code || payload?.error?.code || error?.code || "",
-      // 400 E_VALIDATION 时后端会在 detail.fields.name 写明队名不合规的具体原因。
-      nameError: extractFieldMessages(error)[0] || "",
+      // 400 E_VALIDATION 时后端会在 detail.fields 里写明原因；这里只取 name 的，
+      // 建队同时提交 intro，按字段名取值才不会把简介的原因落到队名输入框下方。
+      nameError: extractFieldMessage(error, "name"),
     };
   }
 }

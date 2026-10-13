@@ -24,12 +24,28 @@ export function resolveErrorPayload(source) {
   return source && typeof source === "object" ? source : {};
 }
 
+// 取出 detail.fields 原始内容（对象，或整体说明字符串）。
+function resolveErrorFields(source) {
+  const payload = resolveErrorPayload(source);
+  const detail = payload.error?.detail ?? payload.detail ?? {};
+  return detail?.fields ?? null;
+}
+
+// 取指定字段的报错原因。一个响应里可能同时含多个字段的原因，需要落到某个输入框下方时
+// 必须按字段名取值，否则会把别的字段（如队伍简介）的原因张冠李戴到该输入框。
+export function extractFieldMessage(source, fieldName) {
+  const fields = resolveErrorFields(source);
+  if (!fields || typeof fields !== "object") {
+    return "";
+  }
+
+  return firstNonEmpty(fields[fieldName]);
+}
+
 // 取出字段级报错明细：detail.fields 形如 { email: "邮箱格式不正确", username: "用户名不能为空" }，
 // 同一个响应里可能同时含多个字段的原因，这里按出现顺序全部取出并去重。
 export function extractFieldMessages(source) {
-  const payload = resolveErrorPayload(source);
-  const detail = payload.error?.detail ?? payload.detail ?? {};
-  const fields = detail?.fields;
+  const fields = resolveErrorFields(source);
 
   // 如果 fields 是字符串，直接返回该字符串作为唯一的错误信息。
   if (typeof fields === "string") {
