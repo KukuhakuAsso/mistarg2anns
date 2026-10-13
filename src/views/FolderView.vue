@@ -4,6 +4,8 @@ import { computed, onBeforeUnmount, ref } from "vue";
 import AppIcon from "@/components/AppIcon.vue";
 import { useClueDrag } from "@/composables/useClueDrag";
 import { useGameState } from "@/composables/useGameState";
+import { useStatusMessage } from "@/composables/useStatusMessage";
+import StatusMessage from "@/components/StatusMessage.vue";
 import puzzleThumbnail from "@/assets/test.jpg";
 
 const props = defineProps({
@@ -39,7 +41,13 @@ const windowPosition = ref({ x: 0, y: 0 });
 const dragOffset = ref(null);
 const tipsOpen = ref(false);
 const answer = ref("");
-const answerStatus = ref("");
+// 答题结果提示：文案与语义色统一由 useStatusMessage 管理。
+const {
+  message: answerStatus,
+  tone: answerStatusTone,
+  set: setAnswerStatus,
+  clear: clearAnswerStatus,
+} = useStatusMessage();
 
 const windowStyle = computed(() => ({
   left: `${windowPosition.value.x}px`,
@@ -50,7 +58,7 @@ function openEntry(entry) {
   selected.value = entry;
   tipsOpen.value = false;
   answer.value = "";
-  answerStatus.value = "";
+  clearAnswerStatus();
   windowPosition.value = {
     x: Math.max(16, Math.round((window.innerWidth - 680) / 2)),
     y: Math.max(16, Math.round((window.innerHeight - 480) / 2)),
@@ -81,11 +89,11 @@ function unlockSelectedTip(index) {
 
 function submitAnswer() {
   if (!answer.value.trim()) {
-    answerStatus.value = "请输入答案";
+    setAnswerStatus("error", "请输入答案");
     return;
   }
 
-  answerStatus.value = "答案已提交";
+  setAnswerStatus("success", "答案已提交");
 }
 
 function startDrag(event) {
@@ -280,9 +288,11 @@ onBeforeUnmount(stopDrag);
             />
             <button class="bar-btn" type="submit">提交</button>
           </div>
-          <p v-if="answerStatus" class="answer-form__status">
-            {{ answerStatus }}
-          </p>
+          <StatusMessage
+            class="answer-form__status"
+            :message="answerStatus"
+            :tone="answerStatusTone"
+          />
         </form>
       </article>
     </Teleport>
@@ -667,8 +677,6 @@ onBeforeUnmount(stopDrag);
 
 .answer-form__status {
   margin: 0;
-  font-size: 12px;
-  color: var(--text-dim);
 }
 
 @media (max-width: 540px) {
