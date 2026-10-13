@@ -5,6 +5,7 @@ import { computed, onMounted, ref } from "vue";
 import { useGameState } from "@/composables/useGameState";
 import { useNameAvailability } from "@/composables/useNameAvailability";
 import { useStatusMessage } from "@/composables/useStatusMessage";
+import { extractErrorMessage } from "@/api/errors";
 import { teamApi } from "@/api/team";
 import { normalizeTeamName, validateTeamName } from "@/config/team";
 import NameStatus from "@/components/NameStatus.vue";
@@ -98,7 +99,7 @@ async function run(key, action) {
     setNotice(result?.ok ? "success" : "error", result?.message ?? "");
     return result ?? { ok: false };
   } catch (error) {
-    setNotice("error", error?.message || "操作失败，请稍后再试。");
+    setNotice("error", extractErrorMessage(error, "操作失败，请稍后再试。"));
     return { ok: false };
   } finally {
     busy.value = "";

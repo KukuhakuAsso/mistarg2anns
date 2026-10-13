@@ -5,6 +5,7 @@ import { authApi } from "@/api/auth";
 import { clearAccessToken } from "@/api/request";
 import { useGameState } from "@/composables/useGameState";
 import { useStatusMessage } from "@/composables/useStatusMessage";
+import { extractErrorMessage, extractFieldMessages } from "@/api/errors";
 import { router } from "@/router";
 import StatusMessage from "@/components/StatusMessage.vue";
 
@@ -78,13 +79,15 @@ async function submitChangePassword() {
     const payload = error?.payload ?? {};
     const code = payload?.code || payload?.error?.code || error?.code || "";
     const detail = payload?.detail ?? payload?.error?.detail ?? {};
+    // 400 时后端在 detail.fields 里写明不合规的具体原因，优先展示它。
+    const fieldText = extractFieldMessages(error).join("；");
 
     const failureMessage =
       code === "E_VALIDATION"
-        ? "新密码格式不正确，至少 8 位字符。"
+        ? fieldText || "新密码格式不正确，至少 8 位字符。"
         : code === "E_AUTH"
           ? detail?.reason || "原密码不正确。"
-          : error?.message || "密码修改失败，请稍后再试。";
+          : extractErrorMessage(error, "密码修改失败，请稍后再试。");
 
     setMessage("error", failureMessage);
   } finally {

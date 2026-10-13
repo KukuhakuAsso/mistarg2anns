@@ -6,6 +6,7 @@ import { useStatusMessage } from "@/composables/useStatusMessage";
 import { router } from "@/router";
 import { probeHealth } from "@/api/health";
 import { authApi } from "@/api/auth";
+import { extractErrorMessage, extractFieldMessages } from "@/api/errors";
 import { loginWithPassword } from "@/config/auth";
 import NameStatus from "@/components/NameStatus.vue";
 import StatusMessage from "@/components/StatusMessage.vue";
@@ -611,10 +612,7 @@ async function sendRegisterCode() {
 
     setAuthMessage(
       "error",
-      error?.payload?.error?.message ||
-        error?.payload?.message ||
-        error?.message ||
-        "验证码发送失败，请稍后再试。",
+      extractErrorMessage(error, "验证码发送失败，请稍后再试。"),
     );
   } finally {
     authSubmitting.value = false;
@@ -650,13 +648,7 @@ async function resendRegisterCode() {
     startResendCooldown();
     markCaptchaTokenUsed();
   } catch (error) {
-    setAuthMessage(
-      "error",
-      error?.payload?.error?.message ||
-        error?.payload?.message ||
-        error?.message ||
-        "验证码重发失败。",
-    );
+    setAuthMessage("error", extractErrorMessage(error, "验证码重发失败。"));
   } finally {
     authSubmitting.value = false;
   }
@@ -703,7 +695,10 @@ async function submitRegisterVerification() {
 
     const payload = response?.data ?? response ?? {};
     if (!response?.ok && payload?.ok === false) {
-      setAuthMessage("error", payload?.message || "验证码错误，请重新输入。");
+      setAuthMessage(
+        "error",
+        extractErrorMessage(payload, "验证码错误，请重新输入。"),
+      );
       return;
     }
 
@@ -741,13 +736,7 @@ async function submitRegisterVerification() {
       return;
     }
 
-    setAuthMessage(
-      "error",
-      payload?.error?.message ||
-        payload?.message ||
-        error?.message ||
-        "验证码校验失败。",
-    );
+    setAuthMessage("error", extractErrorMessage(error, "验证码校验失败。"));
   } finally {
     authSubmitting.value = false;
   }
@@ -834,7 +823,7 @@ async function handleAuthSubmit() {
       confirmPassword: "",
     };
   } catch (error) {
-    setAuthMessage("error", error?.message || "登录失败。");
+    setAuthMessage("error", extractErrorMessage(error, "登录失败。"));
   } finally {
     authSubmitting.value = false;
   }
@@ -911,12 +900,12 @@ async function submitUsernameChange() {
   } catch (error) {
     const payload = error?.payload ?? {};
     const code = payload?.code || payload?.error?.code || error?.code || "";
-    const detail = payload?.detail ?? payload?.error?.detail ?? {};
 
     if (code === "E_VALIDATION") {
+      // 400 时后端在 detail.fields 里写明不合规的具体原因（此处只可能涉及 username）。
       setUsernameChangeMessage(
         "error",
-        detail?.fields?.username || "用户名格式不符合规则。",
+        extractFieldMessages(error)[0] || "用户名格式不符合规则。",
       );
     } else if (code === "E_AUTH") {
       setUsernameChangeMessage("error", "未登录或令牌失效，无法修改用户名。");
@@ -927,7 +916,7 @@ async function submitUsernameChange() {
     } else {
       setUsernameChangeMessage(
         "error",
-        error?.message || "用户名修改失败，请稍后再试。",
+        extractErrorMessage(error, "用户名修改失败，请稍后再试。"),
       );
     }
   } finally {
@@ -959,7 +948,7 @@ async function handleLogout(allDevices = false) {
   } catch (error) {
     setAuthMessage(
       "error",
-      `退出请求失败：${error?.message || "请稍后重试"}。本地登录状态已清除。`,
+      `退出请求失败：${extractErrorMessage(error, "请稍后重试")}。本地登录状态已清除。`,
     );
   } finally {
     state.user.currentUser = null;

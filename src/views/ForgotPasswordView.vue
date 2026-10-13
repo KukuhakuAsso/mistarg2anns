@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { authApi } from "@/api/auth";
 import { useGameState } from "@/composables/useGameState";
 import { useStatusMessage } from "@/composables/useStatusMessage";
+import { extractErrorMessage, extractFieldMessages } from "@/api/errors";
 import { router } from "@/router";
 import StatusMessage from "@/components/StatusMessage.vue";
 
@@ -292,11 +293,19 @@ async function submitForgotRequest() {
     const code = payload?.code || payload?.error?.code || error?.code || "";
 
     if (code === "E_VALIDATION") {
-      resetMessage("error", "找回密码请求格式不正确。请检查邮箱与验证信息。");
+      // 400 时后端在 detail.fields 里写明不合规的具体原因，优先展示它。
+      const fieldText = extractFieldMessages(error).join("；");
+      resetMessage(
+        "error",
+        fieldText || "找回密码请求格式不正确。请检查邮箱与验证信息。",
+      );
       return;
     }
 
-    resetMessage("error", error?.message || "发送重置邮件失败，请稍后再试。");
+    resetMessage(
+      "error",
+      extractErrorMessage(error, "发送重置邮件失败，请稍后再试。"),
+    );
   } finally {
     submitting.value = false;
   }
@@ -342,9 +351,14 @@ async function submitResetPassword() {
     if (code === "E_AUTH") {
       resetMessage("error", "重置令牌无效或已过期，请重新获取邮件链接。");
     } else if (code === "E_VALIDATION") {
-      resetMessage("error", "新密码格式不正确，至少 8 位字符。");
+      // 400 时后端在 detail.fields 里写明不合规的具体原因，优先展示它。
+      const fieldText = extractFieldMessages(error).join("；");
+      resetMessage("error", fieldText || "新密码格式不正确，至少 8 位字符。");
     } else {
-      resetMessage("error", error?.message || "密码重置失败，请稍后再试。");
+      resetMessage(
+        "error",
+        extractErrorMessage(error, "密码重置失败，请稍后再试。"),
+      );
     }
   } finally {
     submitting.value = false;

@@ -1,6 +1,7 @@
 // 登录（账号密码）相关逻辑：归一化入参、调用登录接口并保存 access token，
 // 同时把后端返回的错误码翻译成可直接展示给用户的中文提示。
 import { authApi } from "@/api/auth";
+import { extractErrorMessage, extractFieldMessages } from "@/api/errors";
 import { setAccessToken } from "@/api/request";
 
 // 归一化登录类型为 email / username / player_no；其他值直接抛错。
@@ -75,7 +76,10 @@ export async function loginWithPassword({ type, identifier, password }) {
     // 错误码 → 展示文案：E_VALIDATION 参数格式、E_AUTH 凭据错误、
     // E_BANNED 账号封禁（可带原因）、E_QUOTA 触发频率限制（可带需等待的秒数）。
     if (code === "E_VALIDATION") {
-      throw new Error("登录信息格式不正确。");
+      // 400 时后端在 detail.fields 里写明不合规的具体原因，优先展示它。
+      throw new Error(
+        extractFieldMessages(error).join("；") || "登录信息格式不正确。",
+      );
     }
 
     if (code === "E_AUTH") {
@@ -95,6 +99,6 @@ export async function loginWithPassword({ type, identifier, password }) {
       );
     }
 
-    throw new Error(error?.message || "登录失败。");
+    throw new Error(extractErrorMessage(error, "登录失败。"));
   }
 }
