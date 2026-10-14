@@ -1,5 +1,5 @@
 <script setup>
-// 站内信中心：对接 /api/msg/*。
+// 站内信中心：对接 /api/msg/*，界面为邮箱式（写信 / 收信）。
 // 会话分三类：system（官方公告，只读）、account（账号级会话，问题反馈）、team（队伍会话）。
 // 注意：system 与 account 的 teamName 都是 null，必须用 kind 区分，不能只看 teamName。
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
@@ -13,7 +13,15 @@ import UserTabs from "@/components/UserTabs.vue";
 
 const { state, refreshUnreadSummary } = useGameState();
 
-// 会话列表与当前会话内容
+// 当前页签：inbox = 收信，compose = 写信。
+const activeTab = ref("inbox");
+// 收信列表筛选：all = 全部，unread = 未读，read = 已读。
+const inboxFilter = ref("all");
+
+// 写信的收件人标识：写给官方走问题反馈接口，写给队伍走会话接口。
+const OFFICIAL_TARGET = "official";
+
+// 会话列表与当前打开的会话内容
 const threads = ref([]);
 const threadsLoading = ref(false);
 const activeThreadId = ref(null);
@@ -21,19 +29,20 @@ const messages = ref([]);
 const messagesLoading = ref(false);
 const lastId = ref(0);
 
-// 发送与提示；操作结果提示的文案与语义色统一交给 useStatusMessage 管理。
+// 会话内回复与写信各自的草稿和提交状态。
 const draft = ref("");
 const sending = ref(false);
+const composeTarget = ref(OFFICIAL_TARGET);
+const composeDraft = ref("");
+const composing = ref(false);
+
+// 操作提示的文案与语义色统一交给 useStatusMessage 管理。
 const {
   message: notice,
   tone: noticeType,
   set: setNotice,
+  clear: clearNotice,
 } = useStatusMessage();
-
-// 问题反馈（任何登录用户可用，不要求有队伍）
-const feedbackOpen = ref(false);
-const feedbackDraft = ref("");
-const feedbackSubmitting = ref(false);
 
 // 人工求提示：服务端不去重，必须防连点
 const hintSubmitting = ref(false);
@@ -56,10 +65,34 @@ const activeThread = computed(
     threads.value.find((item) => item.threadId === activeThreadId.value) ??
     null,
 );
-// 官方公告为只读，不显示输入框。
+// 官方公告为只读，不显示回复框。
 const isReadOnly = computed(() => activeThread.value?.kind === "system");
 // 仅队伍会话支持求人工提示。
 const canRequestHint = computed(() => activeThread.value?.kind === "team");
+
+// 收信列表按未读状态筛选：未读判定为 unread > 0。
+const filteredThreads = computed(() => {
+  if (inboxFilter.value === "unread") {
+    return threads.value.filter((item) => Number(item.unread) > 0);
+  }
+
+  if (inboxFilter.value === "read") {
+    return threads.value.filter((item) => !(Number(item.unread) > 0));
+  }
+
+  return threads.value;
+});
+
+// 写信可选收件人：官方（问题反馈）+ 自己可见的队伍会话。
+const composeRecipients = computed(() => [
+  { value: OFFICIAL_TARGET, label: "官方 / 工作人员（问题反馈）" },
+  ...threads.value
+    .filter((item) => item.kind === "team")
+    .map((item) => ({
+      value: `team:${item.threadId}`,
+      label: `队伍会话：${threadName(item)}`,
+    })),
+]);
 
 // 错误文案统一由 @/api/errors 解析（含字段级原因），本地保留短名便于调用。
 const errorText = extractErrorMessage;
@@ -105,6 +138,43 @@ function formatTime(value) {
   return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
+// ---------- 左侧功能列与收信筛选 ----------
+
+// 左侧功能列的收信项：收件箱 = 全部会话，另可按未读 / 已读筛选。
+const INBOX_VIEWS = [
+  { value: "all", label: "收件箱" },
+  { value: "unread", label: "未读" },
+  { value: "read", label: "已读" },
+];
+
+// 左侧功能列当前选中项：写信，或收信分类。
+const activeView = computed(() =>
+  activeTab.value === "compose" ? "compose" : inboxFilter.value,
+);
+
+// 右侧列表工具栏上的当前分类名。
+const currentFolderLabel = computed(
+  () =>
+    INBOX_VIEWS.find((item) => item.value === inboxFilter.value)?.label ??
+    "收件箱",
+);
+
+// 切换左侧功能列：选写信直接换成撰写页；选收信分类则回到列表（已打开的邮件先关闭）。
+function switchView(view) {
+  clearNotice();
+
+  if (view === "compose") {
+    activeTab.value = "compose";
+    return;
+  }
+
+  activeTab.value = "inbox";
+  inboxFilter.value = view;
+  if (activeThreadId.value) {
+    closeThread();
+  }
+}
+
 // ---------- 会话列表 ----------
 
 async function loadThreads() {
@@ -136,10 +206,20 @@ async function openThread(thread) {
   activeThreadId.value = thread.threadId;
   messages.value = [];
   lastId.value = 0;
-  notice.value = "";
+  clearNotice();
   await fetchThreadMessages({ reset: true });
   await markActiveRead();
   startThreadPolling();
+}
+
+// 关闭会话详情，回到收信列表；顺带刷新未读角标。
+function closeThread() {
+  activeThreadId.value = null;
+  messages.value = [];
+  lastId.value = 0;
+  stopThreadPolling();
+  refreshUnreadSummary();
+  loadThreads();
 }
 
 // reset=true 从头拉取；否则按 since_id 增量拉取并追加。
@@ -233,10 +313,12 @@ function handleVisibilityChange() {
   refreshUnreadSummary();
   if (activeThreadId.value) {
     pollThreadMessages();
+  } else {
+    loadThreads();
   }
 }
 
-// ---------- 发送消息 ----------
+// ---------- 会话内回复 ----------
 
 async function sendMessage() {
   if (sending.value || isReadOnly.value) {
@@ -272,37 +354,44 @@ async function sendMessage() {
   }
 }
 
-// ---------- 问题反馈 ----------
+// ---------- 写信 ----------
 
-function openFeedback() {
-  feedbackOpen.value = true;
-  feedbackDraft.value = "";
-  notice.value = "";
-}
-
-async function submitFeedback() {
-  if (feedbackSubmitting.value) {
+// 写信提交：收件人为官方时走问题反馈接口（回复落在「问题反馈」会话），
+// 为队伍时带上该会话的 threadId 发送。
+async function sendCompose() {
+  if (composing.value) {
     return;
   }
 
-  const content = feedbackDraft.value.trim();
+  const content = composeDraft.value.trim();
   if (!content) {
-    setNotice("error", "反馈内容不能为空。");
+    setNotice("error", "正文不能为空。");
     return;
   }
 
-  feedbackSubmitting.value = true;
-  setNotice("pending", "正在提交反馈...");
+  composing.value = true;
+  setNotice("pending", "正在发送...");
   try {
-    await messageApi.feedback({ content });
-    feedbackOpen.value = false;
-    feedbackDraft.value = "";
-    setNotice("success", "反馈已提交，官方回复会出现在「问题反馈」会话中。");
+    if (composeTarget.value === OFFICIAL_TARGET) {
+      await messageApi.feedback({ content });
+      setNotice(
+        "success",
+        "已发送给官方 / 工作人员，回复会出现在「问题反馈」会话中。",
+      );
+    } else {
+      const threadId = Number(
+        String(composeTarget.value).replace("team:", ""),
+      );
+      await messageApi.send({ threadId, content });
+      setNotice("success", "已发送到队伍会话。");
+    }
+
+    composeDraft.value = "";
     await loadThreads();
   } catch (error) {
-    setNotice("error", errorText(error, "提交反馈失败。"));
+    setNotice("error", errorText(error, "发送失败。"));
   } finally {
-    feedbackSubmitting.value = false;
+    composing.value = false;
   }
 }
 
@@ -412,7 +501,6 @@ onMounted(async () => {
 
   document.addEventListener("visibilitychange", handleVisibilityChange);
   await Promise.all([loadThreads(), loadTipsBalance(), refreshUnreadSummary()]);
-  startThreadPolling();
 });
 
 onBeforeUnmount(() => {
@@ -428,175 +516,231 @@ onBeforeUnmount(() => {
         <p class="page-shell__eyebrow">通讯中心</p>
         <h1>站内信</h1>
       </div>
-
-      <div v-if="isLoggedIn" class="page-shell__actions">
-        <span class="user-chip">未读 {{ state.unreadMessages }}</span>
-        <button class="soft-btn" type="button" @click="openFeedback">
-          问题反馈
-        </button>
-        <button class="soft-btn" type="button" @click="loadThreads">
-          刷新
-        </button>
-      </div>
     </header>
 
     <UserTabs />
 
     <p v-if="!isLoggedIn" class="helper-text">请先登录后查看站内信。</p>
 
-    <div v-else class="mail-shell">
-      <aside class="thread-list">
-        <p v-if="threadsLoading && !threads.length" class="thread-hint">
-          正在加载会话...
-        </p>
-        <p v-else-if="!threads.length" class="thread-hint">暂无会话。</p>
+    <div v-else class="mail-layout">
+      <!-- 左侧功能列：写信与各个收信分类 -->
+      <aside class="mail-nav" aria-label="站内信功能">
+        <button
+          type="button"
+          :class="['mail-nav__item', { 'is-active': activeView === 'compose' }]"
+          @click="switchView('compose')"
+        >
+          写信
+        </button>
+
+        <p class="mail-nav__group">收信</p>
 
         <button
-          v-for="thread in threads"
-          :key="thread.threadId"
+          v-for="item in INBOX_VIEWS"
+          :key="item.value"
           type="button"
-          :class="[
-            'thread-item',
-            { 'is-active': thread.threadId === activeThreadId },
-          ]"
-          @click="openThread(thread)"
+          :class="['mail-nav__item', { 'is-active': activeView === item.value }]"
+          @click="switchView(item.value)"
         >
-          <span class="thread-item__top">
-            <strong>{{ threadName(thread) }}</strong>
-            <span v-if="thread.unread > 0" class="thread-badge">
-              {{ thread.unread }}
-            </span>
-          </span>
-          <span class="thread-item__meta">
-            <span class="thread-kind">{{ threadKindLabel(thread.kind) }}</span>
-            <time>{{ formatTime(thread.lastMsgAt) }}</time>
+          <span>{{ item.label }}</span>
+          <span
+            v-if="item.value === 'unread' && state.unreadMessages > 0"
+            class="unread-badge"
+          >
+            {{ state.unreadMessages }}
           </span>
         </button>
       </aside>
 
-      <main class="thread-panel">
-        <template v-if="activeThread">
-          <header class="thread-panel__head">
-            <div class="thread-panel__title">
-              <strong>{{ threadName(activeThread) }}</strong>
-              <span class="thread-kind">
-                {{ threadKindLabel(activeThread.kind) }}
-              </span>
+      <!-- 右侧邮件区：撰写页或收信面板 -->
+      <div class="mail-main">
+        <!-- 写信：收件人 / 主题 / 正文，与邮箱撰写一致 -->
+        <div v-if="activeTab === 'compose'" class="composer">
+          <div class="mail-meta">
+            <div class="mail-row">
+              <label class="label" for="compose-target">收件人</label>
+              <select id="compose-target" v-model="composeTarget" class="select">
+                <option
+                  v-for="item in composeRecipients"
+                  :key="item.value"
+                  :value="item.value"
+                >
+                  {{ item.label }}
+                </option>
+              </select>
             </div>
+            <div class="mail-row">
+              <span class="label">主题</span>
+              <span class="value">站内信</span>
+            </div>
+          </div>
 
-            <div class="thread-panel__actions">
-              <button
-                v-if="canRequestHint"
-                class="soft-btn"
-                type="button"
-                @click="openHintHistory"
-              >
-                提示记录
+          <div class="toolbar">
+            <label class="toolbar-label" for="compose-body">正文</label>
+          </div>
+
+          <textarea
+            id="compose-body"
+            v-model="composeDraft"
+            class="mail-editor"
+            rows="10"
+            placeholder="请输入正文内容..."
+          ></textarea>
+
+          <div class="composer__footer">
+            <button
+              class="primary-btn"
+              type="button"
+              :disabled="composing"
+              @click="sendCompose"
+            >
+              {{ composing ? "发送中..." : "发送" }}
+            </button>
+          </div>
+        </div>
+
+        <!-- 收信：会话列表与信件详情 -->
+        <div v-else class="inbox-panel">
+          <!-- 信件详情 -->
+          <template v-if="activeThread">
+            <header class="message-detail-header">
+              <button class="soft-btn" type="button" @click="closeThread">
+                返回收件箱
               </button>
-              <template v-if="canRequestHint">
+
+              <div v-if="canRequestHint" class="toolbar-group">
                 <span class="tips-balance">
-                  { tipsHasTeam ? `队伍 tips ${tipsBalance}` :
-                  "加入队伍后开始累积" }
+                  {{ tipsHasTeam ? `队伍 tips ${tipsBalance}` : "加入队伍后开始累积" }}
                 </span>
+                <button class="soft-btn" type="button" @click="openHintHistory">
+                  提示记录
+                </button>
                 <button
                   class="soft-btn"
                   type="button"
                   :disabled="hintSubmitting"
                   @click="requestHint"
                 >
-                  { hintSubmitting ? "请求中..." : `求人工提示（${hintCost}
-                  点）` }
-                </button>
-              </template>
-            </div>
-          </header>
-
-          <div class="message-scroll">
-            <p v-if="!messages.length && !messagesLoading" class="thread-hint">
-              {{ isReadOnly ? "暂无公告。" : "暂无消息，发送第一条消息吧。" }}
-            </p>
-
-            <article
-              v-for="message in messages"
-              :key="message.id"
-              :class="[
-                'message-bubble',
-                message.direction === 'to_staff' ? 'is-mine' : 'is-theirs',
-              ]"
-            >
-              <header class="message-bubble__head">
-                <strong>{{ senderName(message) }}</strong>
-                <time>{{ formatTime(message.createdAt) }}</time>
-              </header>
-              <p class="message-bubble__body">{{ message.content }}</p>
-            </article>
-          </div>
-
-          <div class="thread-composer">
-            <p v-if="isReadOnly" class="helper-text">
-              官方公告为只读；如需联系工作人员，请使用「问题反馈」或队伍会话。
-            </p>
-            <template v-else>
-              <textarea
-                v-model="draft"
-                rows="3"
-                placeholder="输入消息内容，Ctrl+Enter 发送"
-                aria-label="消息内容"
-                @keydown.ctrl.enter="sendMessage"
-              ></textarea>
-              <div class="thread-composer__footer">
-                <button
-                  class="primary-btn"
-                  type="button"
-                  :disabled="sending"
-                  @click="sendMessage"
-                >
-                  {{ sending ? "发送中..." : "发送" }}
+                  {{ hintSubmitting ? "请求中..." : `求人工提示（${hintCost} 点）` }}
                 </button>
               </div>
-            </template>
-          </div>
-        </template>
+            </header>
 
-        <p v-else class="thread-hint thread-hint--center">
-          请选择左侧会话查看消息。
-        </p>
-      </main>
-    </div>
+            <article class="message-detail">
+              <header class="message-detail__header">
+                <div class="message-detail__meta">
+                  <span class="detail-label">会话</span>
+                  <strong>{{ threadName(activeThread) }}</strong>
+                </div>
+                <div class="message-detail__meta">
+                  <span class="detail-label">类型</span>
+                  <span>{{ threadKindLabel(activeThread.kind) }}</span>
+                </div>
+              </header>
 
-    <!-- 问题反馈 -->
-    <div
-      v-if="feedbackOpen"
-      class="modal-backdrop"
-      @click.self="feedbackOpen = false"
-    >
-      <div class="modal-card">
-        <h2>问题反馈</h2>
-        <p class="helper-text">
-          提交后会进入你的专属反馈会话，官方回复会出现在同一会话中。
-        </p>
-        <textarea
-          v-model="feedbackDraft"
-          rows="6"
-          maxlength="2000"
-          placeholder="请描述你遇到的问题（最多 2000 字）"
-          aria-label="反馈内容"
-        ></textarea>
-        <div class="modal-card__footer">
-          <button class="soft-btn" type="button" @click="feedbackOpen = false">
-            取消
-          </button>
-          <button
-            class="primary-btn"
-            type="button"
-            :disabled="feedbackSubmitting"
-            @click="submitFeedback"
-          >
-            {{ feedbackSubmitting ? "提交中..." : "提交反馈" }}
-          </button>
+              <div class="letter-list">
+                <p v-if="!messages.length && !messagesLoading" class="list-hint">
+                  {{ isReadOnly ? "暂无公告。" : "暂无消息，发送第一条消息吧。" }}
+                </p>
+
+                <article
+                  v-for="message in messages"
+                  :key="message.id"
+                  class="letter"
+                >
+                  <header class="letter__head">
+                    <strong>{{ senderName(message) }}</strong>
+                    <time>{{ formatTime(message.createdAt) }}</time>
+                  </header>
+                  <p class="letter__body">{{ message.content }}</p>
+                </article>
+              </div>
+            </article>
+
+            <div class="reply-bar">
+              <p v-if="isReadOnly" class="helper-text">
+                官方公告为只读；如需联系工作人员，请使用「写信」或队伍会话。
+              </p>
+              <template v-else>
+                <textarea
+                  v-model="draft"
+                  rows="3"
+                  class="reply-input"
+                  placeholder="输入消息内容，Ctrl+Enter 发送"
+                  aria-label="消息内容"
+                  @keydown.ctrl.enter="sendMessage"
+                ></textarea>
+                <div class="reply-bar__footer">
+                  <button
+                    class="primary-btn"
+                    type="button"
+                    :disabled="sending"
+                    @click="sendMessage"
+                  >
+                    {{ sending ? "发送中..." : "发送" }}
+                  </button>
+                </div>
+              </template>
+            </div>
+          </template>
+
+          <!-- 收件箱列表 -->
+          <template v-else>
+            <header class="inbox-toolbar">
+              <span class="toolbar-label">{{ currentFolderLabel }}</span>
+
+              <div class="toolbar-group toolbar-group--right">
+                <button
+                  class="soft-btn"
+                  type="button"
+                  :disabled="threadsLoading"
+                  @click="loadThreads"
+                >
+                  刷新
+                </button>
+              </div>
+            </header>
+
+            <div class="inbox-list">
+              <div class="inbox-row inbox-row--head">
+                <span>会话</span>
+                <span>最后消息</span>
+                <span class="inbox-unread">未读</span>
+              </div>
+
+              <p v-if="threadsLoading && !threads.length" class="list-hint">
+                正在加载会话...
+              </p>
+              <p v-else-if="!filteredThreads.length" class="list-hint">
+                暂无会话。
+              </p>
+
+              <button
+                v-for="thread in filteredThreads"
+                :key="thread.threadId"
+                type="button"
+                :class="['inbox-row', 'inbox-row--button', { 'is-unread': thread.unread > 0 }]"
+                @click="openThread(thread)"
+              >
+                <span class="inbox-subject">
+                  <strong>{{ threadName(thread) }}</strong>
+                  <small>{{ threadKindLabel(thread.kind) }}</small>
+                </span>
+                <span class="inbox-time">{{ formatTime(thread.lastMsgAt) }}</span>
+                <span class="inbox-unread">
+                  <span v-if="thread.unread > 0" class="unread-badge">
+                    {{ thread.unread }}
+                  </span>
+                  <template v-else>—</template>
+                </span>
+              </button>
+            </div>
+          </template>
         </div>
       </div>
     </div>
+
+    <StatusMessage class="shell-notice" :message="notice" :tone="noticeType" />
 
     <!-- 提示请求历史 -->
     <div
@@ -630,18 +774,12 @@ onBeforeUnmount(() => {
           >
             加载更多
           </button>
-          <button
-            class="soft-btn"
-            type="button"
-            @click="hintHistoryOpen = false"
-          >
+          <button class="soft-btn" type="button" @click="hintHistoryOpen = false">
             关闭
           </button>
         </div>
       </div>
     </div>
-
-    <StatusMessage :message="notice" :tone="noticeType" />
   </section>
 </template>
 
@@ -649,16 +787,12 @@ onBeforeUnmount(() => {
 .page-shell {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  height: 100%;
-  min-height: 0;
-  background: var(--bg);
-  color: var(--text);
+  gap: 18px;
 }
 
 .page-shell__head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 14px;
 }
@@ -682,255 +816,444 @@ onBeforeUnmount(() => {
   color: var(--text-dim);
 }
 
-.page-shell__actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.user-chip {
-  padding: 6px 10px;
-  border-radius: 999px;
-  background: var(--surface-alt);
-  font-size: 12px;
-  color: var(--text-dim);
-}
-
+/* 通用按钮：功能列项、软按钮、主按钮共用一个基底，只靠各自的类上色。 */
+.primary-btn,
 .soft-btn {
-  padding: 7px 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--text-dim);
-  font: inherit;
-  cursor: pointer;
-  transition: 0.15s ease;
-}
-
-.soft-btn:hover:not(:disabled) {
-  color: var(--text);
-  border-color: var(--border-strong);
-}
-
-.soft-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.primary-btn {
-  padding: 9px 18px;
   border: 1px solid transparent;
   border-radius: 8px;
-  background: linear-gradient(135deg, #0f7cff, #205ee2);
-  color: #fff;
   font: inherit;
-  font-weight: 600;
   cursor: pointer;
   transition: 0.15s ease;
 }
 
-.primary-btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
+/* ---------- 邮箱布局：左侧功能列 + 右侧邮件区 ---------- */
 
-.mail-shell {
+.mail-layout {
   display: flex;
-  flex: 1;
+  align-items: stretch;
+  gap: 16px;
   min-height: 0;
-  gap: 14px;
 }
 
-/* 左侧会话列表 */
-.thread-list {
+.mail-nav {
   display: flex;
+  flex: none;
   flex-direction: column;
-  gap: 6px;
-  width: 260px;
-  flex-shrink: 0;
+  gap: 4px;
+  width: 148px;
   padding: 10px;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: color-mix(in srgb, var(--surface) 82%, transparent);
-  overflow: auto;
 }
 
-.thread-item {
+.mail-nav__group {
+  margin: 10px 0 2px;
+  padding: 0 12px;
+  color: var(--text-dim);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+
+.mail-nav__item {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 10px 12px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 12px;
   border: 1px solid transparent;
-  border-radius: 10px;
+  border-radius: 8px;
   background: transparent;
-  color: var(--text);
+  color: var(--text-dim);
   font: inherit;
+  font-size: 13px;
   text-align: left;
   cursor: pointer;
   transition: 0.15s ease;
 }
 
-.thread-item:hover {
-  background: color-mix(in srgb, var(--surface-alt) 70%, transparent);
+.mail-nav__item:hover {
+  background: var(--surface-alt);
+  color: var(--text);
 }
 
-.thread-item.is-active {
+.mail-nav__item.is-active {
+  border-color: color-mix(in srgb, var(--accent) 18%, transparent);
   background: var(--accent-soft);
-  border-color: color-mix(in srgb, var(--accent) 22%, transparent);
-}
-
-.thread-item__top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.thread-item__top strong {
-  font-size: 13px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.thread-item__meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  font-size: 11px;
-  color: var(--text-dim);
-}
-
-.thread-kind {
-  padding: 2px 6px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  font-size: 10px;
-  color: var(--text-dim);
-}
-
-.thread-badge {
-  min-width: 18px;
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: var(--danger, #e5484d);
-  color: #fff;
-  font-size: 10px;
+  color: var(--accent);
   font-weight: 600;
-  text-align: center;
 }
 
-.thread-hint {
-  margin: 8px 4px;
-  color: var(--text-dim);
-  font-size: 12px;
-  line-height: 1.6;
+.mail-main {
+  display: flex;
+  flex: 1;
+  min-width: 0;
 }
 
-.thread-hint--center {
-  margin: auto;
-}
-
-/* 右侧会话内容 */
-.thread-panel {
+.inbox-panel {
   display: flex;
   flex: 1;
   flex-direction: column;
-  min-width: 0;
+  min-height: 520px;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: color-mix(in srgb, var(--surface) 82%, transparent);
   overflow: hidden;
 }
 
-.thread-panel__head {
+/* ---------- 写信 ---------- */
+
+.composer {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 520px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  overflow: hidden;
+}
+
+.mail-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 18px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.mail-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 32px;
+}
+
+.label {
+  width: 70px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.value {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.select {
+  min-width: 260px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  padding: 10px 18px 0;
+}
+
+.toolbar-label {
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--surface-alt);
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.mail-editor {
+  flex: 1;
+  margin: 14px 18px 18px;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 15px;
+  line-height: 1.8;
+  resize: vertical;
+}
+
+.mail-editor:focus,
+.reply-input:focus {
+  outline: none;
+  border-color: var(--border-strong);
+  box-shadow: 0 0 0 3px rgba(110, 171, 255, 0.18);
+}
+
+.composer__footer {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 18px 16px;
+}
+
+.primary-btn {
+  padding: 10px 20px;
+  background: linear-gradient(135deg, #0f7cff, #205ee2);
+  color: #fff;
+  font-weight: 600;
+}
+
+.primary-btn:disabled,
+.soft-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.shell-notice {
+  margin: 0;
+}
+
+/* ---------- 收件箱列表 ---------- */
+
+.inbox-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 10px;
+  gap: 12px;
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--surface-alt) 85%, transparent);
 }
 
-.thread-panel__title {
+.toolbar-group {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
 
-.thread-panel__actions {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
+.toolbar-group--right {
+  justify-content: flex-end;
+}
+
+.soft-btn {
+  padding: 7px 12px;
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--text-dim);
+}
+
+.soft-btn.is-selected {
+  border-color: color-mix(in srgb, var(--accent) 18%, transparent);
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .tips-balance {
-  font-size: 12px;
   color: var(--text-dim);
+  font-size: 12px;
 }
 
-.message-scroll {
+.inbox-list {
   display: flex;
   flex: 1;
   flex-direction: column;
-  gap: 10px;
   min-height: 0;
-  padding: 16px;
   overflow: auto;
 }
 
-.message-bubble {
+.inbox-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px 64px;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
+}
+
+.inbox-row--head {
+  background: color-mix(in srgb, var(--surface-alt) 92%, transparent);
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* 整行可点：去掉按钮默认外观，保留表格行的观感。 */
+.inbox-row--button {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.inbox-row--button:hover {
+  background: var(--accent-soft);
+}
+
+.inbox-row.is-unread {
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+}
+
+.inbox-row.is-unread .inbox-subject strong {
+  font-weight: 700;
+}
+
+.inbox-subject {
   display: flex;
   flex-direction: column;
+  min-width: 0;
   gap: 4px;
-  max-width: 78%;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
 }
 
-.message-bubble.is-mine {
-  align-self: flex-end;
-  background: var(--accent-soft);
-  border-color: color-mix(in srgb, var(--accent) 22%, transparent);
+.inbox-subject strong {
+  color: var(--text);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.message-bubble.is-theirs {
-  align-self: flex-start;
-  background: color-mix(in srgb, var(--surface-alt) 80%, transparent);
+.inbox-subject small {
+  color: var(--text-dim);
+  font-size: 11px;
 }
 
-.message-bubble__head {
+.inbox-time {
+  color: var(--text-dim);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.inbox-unread {
   display: flex;
+  justify-content: flex-end;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.unread-badge {
+  min-width: 20px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #e5484d;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.list-hint {
+  margin: 0;
+  padding: 16px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+/* ---------- 信件详情 ---------- */
+
+.message-detail-header {
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  font-size: 11px;
-  color: var(--text-dim);
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-alt) 88%, transparent);
 }
 
-.message-bubble__body {
+.message-detail {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  padding: 20px 24px 24px;
+  background: color-mix(in srgb, var(--surface) 76%, transparent);
+  overflow: auto;
+}
+
+.message-detail__header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.message-detail__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 160px;
+}
+
+.detail-label {
+  color: var(--text-dim);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* 每条消息按信件排版：署名 + 时间一行，正文另起一段，不做左右分栏气泡。 */
+.letter-list {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding-top: 18px;
+}
+
+.letter {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 18px;
+  border-bottom: 1px dashed var(--border);
+}
+
+.letter:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.letter__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.letter__head strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.letter__head time {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.letter__body {
   margin: 0;
-  font-size: 14px;
-  line-height: 1.7;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.9;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-.thread-composer {
+/* ---------- 会话内回复 ---------- */
+
+.reply-bar {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 12px 16px 14px;
+  gap: 10px;
+  padding: 12px 16px 16px;
   border-top: 1px solid var(--border);
   background: color-mix(in srgb, var(--surface-alt) 60%, transparent);
 }
 
-.thread-composer textarea {
+.reply-input {
   width: 100%;
   padding: 10px 12px;
   border: 1px solid var(--border);
@@ -938,17 +1261,12 @@ onBeforeUnmount(() => {
   background: var(--surface);
   color: var(--text);
   font: inherit;
+  font-size: 13px;
+  line-height: 1.6;
   resize: vertical;
-  box-sizing: border-box;
 }
 
-.thread-composer textarea:focus {
-  outline: none;
-  border-color: var(--border-strong);
-  box-shadow: 0 0 0 3px rgba(110, 171, 255, 0.18);
-}
-
-.thread-composer__footer {
+.reply-bar__footer {
   display: flex;
   justify-content: flex-end;
 }
@@ -960,96 +1278,96 @@ onBeforeUnmount(() => {
   line-height: 1.6;
 }
 
-/* 弹窗 */
+/* ---------- 提示请求历史弹窗 ---------- */
+
 .modal-backdrop {
   position: fixed;
   inset: 0;
+  z-index: 40;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 20px;
-  background: rgba(6, 10, 18, 0.55);
-  z-index: 40;
+  padding: 24px;
+  background: rgba(8, 13, 20, 0.55);
 }
 
 .modal-card {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  width: min(520px, 100%);
-  padding: 18px;
+  width: min(560px, 100%);
+  max-height: 80vh;
+  padding: 20px;
   border: 1px solid var(--border);
   border-radius: 14px;
   background: var(--surface);
   box-shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
+  overflow: auto;
 }
 
 .modal-card h2 {
   margin: 0;
-  font-size: 20px;
-}
-
-.modal-card textarea {
-  width: 100%;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--surface-alt) 60%, transparent);
-  color: var(--text);
-  font: inherit;
-  resize: vertical;
-  box-sizing: border-box;
-}
-
-.modal-card textarea:focus {
-  outline: none;
-  border-color: var(--border-strong);
+  font-size: 18px;
 }
 
 .modal-card__footer {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 10px;
 }
 
 .hint-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 10px;
   margin: 0;
   padding: 0;
   list-style: none;
-  max-height: 320px;
-  overflow: auto;
 }
 
 .hint-list li {
   display: grid;
-  grid-template-columns: 56px 1fr auto auto;
+  grid-template-columns: 64px minmax(0, 1fr) 64px 110px;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
+  gap: 10px;
+  padding: 10px 12px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 10px;
   font-size: 12px;
 }
 
-.hint-list__id {
-  color: var(--text-dim);
-}
-
-.hint-list__cost {
-  color: var(--text-dim);
-}
-
-.hint-list time {
-  color: var(--text-dim);
-  white-space: nowrap;
-}
-
-.hint-list small {
+.hint-list li small {
   grid-column: 1 / -1;
   color: var(--text-dim);
-  font-size: 11px;
+}
+
+.hint-list__id,
+.hint-list__cost,
+.hint-list time {
+  color: var(--text-dim);
+}
+
+@media (max-width: 960px) {
+  .inbox-row {
+    grid-template-columns: minmax(0, 1fr) 96px 52px;
+    gap: 8px;
+    padding: 10px 12px;
+  }
+
+  /* 窄屏下功能列改为横向排列在邮件区上方。 */
+  .mail-layout {
+    flex-direction: column;
+  }
+
+  .mail-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+    width: auto;
+  }
+
+  .mail-nav__group {
+    margin: 0;
+    align-self: center;
+  }
 }
 </style>
