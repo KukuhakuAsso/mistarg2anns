@@ -10,8 +10,8 @@ import {
 } from "@/config/folders";
 import { CARD_GAP, CARD_H, CARD_W } from "@/config/board";
 import { validateTeamName } from "@/config/team";
-import { authApi } from "@/api/auth";
 import { teamApi } from "@/api/team";
+import { messageApi } from "@/api/message";
 
 const STORAGE_KEY = "mistarg2anns:state:v1";
 
@@ -129,6 +129,8 @@ watch(
   () => state.user.currentUser?.id ?? state.user.currentUser?.username ?? null,
   () => {
     state.user.team = { loaded: false, team: null, myJoinRequest: null };
+    // 未读角标是服务端数据，切换账号时一并清零，避免残留上一账号的未读数。
+    state.unreadMessages = 0;
   },
 );
 
@@ -572,6 +574,25 @@ async function dissolveTeam() {
   }
 }
 
+// ---------- 站内信（未读角标） ----------
+
+// 刷新未读角标（GET /api/msg/summary），把 total 写入全局状态供顶栏与桌面展示。
+// 失败时静默处理，不影响页面主流程。
+async function refreshUnreadSummary() {
+  if (!state.user.currentUser) {
+    state.unreadMessages = 0;
+    return { ok: false };
+  }
+
+  try {
+    const response = await messageApi.getSummary();
+    state.unreadMessages = Number(response?.data?.total ?? 0) || 0;
+    return { ok: true, total: state.unreadMessages };
+  } catch {
+    return { ok: false };
+  }
+}
+
 // 组合式函数入口：任何组件调用都会获得同一份全局状态与同一组操作函数。
 export function useGameState() {
   return {
@@ -615,5 +636,7 @@ export function useGameState() {
     leaveTeam,
     transferCaptain,
     dissolveTeam,
+    // 站内信未读角标
+    refreshUnreadSummary,
   };
 }
