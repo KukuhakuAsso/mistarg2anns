@@ -28,6 +28,8 @@ const activeThreadId = ref(null);
 const messages = ref([]);
 const messagesLoading = ref(false);
 const lastId = ref(0);
+// 已上报过的已读位置：轮询时 lastId 没前进就不重复发标记已读。
+let lastMarkedReadId = 0;
 
 // 会话内回复与写信各自的草稿和提交状态。
 const draft = ref("");
@@ -206,6 +208,7 @@ async function openThread(thread) {
   activeThreadId.value = thread.threadId;
   messages.value = [];
   lastId.value = 0;
+  lastMarkedReadId = 0;
   clearNotice();
   await fetchThreadMessages({ reset: true });
   await markActiveRead();
@@ -265,15 +268,17 @@ async function pollThreadMessages() {
   await markActiveRead({ silent: true });
 }
 
-// 更新已读位置；lastId 为 0（无消息）时跳过。
+// 更新已读位置；lastId 为 0（无消息）或没有前进过时跳过，
+// 避免 10 秒轮询每次都重复上报（那会顺带重复刷新未读角标）。
 async function markActiveRead({ silent = false } = {}) {
   const threadId = activeThreadId.value;
-  if (!threadId || lastId.value <= 0) {
+  if (!threadId || lastId.value <= 0 || lastId.value <= lastMarkedReadId) {
     return;
   }
 
   try {
     await messageApi.markRead(threadId, lastId.value);
+    lastMarkedReadId = lastId.value;
     const target = threads.value.find((item) => item.threadId === threadId);
     if (target) {
       target.unread = 0;
@@ -304,13 +309,12 @@ function stopThreadPolling() {
   }
 }
 
-// 页面重新可见时立即补刷角标与当前会话。
+// 页面重新可见时立即补刷当前会话或列表（未读角标由 App.vue 的全局轮询负责）。
 function handleVisibilityChange() {
   if (document.hidden) {
     return;
   }
 
-  refreshUnreadSummary();
   if (activeThreadId.value) {
     pollThreadMessages();
   } else {
@@ -500,7 +504,8 @@ onMounted(async () => {
   }
 
   document.addEventListener("visibilitychange", handleVisibilityChange);
-  await Promise.all([loadThreads(), loadTipsBalance(), refreshUnreadSummary()]);
+  // 未读角标（GET /msg/summary）由 App.vue 的全局轮询统一负责，本页只加载自己的数据。
+  await Promise.all([loadThreads(), loadTipsBalance()]);
 });
 
 onBeforeUnmount(() => {
