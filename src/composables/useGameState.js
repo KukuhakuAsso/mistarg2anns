@@ -10,6 +10,7 @@ import {
 } from "@/config/folders";
 import { CARD_GAP, CARD_H, CARD_W } from "@/config/board";
 import { validateTeamName } from "@/config/team";
+import { extractErrorMessage, extractFieldMessage } from "@/api/errors";
 import { teamApi } from "@/api/team";
 import { messageApi } from "@/api/message";
 
@@ -325,14 +326,9 @@ function resetProgress() {
 
 // ---------- 队伍操作 ----------
 
-// 从后端错误对象提取可读文案，优先使用后端返回的 error.message。
+// 从后端错误对象提取可读文案（含 detail.fields 里的字段级原因）。
 function teamErrorMessage(error, fallback) {
-  return (
-    error?.payload?.error?.message ||
-    error?.payload?.message ||
-    error?.message ||
-    fallback
-  );
+  return extractErrorMessage(error, fallback);
 }
 
 // 当前登录账号的身份标识，用于判断异步响应是否仍属于当前活跃账号。
@@ -400,15 +396,15 @@ async function createTeam(name, intro = "") {
     return { ok: true, message: `队伍「${validation.value}」创建成功。` };
   } catch (error) {
     const payload = error?.payload ?? {};
-    const detail = payload?.detail ?? payload?.error?.detail ?? {};
 
     return {
       ok: false,
       message: teamErrorMessage(error, "创建队伍失败。"),
       status: error?.status,
       code: payload?.code || payload?.error?.code || error?.code || "",
-      // 400 E_VALIDATION 时后端会在 detail.fields.name 写明队名不合规的具体原因。
-      nameError: detail?.fields?.name || "",
+      // 400 E_VALIDATION 时后端会在 detail.fields 里写明原因；这里只取 name 的，
+      // 建队同时提交 intro，按字段名取值才不会把简介的原因落到队名输入框下方。
+      nameError: extractFieldMessage(error, "name"),
     };
   }
 }

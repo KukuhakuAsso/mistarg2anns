@@ -4,6 +4,9 @@
 // 注意：system 与 account 的 teamName 都是 null，必须用 kind 区分，不能只看 teamName。
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useGameState } from "@/composables/useGameState";
+import { useStatusMessage } from "@/composables/useStatusMessage";
+import { extractErrorMessage } from "@/api/errors";
+import StatusMessage from "@/components/StatusMessage.vue";
 import { messageApi } from "@/api/message";
 import { tipsApi } from "@/api/tips";
 import UserTabs from "@/components/UserTabs.vue";
@@ -18,11 +21,14 @@ const messages = ref([]);
 const messagesLoading = ref(false);
 const lastId = ref(0);
 
-// 发送与提示
+// 发送与提示；操作结果提示的文案与语义色统一交给 useStatusMessage 管理。
 const draft = ref("");
 const sending = ref(false);
-const notice = ref("");
-const noticeType = ref("info");
+const {
+  message: notice,
+  tone: noticeType,
+  set: setNotice,
+} = useStatusMessage();
 
 // 问题反馈（任何登录用户可用，不要求有队伍）
 const feedbackOpen = ref(false);
@@ -46,27 +52,17 @@ let threadTimer = null;
 
 const isLoggedIn = computed(() => Boolean(state.user.currentUser));
 const activeThread = computed(
-  () => threads.value.find((item) => item.threadId === activeThreadId.value) ?? null,
+  () =>
+    threads.value.find((item) => item.threadId === activeThreadId.value) ??
+    null,
 );
 // 官方公告为只读，不显示输入框。
 const isReadOnly = computed(() => activeThread.value?.kind === "system");
 // 仅队伍会话支持求人工提示。
 const canRequestHint = computed(() => activeThread.value?.kind === "team");
 
-function setNotice(type, text) {
-  noticeType.value = type;
-  notice.value = text;
-}
-
-// 后端错误文案优先，其次本地兜底。
-function errorText(error, fallback) {
-  return (
-    error?.payload?.error?.message ||
-    error?.payload?.message ||
-    error?.message ||
-    fallback
-  );
-}
+// 错误文案统一由 @/api/errors 解析（含字段级原因），本地保留短名便于调用。
+const errorText = extractErrorMessage;
 
 // 会话显示名：system / account 的 teamName 均为 null，靠 kind 区分。
 function threadName(thread) {
@@ -254,7 +250,7 @@ async function sendMessage() {
   }
 
   sending.value = true;
-  setNotice("info", "正在发送...");
+  setNotice("pending", "正在发送...");
   try {
     await messageApi.send({
       // 队伍会话显式带 threadId；其余情况交由后端解析。
@@ -296,7 +292,7 @@ async function submitFeedback() {
   }
 
   feedbackSubmitting.value = true;
-  setNotice("info", "正在提交反馈...");
+  setNotice("pending", "正在提交反馈...");
   try {
     await messageApi.feedback({ content });
     feedbackOpen.value = false;
@@ -340,7 +336,7 @@ async function requestHint() {
 
   // 服务端不做去重，连点会重复扣费：点击后立即禁用，直到本次响应返回。
   hintSubmitting.value = true;
-  setNotice("info", "正在请求人工提示...");
+  setNotice("pending", "正在请求人工提示...");
   try {
     const response = await messageApi.requestHint();
     const data = response?.data ?? {};
@@ -380,7 +376,7 @@ async function loadHintRequests({ reset = false } = {}) {
   hintRequestsLoading.value = true;
   try {
     const response = await messageApi.getHintRequests({
-      cursor: reset ? 0 : hintNextCursor.value ?? 0,
+      cursor: reset ? 0 : (hintNextCursor.value ?? 0),
       limit: 20,
     });
     const data = response?.data ?? {};
@@ -438,7 +434,9 @@ onBeforeUnmount(() => {
         <button class="soft-btn" type="button" @click="openFeedback">
           问题反馈
         </button>
-        <button class="soft-btn" type="button" @click="loadThreads">刷新</button>
+        <button class="soft-btn" type="button" @click="loadThreads">
+          刷新
+        </button>
       </div>
     </header>
 
@@ -457,7 +455,10 @@ onBeforeUnmount(() => {
           v-for="thread in threads"
           :key="thread.threadId"
           type="button"
-          :class="['thread-item', { 'is-active': thread.threadId === activeThreadId }]"
+          :class="[
+            'thread-item',
+            { 'is-active': thread.threadId === activeThreadId },
+          ]"
           @click="openThread(thread)"
         >
           <span class="thread-item__top">
@@ -494,11 +495,8 @@ onBeforeUnmount(() => {
               </button>
               <template v-if="canRequestHint">
                 <span class="tips-balance">
-                  {
-                    tipsHasTeam
-                      ? `队伍 tips ${tipsBalance}`
-                      : "加入队伍后开始累积"
-                  }
+                  { tipsHasTeam ? `队伍 tips ${tipsBalance}` :
+                  "加入队伍后开始累积" }
                 </span>
                 <button
                   class="soft-btn"
@@ -506,11 +504,8 @@ onBeforeUnmount(() => {
                   :disabled="hintSubmitting"
                   @click="requestHint"
                 >
-                  {
-                    hintSubmitting
-                      ? "请求中..."
-                      : `求人工提示（${hintCost} 点）`
-                  }
+                  { hintSubmitting ? "请求中..." : `求人工提示（${hintCost}
+                  点）` }
                 </button>
               </template>
             </div>
@@ -524,7 +519,10 @@ onBeforeUnmount(() => {
             <article
               v-for="message in messages"
               :key="message.id"
-              :class="['message-bubble', message.direction === 'to_staff' ? 'is-mine' : 'is-theirs']"
+              :class="[
+                'message-bubble',
+                message.direction === 'to_staff' ? 'is-mine' : 'is-theirs',
+              ]"
             >
               <header class="message-bubble__head">
                 <strong>{{ senderName(message) }}</strong>
@@ -611,7 +609,9 @@ onBeforeUnmount(() => {
         <ul v-if="hintRequests.length" class="hint-list">
           <li v-for="item in hintRequests" :key="item.id">
             <span class="hint-list__id">#{{ item.id }}</span>
-            <span class="hint-list__status">{{ hintStatusLabel(item.status) }}</span>
+            <span class="hint-list__status">{{
+              hintStatusLabel(item.status)
+            }}</span>
             <span class="hint-list__cost">{{ item.cost }} 点</span>
             <time>{{ formatTime(item.createdAt) }}</time>
             <small v-if="item.reason">{{ item.reason }}</small>
@@ -641,9 +641,7 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <p v-if="notice" :class="['notice', `notice--${noticeType}`]">
-      {{ notice }}
-    </p>
+    <StatusMessage :message="notice" :tone="noticeType" />
   </section>
 </template>
 
@@ -1053,28 +1051,5 @@ onBeforeUnmount(() => {
   grid-column: 1 / -1;
   color: var(--text-dim);
   font-size: 11px;
-}
-
-.notice {
-  margin: 0;
-  padding: 8px 12px;
-  border-radius: 10px;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.notice--info {
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  color: var(--text-dim);
-}
-
-.notice--success {
-  background: color-mix(in srgb, #4caf50 14%, transparent);
-  color: #6ed791;
-}
-
-.notice--error {
-  background: color-mix(in srgb, var(--danger, #e5484d) 14%, transparent);
-  color: #ff9d9d;
 }
 </style>
