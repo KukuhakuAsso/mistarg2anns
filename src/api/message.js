@@ -4,14 +4,14 @@ import request from "@/api/request";
 // 成功响应为 { ok: true, data, req_id }；失败为 { ok: false, error: { code, message, detail }, req_id }。
 // 失败时 request 抛出的 Error 带 status / code / payload，调用方读取 error.payload.error.message。
 export const messageApi = {
-  // 会话列表：官方公告 + 自己的账号级会话 + 自己的队伍会话（GET /api/msg/threads）
+  // 邮件列表：官方公告 + 自己的账号级邮件 + 自己的队伍邮件（GET /api/msg/threads）
   getThreads: () =>
     request("/msg/threads", {
       method: "GET",
       useAuth: true,
     }),
 
-  // 增量拉取会话消息（GET /api/msg/thread/:id?since_id=&limit=）
+  // 增量拉取邮件消息（GET /api/msg/thread/:id?since_id=&limit=）
   // 增量时把上次响应的 data.lastId 作为 sinceId 传入。
   getThreadMessages: (threadId, { sinceId = 0, limit = 50 } = {}) =>
     request(`/msg/thread/${threadId}`, {
@@ -20,7 +20,7 @@ export const messageApi = {
       useAuth: true,
     }),
 
-  // 标记已读（POST /api/msg/thread/:id/read），lastReadId 通常取会话响应的 data.lastId
+  // 标记已读（POST /api/msg/thread/:id/read），lastReadId 通常取邮件响应的 data.lastId
   markRead: (threadId, lastReadId) =>
     request(`/msg/thread/${threadId}/read`, {
       method: "POST",
@@ -35,7 +35,7 @@ export const messageApi = {
       useAuth: true,
     }),
 
-  // 发送消息（POST /api/msg/send）；玩家可省略 threadId，由后端用自己队伍的会话
+  // 发送消息（POST /api/msg/send）；玩家可省略 threadId，由后端用自己队伍的邮件
   send: ({ threadId, content, contentType = "text" } = {}) =>
     request("/msg/send", {
       method: "POST",
