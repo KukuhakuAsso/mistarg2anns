@@ -1,6 +1,6 @@
 <script setup>
 // 站内信中心：对接 /api/msg/*，界面为邮箱式（写信 / 收信）。
-// 会话分两类：system（官方公告，只读）、account（账号级会话，问题反馈）。
+// 邮件分三类：system（官方公告，只读）、account（账号级邮件，问题反馈）。
 // 注意：system 与 account 的 teamName 都是 null，必须用 kind 区分，不能只看 teamName。
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useGameState } from "@/composables/useGameState";
@@ -11,7 +11,7 @@ import { messageApi } from "@/api/message";
 import { tipsApi } from "@/api/tips";
 import UserTabs from "@/components/UserTabs.vue";
 
-const { state, refreshUnreadSummary } = useGameState();
+const { state, currentTeam, loadMyTeam, refreshUnreadSummary } = useGameState();
 
 // 当前页签：inbox = 收信，compose = 写信。
 const activeTab = ref("inbox");
@@ -22,7 +22,7 @@ const inboxFilter = ref("all");
 const OFFICIAL_TARGET = "official";
 const HINT_TARGET = "hint";
 
-// 会话列表与当前打开的会话内容
+// 邮件列表与当前打开的邮件内容
 const threads = ref([]);
 const threadsLoading = ref(false);
 const activeThreadId = ref(null);
@@ -32,9 +32,7 @@ const lastId = ref(0);
 // 已上报过的已读位置：轮询时 lastId 没前进就不重复发标记已读。
 let lastMarkedReadId = 0;
 
-// 会话内回复与写信各自的草稿和提交状态。
-const draft = ref("");
-const sending = ref(false);
+// 写信页的收件人、草稿与提交状态。
 const composeTarget = ref(OFFICIAL_TARGET);
 const composeDraft = ref("");
 const composing = ref(false);
@@ -99,7 +97,7 @@ const composeSubject = ref(DEFAULT_SUBJECT);
 // 错误文案统一由 @/api/errors 解析（含字段级原因），本地保留短名便于调用。
 const errorText = extractErrorMessage;
 
-// 会话显示名与类型名都按 kind 区分（后端返回的 teamName 一律为 null）。
+// 邮件显示名与类型名都按 kind 区分（后端返回的 teamName 一律为 null）。
 function threadName(thread) {
   if (!thread) {
     return "";
@@ -110,7 +108,7 @@ function threadName(thread) {
   if (thread.kind === "account") {
     return "问题反馈";
   }
-  return "会话";
+  return "邮件";
 }
 
 function threadKindLabel(kind) {
@@ -120,12 +118,23 @@ function threadKindLabel(kind) {
   return "反馈";
 }
 
-// 消息署名：to_staff 表示自己发送，to_player 表示官方或工作人员（统一匿名）。
+// 邮件式署名：to_staff 表示自己发送，to_player 表示官方或工作人员（统一匿名）。
 function senderName(message) {
   return message.direction === "to_staff" ? "我" : "官方 / 工作人员";
 }
 
-function formatTime(value) {
+// 与署名互为收件方，用于详情页的「收件人」一行。
+function recipientName(message) {
+  return message.direction === "to_staff" ? "官方 / 工作人员" : "我";
+}
+
+// 邮件头像占位：取署名首字。
+function senderInitial(message) {
+  return senderName(message).slice(0, 1);
+}
+
+// 时间格式：列表用短格式（月-日 时:分），详情用带年份的完整格式。
+function formatTime(value, { withYear = false } = {}) {
   if (!value) {
     return "";
   }
@@ -134,12 +143,14 @@ function formatTime(value) {
     return "";
   }
   const pad = (n) => String(n).padStart(2, "0");
-  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  const day = `${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  const clock = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return withYear ? `${date.getFullYear()}-${day} ${clock}` : `${day} ${clock}`;
 }
 
 // ---------- 左侧功能列与收信筛选 ----------
 
-// 左侧功能列的收信项：收件箱 = 全部会话，另可按未读 / 已读筛选。
+// 左侧功能列的收信项：收件箱 = 全部邮件，另可按未读 / 已读筛选。
 const INBOX_VIEWS = [
   { value: "all", label: "收件箱" },
   { value: "unread", label: "未读" },
@@ -174,7 +185,7 @@ function switchView(view) {
   }
 }
 
-// ---------- 会话列表 ----------
+// ---------- 邮件列表 ----------
 
 async function loadThreads() {
   if (!isLoggedIn.value) {
@@ -189,20 +200,20 @@ async function loadThreads() {
       (item) => item.kind !== "team",
     );
 
-    // 当前会话已不可见时清空详情。
+    // 当前邮件已不可见时清空详情。
     if (!threads.value.some((item) => item.threadId === activeThreadId.value)) {
       activeThreadId.value = null;
       messages.value = [];
       lastId.value = 0;
     }
   } catch (error) {
-    setNotice("error", errorText(error, "加载会话列表失败。"));
+    setNotice("error", errorText(error, "加载邮件列表失败。"));
   } finally {
     threadsLoading.value = false;
   }
 }
 
-// ---------- 会话内容 ----------
+// ---------- 邮件内容 ----------
 
 async function openThread(thread) {
   activeThreadId.value = thread.threadId;
@@ -210,12 +221,18 @@ async function openThread(thread) {
   lastId.value = 0;
   lastMarkedReadId = 0;
   clearNotice();
+
+  // 队伍邮件的抄送行需要成员名单；若队伍信息尚未加载（或早前加载失败），这里补拉一次。
+  if (thread.kind === "team" && !currentTeam.value) {
+    loadMyTeam();
+  }
+
   await fetchThreadMessages({ reset: true });
   await markActiveRead();
   startThreadPolling();
 }
 
-// 关闭会话详情，回到收信列表；顺带刷新未读角标。
+// 关闭邮件详情，回到收信列表；顺带刷新未读角标。
 function closeThread() {
   activeThreadId.value = null;
   messages.value = [];
@@ -225,7 +242,7 @@ function closeThread() {
   loadThreads();
 }
 
-// reset=true 从头拉取；否则按 since_id 增量拉取并追加。
+// reset=true 从头拉取；否则按 since_id 增量拉取并追加邮件。
 async function fetchThreadMessages({ reset = false } = {}) {
   const threadId = activeThreadId.value;
   if (!threadId) {
@@ -252,7 +269,7 @@ async function fetchThreadMessages({ reset = false } = {}) {
       lastId.value = nextLastId;
     }
   } catch (error) {
-    setNotice("error", errorText(error, "加载会话内容失败。"));
+    setNotice("error", errorText(error, "加载邮件内容失败。"));
   } finally {
     messagesLoading.value = false;
   }
@@ -309,7 +326,7 @@ function stopThreadPolling() {
   }
 }
 
-// 页面重新可见时立即补刷当前会话或列表（未读角标由 App.vue 的全局轮询负责）。
+// 页面重新可见时立即补刷当前邮件或列表（未读角标由 App.vue 的全局轮询负责）。
 function handleVisibilityChange() {
   if (document.hidden) {
     return;
@@ -322,10 +339,12 @@ function handleVisibilityChange() {
   }
 }
 
-// ---------- 会话内回复 ----------
+// ---------- 回复邮件：跳转到写信页 ----------
 
-async function sendMessage() {
-  if (sending.value || isReadOnly.value) {
+// 邮件详情页不再直接输入：点「回复」切到写信页，并把收件人预置为当前邮件。
+// 官方公告不可回复（isReadOnly），按钮已禁用。
+function replyToActiveThread() {
+  if (!activeThread.value || isReadOnly.value) {
     return;
   }
 
@@ -353,8 +372,8 @@ async function sendMessage() {
 
 // ---------- 写信 ----------
 
-// 写信提交：官方收件人走问题反馈接口（回复落在「问题反馈」会话）；
-// 「人工求提示」收件人不走这里，由撰写页的求提示按钮直接提交。
+// 写信提交：收件人为官方时走问题反馈接口（回复落在「问题反馈」邮件），
+// 为队伍时带上该邮件的 threadId 发送。
 async function sendCompose() {
   if (composing.value) {
     return;
@@ -494,7 +513,7 @@ onMounted(async () => {
 
   document.addEventListener("visibilitychange", handleVisibilityChange);
   // 未读角标（GET /msg/summary）由 App.vue 的全局轮询统一负责，本页只加载自己的数据。
-  await Promise.all([loadThreads(), loadTipsBalance()]);
+  await Promise.all([loadThreads(), loadTipsBalance(), loadMyTeam()]);
 });
 
 onBeforeUnmount(() => {
@@ -533,7 +552,10 @@ onBeforeUnmount(() => {
           v-for="item in INBOX_VIEWS"
           :key="item.value"
           type="button"
-          :class="['mail-nav__item', { 'is-active': activeView === item.value }]"
+          :class="[
+            'mail-nav__item',
+            { 'is-active': activeView === item.value },
+          ]"
           @click="switchView(item.value)"
         >
           <span>{{ item.label }}</span>
@@ -553,7 +575,11 @@ onBeforeUnmount(() => {
           <div class="mail-meta">
             <div class="mail-row">
               <label class="label" for="compose-target">收件人</label>
-              <select id="compose-target" v-model="composeTarget" class="select">
+              <select
+                id="compose-target"
+                v-model="composeTarget"
+                class="select"
+              >
                 <option
                   v-for="item in composeRecipients"
                   :key="item.value"
@@ -633,41 +659,57 @@ onBeforeUnmount(() => {
           </template>
         </div>
 
-        <!-- 收信：会话列表与信件详情 -->
+        <!-- 收信：邮件列表与信件详情 -->
         <div v-else class="inbox-panel">
-          <!-- 信件详情 -->
+          <!-- 信件详情：邮件式版式，回复统一走写信页 -->
           <template v-if="activeThread">
             <header class="message-detail-header">
-              <button class="soft-btn" type="button" @click="closeThread">
-                返回收件箱
-              </button>
+              <div class="toolbar-group">
+                <button class="soft-btn" type="button" @click="closeThread">
+                  返回收件箱
+                </button>
+                <button
+                  class="soft-btn"
+                  type="button"
+                  :disabled="isReadOnly"
+                  :title="isReadOnly ? '官方公告不可回复' : '转到写信页回复'"
+                  @click="replyToActiveThread"
+                >
+                  回复
+                </button>
+              </div>
+              
             </header>
 
             <article class="message-detail">
-              <header class="message-detail__header">
-                <div class="message-detail__meta">
-                  <span class="detail-label">会话</span>
-                  <strong>{{ threadName(activeThread) }}</strong>
-                </div>
-                <div class="message-detail__meta">
-                  <span class="detail-label">类型</span>
-                  <span>{{ threadKindLabel(activeThread.kind) }}</span>
-                </div>
-              </header>
+              <h2 class="letter-subject">{{ threadSubject }}</h2>
 
-              <div class="letter-list">
-                <p v-if="!messages.length && !messagesLoading" class="list-hint">
-                  {{ isReadOnly ? "暂无公告。" : "暂无消息，发送第一条消息吧。" }}
-                </p>
+              <div v-if="messagesLoading && !messages.length" class="list-hint">
+                正在加载邮件...
+              </div>
+              <div v-else-if="!messages.length" class="list-hint">
+                {{
+                  isReadOnly ? "暂无公告。" : "暂无消息，点击「回复」进行写信。"
+                }}
+              </div>
 
+              <div v-else class="letter-list">
                 <article
                   v-for="message in messages"
                   :key="message.id"
                   class="letter"
                 >
                   <header class="letter__head">
-                    <strong>{{ senderName(message) }}</strong>
-                    <time>{{ formatTime(message.createdAt) }}</time>
+                    <div class="letter__from">
+                      <strong>{{ senderName(message) }}</strong>
+                      <small>收件人：{{ recipientName(message) }}</small>
+                      <small v-if="letterCc.length">
+                        抄送：{{ letterCc.join("、") }}
+                      </small>
+                    </div>
+                    <time class="letter__time">
+                      {{ formatTime(message.createdAt, { withYear: true }) }}
+                    </time>
                   </header>
                   <p class="letter__body">{{ message.content }}</p>
                 </article>
@@ -720,30 +762,36 @@ onBeforeUnmount(() => {
 
             <div class="inbox-list">
               <div class="inbox-row inbox-row--head">
-                <span>会话</span>
+                <span>邮件</span>
                 <span>最后消息</span>
                 <span class="inbox-unread">未读</span>
               </div>
 
               <p v-if="threadsLoading && !threads.length" class="list-hint">
-                正在加载会话...
+                正在加载邮件正文...
               </p>
               <p v-else-if="!filteredThreads.length" class="list-hint">
-                暂无会话。
+                暂无邮件记录。
               </p>
 
               <button
                 v-for="thread in filteredThreads"
                 :key="thread.threadId"
                 type="button"
-                :class="['inbox-row', 'inbox-row--button', { 'is-unread': thread.unread > 0 }]"
+                :class="[
+                  'inbox-row',
+                  'inbox-row--button',
+                  { 'is-unread': thread.unread > 0 },
+                ]"
                 @click="openThread(thread)"
               >
                 <span class="inbox-subject">
                   <strong>{{ threadName(thread) }}</strong>
                   <small>{{ threadKindLabel(thread.kind) }}</small>
                 </span>
-                <span class="inbox-time">{{ formatTime(thread.lastMsgAt) }}</span>
+                <span class="inbox-time">{{
+                  formatTime(thread.lastMsgAt)
+                }}</span>
                 <span class="inbox-unread">
                   <span v-if="thread.unread > 0" class="unread-badge">
                     {{ thread.unread }}
@@ -791,7 +839,11 @@ onBeforeUnmount(() => {
           >
             加载更多
           </button>
-          <button class="soft-btn" type="button" @click="hintHistoryOpen = false">
+          <button
+            class="soft-btn"
+            type="button"
+            @click="hintHistoryOpen = false"
+          >
             关闭
           </button>
         </div>
@@ -1208,29 +1260,19 @@ onBeforeUnmount(() => {
   overflow: auto;
 }
 
-.message-detail__header {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 18px;
-  padding-bottom: 12px;
+/* ---------- 信件详情：邮件式版式 ---------- */
+
+/* 主题行：邮件标题，压在正文与头部之间。 */
+.letter-subject {
+  margin: 0;
+  padding-bottom: 14px;
   border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: 20px;
+  line-height: 1.4;
 }
 
-.message-detail__meta {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 160px;
-}
-
-.detail-label {
-  color: var(--text-dim);
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-/* 每条消息按信件排版：署名 + 时间一行，正文另起一段，不做左右分栏气泡。 */
+/* 多条消息按时间顺序纵向排列，每条是一封独立信件。 */
 .letter-list {
   display: flex;
   flex-direction: column;
@@ -1241,7 +1283,7 @@ onBeforeUnmount(() => {
 .letter {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
   padding-bottom: 18px;
   border-bottom: 1px dashed var(--border);
 }
@@ -1251,22 +1293,35 @@ onBeforeUnmount(() => {
   border-bottom: 0;
 }
 
+/* 信件头：中间发件人 / 收件人，右侧时间。 */
 .letter__head {
   display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
+  align-items: center;
   gap: 12px;
 }
 
-.letter__head strong {
+.letter__from {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.letter__from strong {
   color: var(--text);
   font-size: 13px;
 }
 
-.letter__head time {
+.letter__from small {
   color: var(--text-dim);
   font-size: 11px;
+}
+
+.letter__time {
+  margin-left: auto;
+  color: var(--text-dim);
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .letter__body {
@@ -1276,35 +1331,6 @@ onBeforeUnmount(() => {
   line-height: 1.9;
   white-space: pre-wrap;
   word-break: break-word;
-}
-
-/* ---------- 会话内回复 ---------- */
-
-.reply-bar {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 12px 16px 16px;
-  border-top: 1px solid var(--border);
-  background: color-mix(in srgb, var(--surface-alt) 60%, transparent);
-}
-
-.reply-input {
-  width: 100%;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface);
-  color: var(--text);
-  font: inherit;
-  font-size: 13px;
-  line-height: 1.6;
-  resize: vertical;
-}
-
-.reply-bar__footer {
-  display: flex;
-  justify-content: flex-end;
 }
 
 .helper-text {
