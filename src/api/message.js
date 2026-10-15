@@ -4,7 +4,7 @@ import request from "@/api/request";
 // 成功响应为 { ok: true, data, req_id }；失败为 { ok: false, error: { code, message, detail }, req_id }。
 // 失败时 request 抛出的 Error 带 status / code / payload，调用方读取 error.payload.error.message。
 export const messageApi = {
-  // 会话列表：官方公告 + 自己的账号级会话 + 自己的队伍会话（GET /api/msg/threads）
+  // 会话列表：官方公告 + 自己的账号级会话（GET /api/msg/threads）
   getThreads: () =>
     request("/msg/threads", {
       method: "GET",
@@ -35,23 +35,22 @@ export const messageApi = {
       useAuth: true,
     }),
 
-  // 发送消息（POST /api/msg/send）；玩家可省略 threadId，由后端用自己队伍的会话
-  send: ({ threadId, content, contentType = "text" } = {}) =>
+  // 发送消息（POST /api/msg/send）：不带 threadId，由后端写入自己的账号级会话
+  send: ({ content, contentType = "text" } = {}) =>
     request("/msg/send", {
       method: "POST",
       body: {
-        ...(threadId ? { thread_id: threadId } : {}),
         content,
         content_type: contentType,
       },
       useAuth: true,
     }),
 
-  // 问题反馈（POST /api/msg/feedback）：任何登录用户可用，不要求有队伍
-  feedback: ({ content, contentType = "text" } = {}) =>
+  // 问题反馈（POST /api/msg/feedback）：任何登录用户可用，不要求有队伍；subject 为主题
+  feedback: ({ subject, content, contentType = "text" } = {}) =>
     request("/msg/feedback", {
       method: "POST",
-      body: { content, content_type: contentType },
+      body: { subject, content, content_type: contentType },
       useAuth: true,
     }),
 

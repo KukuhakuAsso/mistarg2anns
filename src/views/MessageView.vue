@@ -1,6 +1,6 @@
 <script setup>
 // 站内信中心：对接 /api/msg/*，界面为邮箱式（写信 / 收信）。
-// 会话分三类：system（官方公告，只读）、account（账号级会话，问题反馈）、team（队伍会话）。
+// 会话分两类：system（官方公告，只读）、account（账号级会话，问题反馈）。
 // 注意：system 与 account 的 teamName 都是 null，必须用 kind 区分，不能只看 teamName。
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useGameState } from "@/composables/useGameState";
@@ -18,8 +18,9 @@ const activeTab = ref("inbox");
 // 收信列表筛选：all = 全部，unread = 未读，read = 已读。
 const inboxFilter = ref("all");
 
-// 写信的收件人标识：写给官方走问题反馈接口，写给队伍走会话接口。
+// 写信的收件人标识：写给官方走问题反馈接口，人工求提示走提示接口。
 const OFFICIAL_TARGET = "official";
+const HINT_TARGET = "hint";
 
 // 会话列表与当前打开的会话内容
 const threads = ref([]);
@@ -69,8 +70,8 @@ const activeThread = computed(
 );
 // 官方公告为只读，不显示回复框。
 const isReadOnly = computed(() => activeThread.value?.kind === "system");
-// 仅队伍会话支持求人工提示。
-const canRequestHint = computed(() => activeThread.value?.kind === "team");
+// 写信收件人选择「人工求提示」时，撰写页显示求提示面板。
+const isHintCompose = computed(() => composeTarget.value === HINT_TARGET);
 
 // 收信列表按未读状态筛选：未读判定为 unread > 0。
 const filteredThreads = computed(() => {
@@ -85,21 +86,20 @@ const filteredThreads = computed(() => {
   return threads.value;
 });
 
-// 写信可选收件人：官方（问题反馈）+ 自己可见的队伍会话。
-const composeRecipients = computed(() => [
+// 写信可选收件人：官方（问题反馈）与人工求提示。
+const composeRecipients = [
   { value: OFFICIAL_TARGET, label: "官方 / 工作人员（问题反馈）" },
-  ...threads.value
-    .filter((item) => item.kind === "team")
-    .map((item) => ({
-      value: `team:${item.threadId}`,
-      label: `队伍会话：${threadName(item)}`,
-    })),
-]);
+  { value: HINT_TARGET, label: "人工求提示" },
+];
+
+// 撰写页主题：默认「问题反馈」，可自行编辑，随反馈请求以 subject 字段提交。
+const DEFAULT_SUBJECT = "问题反馈";
+const composeSubject = ref(DEFAULT_SUBJECT);
 
 // 错误文案统一由 @/api/errors 解析（含字段级原因），本地保留短名便于调用。
 const errorText = extractErrorMessage;
 
-// 会话显示名：system / account 的 teamName 均为 null，靠 kind 区分。
+// 会话显示名与类型名都按 kind 区分（后端返回的 teamName 一律为 null）。
 function threadName(thread) {
   if (!thread) {
     return "";
@@ -110,17 +110,14 @@ function threadName(thread) {
   if (thread.kind === "account") {
     return "问题反馈";
   }
-  return thread.teamName || "队伍会话";
+  return "会话";
 }
 
 function threadKindLabel(kind) {
   if (kind === "system") {
     return "公告";
   }
-  if (kind === "account") {
-    return "反馈";
-  }
-  return "队伍";
+  return "反馈";
 }
 
 // 消息署名：to_staff 表示自己发送，to_player 表示官方或工作人员（统一匿名）。
@@ -187,9 +184,12 @@ async function loadThreads() {
   threadsLoading.value = true;
   try {
     const response = await messageApi.getThreads();
-    threads.value = response?.data?.threads ?? [];
+    // 站内信不再提供队伍内通讯：后端若仍返回队伍会话，一律不展示。
+    threads.value = (response?.data?.threads ?? []).filter(
+      (item) => item.kind !== "team",
+    );
 
-    // 当前会话已不可见（例如退队后队伍会话消失）时清空详情。
+    // 当前会话已不可见时清空详情。
     if (!threads.value.some((item) => item.threadId === activeThreadId.value)) {
       activeThreadId.value = null;
       messages.value = [];
@@ -338,14 +338,7 @@ async function sendMessage() {
   sending.value = true;
   setNotice("pending", "正在发送...");
   try {
-    await messageApi.send({
-      // 队伍会话显式带 threadId；其余情况交由后端解析。
-      threadId:
-        activeThread.value?.kind === "team"
-          ? activeThread.value.threadId
-          : undefined,
-      content,
-    });
+    await messageApi.send({ content });
     draft.value = "";
     setNotice("success", "已发送。");
     await fetchThreadMessages({ reset: false });
@@ -360,10 +353,16 @@ async function sendMessage() {
 
 // ---------- 写信 ----------
 
-// 写信提交：收件人为官方时走问题反馈接口（回复落在「问题反馈」会话），
-// 为队伍时带上该会话的 threadId 发送。
+// 写信提交：官方收件人走问题反馈接口（回复落在「问题反馈」会话）；
+// 「人工求提示」收件人不走这里，由撰写页的求提示按钮直接提交。
 async function sendCompose() {
   if (composing.value) {
+    return;
+  }
+
+  const subject = composeSubject.value.trim();
+  if (!subject) {
+    setNotice("error", "主题不能为空。");
     return;
   }
 
@@ -376,21 +375,14 @@ async function sendCompose() {
   composing.value = true;
   setNotice("pending", "正在发送...");
   try {
-    if (composeTarget.value === OFFICIAL_TARGET) {
-      await messageApi.feedback({ content });
-      setNotice(
-        "success",
-        "已发送给官方 / 工作人员，回复会出现在「问题反馈」会话中。",
-      );
-    } else {
-      const threadId = Number(
-        String(composeTarget.value).replace("team:", ""),
-      );
-      await messageApi.send({ threadId, content });
-      setNotice("success", "已发送到队伍会话。");
-    }
+    await messageApi.feedback({ subject, content });
+    setNotice(
+      "success",
+      "已发送给官方 / 工作人员，回复会出现在「问题反馈」会话中。",
+    );
 
     composeDraft.value = "";
+    composeSubject.value = DEFAULT_SUBJECT;
     await loadThreads();
   } catch (error) {
     setNotice("error", errorText(error, "发送失败。"));
@@ -442,9 +434,6 @@ async function requestHint() {
       `已提交求提示请求，扣除 ${data.cost ?? hintCost.value} 点。`,
     );
     await loadThreads();
-    if (activeThreadId.value) {
-      await pollThreadMessages();
-    }
   } catch (error) {
     setNotice("error", errorText(error, "求提示失败。"));
   } finally {
@@ -575,33 +564,73 @@ onBeforeUnmount(() => {
               </select>
             </div>
             <div class="mail-row">
-              <span class="label">主题</span>
-              <span class="value">站内信</span>
+              <label class="label" for="compose-subject">主题</label>
+              <input
+                v-if="!isHintCompose"
+                id="compose-subject"
+                v-model="composeSubject"
+                class="input"
+                type="text"
+                placeholder="请填写主题"
+              />
+              <span v-else class="value">人工求提示</span>
             </div>
           </div>
 
-          <div class="toolbar">
-            <label class="toolbar-label" for="compose-body">正文</label>
-          </div>
+          <!-- 人工求提示：无正文，直接提交请求，并展示 tips 余额与消耗 -->
+          <template v-if="isHintCompose">
+            <div class="hint-panel">
+              <p class="helper-text">
+                人工求提示会消耗队伍 tips，提交后由工作人员答复，答复会出现在「问题反馈」会话中。
+              </p>
+              <p class="helper-text">
+                当前 tips：{{ tipsHasTeam ? tipsBalance : "加入队伍后开始累积" }}；本次消耗
+                {{ hintCost }} 点
+              </p>
+            </div>
 
-          <textarea
-            id="compose-body"
-            v-model="composeDraft"
-            class="mail-editor"
-            rows="10"
-            placeholder="请输入正文内容..."
-          ></textarea>
+            <div class="composer__footer">
+              <button class="soft-btn" type="button" @click="openHintHistory">
+                提示记录
+              </button>
+              <button
+                class="primary-btn"
+                type="button"
+                :disabled="hintSubmitting || !tipsHasTeam"
+                @click="requestHint"
+              >
+                {{
+                  hintSubmitting ? "请求中..." : `求人工提示（${hintCost} 点）`
+                }}
+              </button>
+            </div>
+          </template>
 
-          <div class="composer__footer">
-            <button
-              class="primary-btn"
-              type="button"
-              :disabled="composing"
-              @click="sendCompose"
-            >
-              {{ composing ? "发送中..." : "发送" }}
-            </button>
-          </div>
+          <!-- 问题反馈：正文 + 发送 -->
+          <template v-else>
+            <div class="toolbar">
+              <label class="toolbar-label" for="compose-body">正文</label>
+            </div>
+
+            <textarea
+              id="compose-body"
+              v-model="composeDraft"
+              class="mail-editor"
+              rows="10"
+              placeholder="请输入正文内容..."
+            ></textarea>
+
+            <div class="composer__footer">
+              <button
+                class="primary-btn"
+                type="button"
+                :disabled="composing"
+                @click="sendCompose"
+              >
+                {{ composing ? "发送中..." : "发送" }}
+              </button>
+            </div>
+          </template>
         </div>
 
         <!-- 收信：会话列表与信件详情 -->
@@ -612,23 +641,6 @@ onBeforeUnmount(() => {
               <button class="soft-btn" type="button" @click="closeThread">
                 返回收件箱
               </button>
-
-              <div v-if="canRequestHint" class="toolbar-group">
-                <span class="tips-balance">
-                  {{ tipsHasTeam ? `队伍 tips ${tipsBalance}` : "加入队伍后开始累积" }}
-                </span>
-                <button class="soft-btn" type="button" @click="openHintHistory">
-                  提示记录
-                </button>
-                <button
-                  class="soft-btn"
-                  type="button"
-                  :disabled="hintSubmitting"
-                  @click="requestHint"
-                >
-                  {{ hintSubmitting ? "请求中..." : `求人工提示（${hintCost} 点）` }}
-                </button>
-              </div>
             </header>
 
             <article class="message-detail">
@@ -664,7 +676,7 @@ onBeforeUnmount(() => {
 
             <div class="reply-bar">
               <p v-if="isReadOnly" class="helper-text">
-                官方公告为只读；如需联系工作人员，请使用「写信」或队伍会话。
+                官方公告为只读；如需联系工作人员，请使用「写信」。
               </p>
               <template v-else>
                 <textarea
@@ -957,6 +969,19 @@ onBeforeUnmount(() => {
   font-size: 13px;
 }
 
+/* 可编辑的主题输入框：与收件人下拉同一套外观。 */
+.input {
+  flex: 1;
+  min-width: 260px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
 .toolbar {
   display: flex;
   align-items: center;
@@ -986,7 +1011,8 @@ onBeforeUnmount(() => {
 }
 
 .mail-editor:focus,
-.reply-input:focus {
+.reply-input:focus,
+.input:focus {
   outline: none;
   border-color: var(--border-strong);
   box-shadow: 0 0 0 3px rgba(110, 171, 255, 0.18);
@@ -995,7 +1021,17 @@ onBeforeUnmount(() => {
 .composer__footer {
   display: flex;
   justify-content: flex-end;
+  gap: 10px;
   padding: 0 18px 16px;
+}
+
+/* 撰写页的求提示面板：占满正文区，操作按钮固定在底部。 */
+.hint-panel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px;
 }
 
 .primary-btn {
@@ -1049,11 +1085,6 @@ onBeforeUnmount(() => {
   border-color: color-mix(in srgb, var(--accent) 18%, transparent);
   background: var(--accent-soft);
   color: var(--accent);
-}
-
-.tips-balance {
-  color: var(--text-dim);
-  font-size: 12px;
 }
 
 .inbox-list {
