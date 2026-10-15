@@ -13,6 +13,7 @@ import { validateTeamName } from "@/config/team";
 import { extractErrorMessage, extractFieldMessage } from "@/api/errors";
 import { teamApi } from "@/api/team";
 import { messageApi } from "@/api/message";
+import { tipsApi } from "@/api/tips";
 
 const STORAGE_KEY = "mistarg2anns:state:v1";
 
@@ -22,8 +23,15 @@ function createDefaultState() {
     completedFolders: [],
     visitedFolders: [],
     discoveredClues: [],
-    tipPoints: 3,
+    tipPoints: 0,
     unreadMessages: 0,
+    // 队伍级 tips（服务端权威数据，不持久化）：余额与今日累积，供顶栏与求提示面板共用
+    teamTips: {
+      loaded: false,
+      hasTeam: false,
+      balance: 0,
+      today: null,
+    },
     unlockedTips: [],
     board: [],
     user: {
@@ -83,6 +91,8 @@ function loadState() {
         Number.isInteger(saved.unreadMessages) && saved.unreadMessages >= 0
           ? saved.unreadMessages
           : fallback.unreadMessages,
+      // 队伍 tips 是服务端数据，不从本地恢复
+      teamTips: { ...fallback.teamTips },
       unlockedTips: Array.isArray(saved.unlockedTips)
         ? saved.unlockedTips.filter((tipId) => typeof tipId === "string")
         : [],
@@ -132,6 +142,13 @@ watch(
     state.user.team = { loaded: false, team: null, myJoinRequest: null };
     // 未读角标是服务端数据，切换账号时一并清零，避免残留上一账号的未读数。
     state.unreadMessages = 0;
+    // 队伍 tips 同理：切换账号后先清空，等新的 /tips/balance 回来再填。
+    state.teamTips = {
+      loaded: false,
+      hasTeam: false,
+      balance: 0,
+      today: null,
+    };
   },
 );
 
@@ -572,7 +589,7 @@ async function dissolveTeam() {
 
 // ---------- 站内信（未读角标） ----------
 
-// 刷新未读角标（GET /api/msg/summary），把 total 写入全局状态供顶栏与桌面展示。
+// 刷新未读角标（GET /api/msg/mails/summary），把「有未读的对话数」写入全局状态供顶栏与桌面展示。
 // 失败时静默处理，不影响页面主流程。
 async function refreshUnreadSummary() {
   if (!state.user.currentUser) {
@@ -581,9 +598,33 @@ async function refreshUnreadSummary() {
   }
 
   try {
-    const response = await messageApi.getSummary();
-    state.unreadMessages = Number(response?.data?.total ?? 0) || 0;
+    const response = await messageApi.getMailsSummary();
+    state.unreadMessages = Number(response?.data?.threads ?? 0) || 0;
     return { ok: true, total: state.unreadMessages };
+  } catch {
+    return { ok: false };
+  }
+}
+
+// 刷新队伍 tips 余额（GET /api/tips/balance），供顶栏与求提示面板共用。
+// 无队伍是正常空值（200 + teamId:null + 零值），不算错误；失败时静默，保持上一次的数字。
+async function refreshTeamTips() {
+  if (!state.user.currentUser) {
+    state.teamTips = { loaded: false, hasTeam: false, balance: 0, today: null };
+    return { ok: false };
+  }
+
+  try {
+    const response = await tipsApi.getBalance();
+    const data = response?.data ?? {};
+    state.teamTips = {
+      loaded: true,
+      hasTeam: data.teamId !== null && data.teamId !== undefined,
+      // 同队任何人消费都会让这个数字变化，前端不缓存
+      balance: Number(data.balance ?? 0) || 0,
+      today: data.today ?? null,
+    };
+    return { ok: true, ...state.teamTips };
   } catch {
     return { ok: false };
   }
@@ -634,5 +675,7 @@ export function useGameState() {
     dissolveTeam,
     // 站内信未读角标
     refreshUnreadSummary,
+    // 队伍级 tips 余额
+    refreshTeamTips,
   };
 }

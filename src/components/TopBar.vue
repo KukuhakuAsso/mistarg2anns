@@ -23,6 +23,29 @@ const { themeIcon, themeLabel, cycleTheme } = useTheme();
 const isTestEnvironment = computed(() => apiEnvironment.value === "test");
 const testEnvironmentAvailable = Boolean(apiConfig.testTicket);
 
+// 右上角的 tips 是本队共享余额（服务端权威数据）：无队伍时提示加入队伍后开始累积，
+// 未加载时先用占位符，避免先显示一个假的 0。
+const teamTipsText = computed(() => {
+  const tips = state.teamTips;
+  if (!tips.loaded) {
+    return "Tips —";
+  }
+  return tips.hasTeam ? `Tips ${tips.balance}` : "Tips 未入队";
+});
+
+const teamTipsTitle = computed(() => {
+  const tips = state.teamTips;
+  if (!tips.loaded) {
+    return "正在读取本队 tips…";
+  }
+  if (!tips.hasTeam) {
+    return "tips 是队伍级的：加入队伍后开始累积";
+  }
+  return tips.today
+    ? `本队共享 tips；今日已累积 ${tips.today.accrued}/${tips.today.cap}`
+    : "本队共享 tips";
+});
+
 function handleReset() {
   const confirmed = window.confirm(
     "确定要重置进度吗？已解锁的档案与线索板排布都会被清空。",
@@ -70,7 +93,9 @@ function toggleApiEnvironment() {
         解锁 {{ unlockedCount }}/{{ FOLDERS.length }} · 完成
         {{ completedCount }}/{{ MAIN_FOLDERS.length }}
       </span>
-      <span class="top-bar__stat">Tips 点 {{ state.tipPoints }}</span>
+      <span class="top-bar__stat" :title="teamTipsTitle">
+        {{ teamTipsText }}
+      </span>
       <button
         class="bar-btn"
         :class="{ 'is-active': isTestEnvironment }"
