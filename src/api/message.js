@@ -32,20 +32,18 @@ export const messageApi = {
       useAuth: true,
     }),
 
-  // 邮件详情（GET /api/msg/mails/:id）：一次拿到整段对话（根 + 全部回复），
-  // id 传根或任意一条回复都行；sinceId 用于对话内增量轮询。
-  getMail: (mailId, { sinceId = 0, limit = 100 } = {}) =>
+  // 邮件详情（GET /api/msg/mails/:id）：返回 mail（这一封自身）+ replyChain（它回复过的链，
+  // 时间倒序、只上溯、不含自身与后续回复）；id 传根或任意一条回复都行。
+  getMail: (mailId) =>
     request(`/msg/mails/${mailId}`, {
       method: "GET",
-      params: { since_id: sinceId, limit },
       useAuth: true,
     }),
 
-  // 标记已读（POST /api/msg/mails/:id/read）：单调不回退，lastReadId 一般取详情的 lastId
-  markRead: (mailId, lastReadId) =>
+  // 标记已读（POST /api/msg/mails/:id/read）：逐封口径，无请求体；幂等，只影响这一封。
+  markRead: (mailId) =>
     request(`/msg/mails/${mailId}/read`, {
       method: "POST",
-      body: { last_read_id: lastReadId },
       useAuth: true,
     }),
 

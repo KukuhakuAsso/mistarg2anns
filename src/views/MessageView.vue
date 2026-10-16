@@ -37,11 +37,9 @@ const MAILS_PAGE_SIZE = 20;
 // 当前打开的邮件对话：activeMailId 用列表里的 mailId，服务端会归一到所在对话的根。
 const activeMailId = ref(null);
 const mail = ref(null);
+// 详情渲染链 = replyChain（祖先，正序）+ mail（自身）；每条字段同形。
 const messages = ref([]);
 const messagesLoading = ref(false);
-const lastId = ref(0);
-// 已上报过的已读位置：轮询时 lastId 没前进就不重复发标记已读。
-let lastMarkedReadId = 0;
 
 // 写信页的收件人、主题、草稿与提交状态。
 const composeTarget = ref(OFFICIAL_TARGET);
@@ -84,9 +82,6 @@ const hintNextCursor = ref(null);
 // 提问后每 10 秒查一次报价，直到不再是 pending；申请更便宜等官方回应期间同样要盯着。
 const HINT_POLL_MS = 10000;
 let hintTimer = null;
-
-const MAIL_POLL_MS = 10000;
-let mailTimer = null;
 
 const isLoggedIn = computed(() => Boolean(state.user.currentUser));
 // 详情里的根邮件摘要（服务端归一后的 mail）
@@ -134,12 +129,8 @@ const replySubject = computed(() =>
   mail.value?.subject ? `回复：${mail.value.subject}` : "回复",
 );
 
-// 这封邮件（对话）的发件人 = 根记录的发送者：列表与详情抬头都用它。
-const mailSender = computed(() => {
-  const root =
-    messages.value.find((message) => message.isRoot) ?? messages.value[0];
-  return root ? senderName(root) : "—";
-});
+// 详情抬头发件人 = 当前打开这封的发送者（from）。
+const mailSender = computed(() => (mail.value ? senderName(mail.value) : "—"));
 
 // 列表筛选：「未读」与频道交给服务端（only_unread / channel）；
 // 「已读」与来源服务端没有对应参数，按已加载的记录过滤。三者叠加生效。
@@ -372,18 +363,15 @@ async function loadMails({ append = false } = {}) {
 
 // ---------- 邮件详情 ----------
 
-// 打开一封邮件：id 传列表里的 mailId，服务端会归一到所在对话的根。
+// 打开一封邮件：id 传列表里的 mailId，详情返回这一封 + 它回复过的链。
 async function openMail(mailId) {
   activeMailId.value = mailId;
   mail.value = null;
   messages.value = [];
-  lastId.value = 0;
-  lastMarkedReadId = 0;
   clearNotice();
 
-  await fetchMail({ reset: true });
+  await fetchMail();
   await markActiveRead();
-  startMailPolling();
 }
 
 // 关闭邮件详情，回到收信列表；顺带刷新未读角标。
@@ -391,33 +379,12 @@ function closeMail() {
   activeMailId.value = null;
   mail.value = null;
   messages.value = [];
-  lastId.value = 0;
-  stopMailPolling();
   refreshUnreadSummary();
   loadMails();
 }
 
-// since_id 增量响应里没有根记录，mail 的 subject / source / direction / createdAt 会是 null，
-// 合并时跳过空值，保留首次详情里的值。
-function mergeMail(current, incoming) {
-  if (!incoming) {
-    return current;
-  }
-  if (!current) {
-    return incoming;
-  }
-
-  const merged = { ...current };
-  for (const [key, value] of Object.entries(incoming)) {
-    if (value !== null && value !== undefined) {
-      merged[key] = value;
-    }
-  }
-  return merged;
-}
-
-// reset=true 从头拉整段对话；否则按 since_id 增量拉取并追加。
-async function fetchMail({ reset = false } = {}) {
+// 详情 = 打开的那封 + 它回复过的链（mail + replyChain），无增量；拉一次即可。
+async function fetchMail() {
   const mailId = activeMailId.value;
   if (!mailId) {
     return;
@@ -425,24 +392,18 @@ async function fetchMail({ reset = false } = {}) {
 
   messagesLoading.value = true;
   try {
-    const response = await messageApi.getMail(mailId, {
-      sinceId: reset ? 0 : lastId.value,
-    });
+    const response = await messageApi.getMail(mailId);
     const data = response?.data ?? {};
-    const incoming = Array.isArray(data.messages) ? data.messages : [];
+    mail.value = data.mail ?? null;
 
-    mail.value = reset ? (data.mail ?? null) : mergeMail(mail.value, data.mail);
-
-    if (reset) {
-      messages.value = incoming;
-    } else if (incoming.length) {
-      messages.value = [...messages.value, ...incoming];
+    // 渲染顺序：mail（当前打开这封，时间最新）在前，replyChain 直接按服务端顺序（时间倒序，
+    // 最新祖先在前、链尾是根）跟在后面——旧信息排在时间新的正文之后。
+    const chain = Array.isArray(data.replyChain) ? data.replyChain : [];
+    messages.value = [];
+    if (mail.value) {
+      messages.value.push(mail.value);
     }
-
-    const nextLastId = Number(data.lastId);
-    if (Number.isFinite(nextLastId) && nextLastId > lastId.value) {
-      lastId.value = nextLastId;
-    }
+    messages.value.push(...chain);
   } catch (error) {
     setNotice("error", errorText(error, "加载邮件内容失败。"));
   } finally {
@@ -450,72 +411,40 @@ async function fetchMail({ reset = false } = {}) {
   }
 }
 
-// 轮询增量拉取并推进已读位置。
-async function pollMail() {
-  if (!activeMailId.value) {
-    return;
-  }
-
-  await fetchMail({ reset: false });
-  await markActiveRead({ silent: true });
-}
-
-// 更新已读位置；lastId 为 0（无记录）或没有前进过时跳过，
-// 避免 10 秒轮询每次都重复上报（那会顺带重复刷新未读角标）。
-async function markActiveRead({ silent = false } = {}) {
+// 逐封已读：只标记当前打开的这一封（unread=1 时）；幂等，清掉自己即可，不影响同链其它记录。
+async function markActiveRead() {
   const mailId = activeMailId.value;
-  if (!mailId || lastId.value <= 0 || lastId.value <= lastMarkedReadId) {
+  if (!mailId || Number(mail.value?.unread) !== 1) {
     return;
   }
 
   try {
-    await messageApi.markRead(mailId, lastId.value);
-    lastMarkedReadId = lastId.value;
-
-    // unread 是对话级的：同一对话的每一行都要清零
-    const rootId = mail.value?.mailId ?? mailId;
-    for (const item of mails.value) {
-      if ((item.rootMsgId ?? item.mailId) === rootId) {
-        item.unread = 0;
-      }
-    }
+    await messageApi.markRead(mailId);
     if (mail.value) {
       mail.value.unread = 0;
     }
+    for (const item of mails.value) {
+      if (item.mailId === mailId) {
+        item.unread = 0;
+      }
+    }
     refreshUnreadSummary();
   } catch (error) {
-    if (!silent) {
-      setNotice("error", errorText(error, "标记已读失败。"));
-    }
+    setNotice("error", errorText(error, "标记已读失败。"));
   }
 }
 
-// ---------- 轮询与可见性 ----------
+// ---------- 可见性刷新 ----------
 
-function startMailPolling() {
-  stopMailPolling();
-  mailTimer = window.setInterval(() => {
-    if (!document.hidden) {
-      pollMail();
-    }
-  }, MAIL_POLL_MS);
-}
-
-function stopMailPolling() {
-  if (mailTimer !== null) {
-    clearInterval(mailTimer);
-    mailTimer = null;
-  }
-}
-
-// 页面重新可见时立即补刷当前邮件 / 列表，以及正在等报价的求提示。
+// 页面重新可见时补刷：详情打开则重拉这封邮件（未读/内容可能已变），否则刷新列表；
+// 同时刷新正在等报价的求提示。
 function handleVisibilityChange() {
   if (document.hidden) {
     return;
   }
 
   if (activeMailId.value) {
-    pollMail();
+    fetchMail();
   } else {
     loadMails();
   }
@@ -527,8 +456,8 @@ function handleVisibilityChange() {
 
 // ---------- 回复邮件：跳转到写信页 ----------
 
-// 邮件详情页不直接输入：点「回复」切到写信页，目标预置为当前对话的根邮件；
-// 主题由服务端按根主题生成（回复：<根主题>）。canReply=false（官方公告）时按钮已禁用。
+// 邮件详情页不直接输入：点「回复」切到写信页，目标预置为当前打开的这封；
+// 主题由服务端按层级生成（回复：<根主题>）。canReply=false（官方公告）时按钮已禁用。
 function replyToActiveMail() {
   if (!mail.value || !canReply.value) {
     return;
@@ -557,14 +486,15 @@ async function sendCompose() {
   try {
     if (composeReplyTo.value) {
       const mailId = composeReplyTo.value;
-      await messageApi.sendMail({ replyTo: mailId, content });
+      const response = await messageApi.sendMail({ replyTo: mailId, content });
+      // 详情只含「这一封 + 它回复过的链」，回复后要打开新生成的那封才能看到刚发出的内容
+      const newMailId = response?.data?.mailId ?? mailId;
 
       composeDraft.value = "";
       composeReplyTo.value = null;
-      // 回到刚才的对话，直接看到刚发出的记录
       activeTab.value = "inbox";
       await loadMails();
-      await openMail(mailId);
+      await openMail(newMailId);
       setNotice("success", "回复已发出。");
     } else {
       // 主题可选：留空时服务端取正文首行
@@ -926,7 +856,6 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
-  stopMailPolling();
   stopHintPolling();
   document.removeEventListener("visibilitychange", handleVisibilityChange);
 });
@@ -1263,7 +1192,7 @@ onBeforeUnmount(() => {
               <div v-else class="letter-list">
                 <article
                   v-for="message in messages"
-                  :key="message.id"
+                  :key="message.mailId"
                   class="letter"
                 >
                   <header class="letter__head">
