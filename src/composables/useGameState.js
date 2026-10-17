@@ -14,8 +14,30 @@ import { extractErrorMessage, extractFieldMessage } from "@/api/errors";
 import { teamApi } from "@/api/team";
 import { messageApi } from "@/api/message";
 import { tipsApi } from "@/api/tips";
+import { meApi } from "@/api/me";
+import { authApi } from "@/api/auth";
+import { clearAccessToken } from "@/api/request";
 
 const STORAGE_KEY = "mistarg2anns:state:v1";
+
+// 账号处罚状态的空值（未登录 / 尚未拉取 / 切换账号后）。
+// 字段口径见 api-11-moderation-mute.md：banned 是账号封禁；muted 是「账号级或队伍级禁言」的合一布尔。
+// teamAppeal 是队长代表队伍申诉的那一块（队伍级禁言 / 队伍封禁），非队长或队伍无处罚时为 null。
+function createEmptyAccountStatus() {
+  return {
+    loaded: false,
+    status: 2,
+    banned: false,
+    banReason: null,
+    banUntil: null,
+    muteReason: null,
+    muteUntil: null,
+    muted: false,
+    team: null,
+    appeal: null,
+    teamAppeal: null,
+  };
+}
 
 // 生成一份全新的初始状态：所有档案未完成、无发现线索、板面为空、未登录。
 function createDefaultState() {
@@ -32,6 +54,14 @@ function createDefaultState() {
       balance: 0,
       today: null,
     },
+    // 账号处罚状态（GET /api/me/status，服务端权威、不持久化）：
+    // banned = 账号封禁（全局门禁）；muted = 账号级禁言或所在队伍禁言（只拦发信）。
+    accountStatus: createEmptyAccountStatus(),
+    // 本会话是否「登录时账号快照里就带着封禁」：是则不再因为 /me/status 报 banned 而强制登出，
+    // 否则会把刚重新登录的封禁用户又踢下线（无限循环）。
+    sessionBanAcknowledged: false,
+    // 强制登出后留给登录页展示的一次性提示（如「账号已被封禁，请重新登录后提交申诉」）。
+    sessionNotice: "",
     unlockedTips: [],
     board: [],
     user: {
@@ -73,7 +103,10 @@ function loadState() {
     if (!raw) return fallback;
 
     const saved = JSON.parse(raw);
+    // 以默认状态为底再覆盖「可持久化」的字段：
+    // 这样新增的、不持久化的字段（teamTips、accountStatus 等）不会因为本地存的是旧结构而缺失。
     return {
+      ...fallback,
       completedFolders: Array.isArray(saved.completedFolders)
         ? saved.completedFolders
         : [],
@@ -91,8 +124,9 @@ function loadState() {
         Number.isInteger(saved.unreadMessages) && saved.unreadMessages >= 0
           ? saved.unreadMessages
           : fallback.unreadMessages,
-      // 队伍 tips 是服务端数据，不从本地恢复
+      // 队伍 tips 与处罚状态都是服务端数据，不从本地恢复
       teamTips: { ...fallback.teamTips },
+      accountStatus: { ...fallback.accountStatus },
       unlockedTips: Array.isArray(saved.unlockedTips)
         ? saved.unlockedTips.filter((tipId) => typeof tipId === "string")
         : [],
@@ -149,6 +183,8 @@ watch(
       balance: 0,
       today: null,
     };
+    // 处罚状态也不能跨账号残留（否则上一个账号的封禁会把新账号也锁住）。
+    state.accountStatus = createEmptyAccountStatus();
   },
 );
 
@@ -630,6 +666,118 @@ async function refreshTeamTips() {
   }
 }
 
+// 刷新账号处罚状态（GET /api/me/status）。处罚可能被官方随时下发/解除、或 until 到期自动解除，
+// 所以必须轮询；封禁与禁言的口径见 api-11-moderation-mute.md。
+// 失败时静默（不覆盖已有状态），401 由请求层统一处理。
+async function refreshAccountStatus() {
+  if (!state.user.currentUser) {
+    state.accountStatus = createEmptyAccountStatus();
+    return { ok: false };
+  }
+
+  try {
+    const response = await meApi.getStatus();
+    const data = response?.data ?? {};
+    const team = data.team ?? null;
+    state.accountStatus = {
+      loaded: true,
+      status: Number(data.status ?? 2) || 2,
+      banned: Boolean(data.banned),
+      banReason: data.ban_reason ?? null,
+      banUntil: data.ban_until ?? null,
+      muteReason: data.mute_reason ?? null,
+      muteUntil: data.mute_until ?? null,
+      // muted 是布尔：本人账号级禁言 或 所在队伍禁言，两者都会拦发信
+      muted: Boolean(data.muted),
+      team: team
+        ? {
+            teamId: team.teamId ?? null,
+            teamName: team.teamName ?? null,
+            status: Number(team.status ?? 0) || 0,
+            reason: team.reason ?? null,
+            until: team.until ?? null,
+            muted: Boolean(team.muted),
+          }
+        : null,
+      appeal: data.appeal ?? null,
+      teamAppeal: data.teamAppeal ?? null,
+    };
+
+    // 会话中途被封（本次登录时快照里还没有封禁）：立刻退出登录。
+    // 封禁会递增 token_version，旧令牌已全部失效；留在原地只会得到一串 401/403，
+    // 连 /me/* 申诉接口都调不动。封禁账号仍可登录，重新登录后即可申诉。
+    if (state.accountStatus.banned && !state.sessionBanAcknowledged) {
+      const reason = state.accountStatus.banReason;
+      await forceLogout(
+        `账号已被封禁${reason ? `：${reason}` : ""}，请重新登录后提交申诉。`,
+      );
+      return { ok: false, banned: true, loggedOut: true };
+    }
+
+    return { ok: true, ...state.accountStatus };
+  } catch {
+    return { ok: false };
+  }
+}
+
+// 收到 403 E_BANNED 时立刻把账号标记为封禁（详情等 /me/status 回来再补全），
+// 让全局守卫先把界面切到申诉页。本地存的是旧结构时 accountStatus 可能缺失，这里补空对象。
+function markAccountBanned() {
+  if (!state.accountStatus) {
+    state.accountStatus = createEmptyAccountStatus();
+  }
+  state.accountStatus.loaded = true;
+  state.accountStatus.banned = true;
+  return state.accountStatus;
+}
+
+// 登录 / 恢复会话后，用账号快照里的封禁字段立即标记：
+// ① 首屏不必等 /api/me/status 就知道被封（避免先渲染再跳转）；
+// ② 标记「本会话已知封禁」，后续 /me/status 再报 banned 不会触发强制登出。
+// 封禁账号的登录本身是成功的（200 + account.banned），所以这条路径是常态。
+function applyAccountSnapshot(account) {
+  if (!account) return;
+  if (!account.banned) {
+    state.sessionBanAcknowledged = false;
+    return;
+  }
+
+  state.accountStatus = {
+    ...createEmptyAccountStatus(),
+    loaded: true,
+    status: 4,
+    banned: true,
+    banReason: account.ban_reason ?? account.banReason ?? null,
+    banUntil: account.ban_until ?? account.banUntil ?? null,
+  };
+  state.sessionBanAcknowledged = true;
+}
+
+// 强制退出登录：清本地令牌与账号状态，并尽力撤销服务端会话。
+// 封禁会递增 token_version（旧令牌全部失效），只有重新登录才能拿到能调 /me/* 的令牌；
+// 会话彻底失效（401 刷新也救不回来）时同样走这里，避免用户卡在「看似登录但什么都做不了」。
+// 调用后 currentUser 变 null，App 的守卫会把用户送回登录页。
+async function forceLogout(message = "") {
+  state.sessionNotice = message;
+  try {
+    // 封禁账号的 /auth/logout 也是 200；令牌已失效时失败也不影响本地清理
+    await authApi.logout();
+  } catch {
+    // 忽略：本地清理才是关键
+  }
+  clearAccessToken();
+  state.user.currentUser = null;
+  state.accountStatus = createEmptyAccountStatus();
+  state.sessionBanAcknowledged = false;
+}
+
+// 取走一次性提示（登录页展示后清空）
+function consumeSessionNotice() {
+  const message = state.sessionNotice;
+  state.sessionNotice = "";
+  return message;
+}
+
 // 组合式函数入口：任何组件调用都会获得同一份全局状态与同一组操作函数。
 export function useGameState() {
   return {
@@ -677,5 +825,11 @@ export function useGameState() {
     refreshUnreadSummary,
     // 队伍级 tips 余额
     refreshTeamTips,
+    // 账号处罚状态（封禁 / 禁言 / 申诉摘要）
+    refreshAccountStatus,
+    markAccountBanned,
+    applyAccountSnapshot,
+    forceLogout,
+    consumeSessionNotice,
   };
 }

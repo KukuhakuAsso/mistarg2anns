@@ -35,6 +35,7 @@ export const FEATURE_ROUTES = new Set([
   "timeline",
   "password",
   "forgot",
+  "appeal",
 ]);
 
 // 路由表：路径 → { name, path, params }。

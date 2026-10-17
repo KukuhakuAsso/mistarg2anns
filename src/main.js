@@ -6,7 +6,7 @@ import { clearAccessToken } from "@/api/request";
 import { useGameState } from "@/composables/useGameState";
 // 免密登录 cookie 中的会话信息
 async function restoreSessionFromCookie() {
-  const { state } = useGameState();
+  const { state, applyAccountSnapshot } = useGameState();
 
   try {
     const session = await authApi.bootstrapSession();
@@ -25,6 +25,9 @@ async function restoreSessionFromCookie() {
       role: account.role ?? "player",
       team: account.team ?? null,
     };
+    // 会话快照里若已带封禁（account.banned），首屏就先标记好：
+    // 既避免「先渲染旧页面再跳申诉页」，也让后续 /me/status 不再触发强制登出
+    applyAccountSnapshot(account);
   } catch (error) {
     state.user.currentUser = null;
     clearAccessToken();

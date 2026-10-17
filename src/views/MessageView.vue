@@ -14,6 +14,37 @@ import UserTabs from "@/components/UserTabs.vue";
 
 const { state, refreshUnreadSummary, refreshTeamTips } = useGameState();
 
+// 处罚门禁（api-11-moderation-mute.md）：禁言只关发信通道，读信与求提示的
+// 确认 / 议价 / 关闭都不变；队伍封禁时求提示「提问」也会被拦。
+// 这里只做体验层隐藏，服务端仍会校验（403 E_MUTED / E_FORBIDDEN）。
+const isMuted = computed(() => Boolean(state.accountStatus?.muted));
+const isTeamBanned = computed(
+  () => state.accountStatus?.team?.status === 4,
+);
+// 禁言原因/到期，用于提示条文案
+const muteNotice = computed(() => {
+  const status = state.accountStatus;
+  if (!status?.muted) return "";
+  if (status.status !== 3 && !status.team?.muted) return "";
+  const reason =
+    status.status === 3 ? status.muteReason : status.team?.reason ?? null;
+  const until =
+    status.status === 3 ? status.muteUntil : status.team?.until ?? null;
+  const parts = [];
+  if (status.status === 3) {
+    parts.push("账号已被禁言");
+  } else if (status.team?.muted) {
+    parts.push(`队伍「${status.team.teamName || status.team.teamId}」已被禁言`);
+  }
+  if (reason) parts.push(`原因：${reason}`);
+  parts.push(
+    until
+      ? `至 ${new Date(until).toLocaleString("zh-CN", { hour12: false })} 自动解除`
+      : "永久禁言，可提交申诉",
+  );
+  return parts.join(" · ");
+});
+
 // 当前页签：inbox = 收信，compose = 写信。
 const activeTab = ref("inbox");
 // 收信列表筛选：all = 全部，unread = 未读，read = 已读。
@@ -119,18 +150,26 @@ const isLoggedIn = computed(() => Boolean(state.user.currentUser));
 // 详情里的根邮件摘要（服务端归一后的 mail）
 // 玩家可回复的邮件：服务端的 canReply（官方公告为 false）；
 // 队伍会话只用于接收官方消息（后端已不再支持队伍内通讯），玩家侧一律只读。
+// 禁言期间发信接口一律 E_MUTED，所以直接禁掉回复入口。
 const canReply = computed(
-  () => Boolean(mail.value?.canReply) && mail.value?.channel !== "team",
+  () =>
+    Boolean(mail.value?.canReply) &&
+    mail.value?.channel !== "team" &&
+    !isMuted.value,
 );
 // 不可回复时的按钮提示与说明文案
-const replyDisabledReason = computed(() =>
-  mail.value?.channel === "team" ? "队伍警告无需回复" : "这封邮件不可回复",
-);
-const readOnlyHint = computed(() =>
-  mail.value?.channel === "team"
+const replyDisabledReason = computed(() => {
+  if (isMuted.value) return "禁言期间不能发信";
+  return mail.value?.channel === "team" ? "队伍警告无需回复" : "这封邮件不可回复";
+});
+const readOnlyHint = computed(() => {
+  if (isMuted.value) {
+    return "禁言期间不能发信（含问题反馈与求提示提问），可在「我的申诉」查看与提交申诉。";
+  }
+  return mail.value?.channel === "team"
     ? "队伍会话只用于接收官方消息（如官方警告），无法在此发言。"
-    : "这封邮件不可回复（如官方公告）；如需联系工作人员，请使用「写信」。",
-);
+    : "这封邮件不可回复（如官方公告）；如需联系工作人员，请使用「写信」。";
+});
 // 写信收件人选择「请求提示」时，撰写页显示求提示面板。
 const isHintCompose = computed(() => composeTarget.value === HINT_TARGET);
 
@@ -208,6 +247,11 @@ const SOURCE_LABEL = {
   announce: "公告",
   warn: "官方警告",
   system: "系统消息",
+  // 官方通知（管理端 /msg/notify 发送）
+  notice: "官方通知",
+  // 处罚申诉链：解禁 / 解封后这些邮件会照常出现在收件箱
+  appeal_ban: "封禁申诉",
+  appeal_mute: "禁言申诉",
 };
 
 function sourceLabel(source) {
@@ -349,7 +393,12 @@ function switchSource(source) {
 }
 
 // 左侧「写信」：清掉回复上下文，写一封新邮件。
+// 禁言期间发信接口一律 403 E_MUTED，入口已在界面上隐藏，这里再兜一层。
 function startNewMail() {
+  if (isMuted.value) {
+    setNotice("error", "禁言期间不能发信，可在「我的申诉」查看与提交申诉。");
+    return;
+  }
   composeReplyTo.value = null;
   composeTarget.value = OFFICIAL_TARGET;
   switchView("compose");
@@ -508,8 +557,14 @@ function replyToActiveMail() {
 // ---------- 写信 ----------
 
 // 写信提交：回复走发信接口（不传主题，服务端生成）；新邮件走问题反馈接口。
+// 两者在禁言期间都是 403 E_MUTED（api-11 §二「影响范围」），入口已隐藏，这里兜底并给出原因。
 async function sendCompose() {
   if (composing.value) {
+    return;
+  }
+
+  if (isMuted.value) {
+    setNotice("error", "禁言期间不能发信，可在「我的申诉」查看与提交申诉。");
     return;
   }
 
@@ -595,8 +650,18 @@ function applyHintList(items) {
 
 // 提问：只提交问题，不扣费；提交后开始等报价。
 // 只要没有 pending（名额未占），即使还有 quoted 在等支付也能再提一条。
+// 门禁：禁言 → E_MUTED；队伍被封禁 → E_FORBIDDEN「队伍已被官方封禁」（api-11 限制矩阵）。
 async function submitHintQuestion() {
   if (hintSubmitting.value) {
+    return;
+  }
+
+  if (isMuted.value) {
+    setNotice("error", "禁言期间不能请求提示，可在「我的申诉」查看与提交申诉。");
+    return;
+  }
+  if (isTeamBanned.value) {
+    setNotice("error", "队伍已被官方封禁，暂不能请求提示。");
     return;
   }
 
@@ -1001,16 +1066,29 @@ onBeforeUnmount(() => {
 
     <p v-if="!isLoggedIn" class="helper-text">请先登录后查看站内信。</p>
 
-    <div v-else class="mail-layout">
+    <template v-else>
+      <!-- 禁言只关发信通道：读信、求提示的确认 / 议价 / 关闭都不受影响 -->
+      <div v-if="isMuted" class="mute-banner">
+        <strong>发信功能已被关闭</strong>
+        <span>{{ muteNotice }}</span>
+        <span class="mute-banner__tip">
+          读信不受影响；如需申诉请前往「我的申诉」。
+        </span>
+      </div>
+
+      <div class="mail-layout">
       <!-- 左侧功能列：写信、收信分类、频道与来源筛选 -->
       <aside class="mail-nav" aria-label="站内信功能">
+        <!-- 禁言期间隐藏「写信」入口（写邮件 / 问题反馈 / 求提示提问都会被 403 E_MUTED） -->
         <button
+          v-if="!isMuted"
           type="button"
           :class="['mail-nav__item', { 'is-active': activeView === 'compose' }]"
           @click="startNewMail"
         >
           写信
         </button>
+        <p v-else class="mail-nav__locked">写信已关闭（禁言中）</p>
 
         <p class="mail-nav__group">收信</p>
 
@@ -1413,7 +1491,8 @@ onBeforeUnmount(() => {
           </template>
         </div>
       </div>
-    </div>
+      </div>
+    </template>
 
     <StatusMessage class="shell-notice" :message="notice" :tone="noticeType" />
 
@@ -1625,6 +1704,36 @@ onBeforeUnmount(() => {
   color: var(--text-dim);
   font-size: 11px;
   letter-spacing: 0.08em;
+}
+
+/* 禁言时「写信」入口被替换成这句说明 */
+.mail-nav__locked {
+  margin: 0;
+  padding: 9px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* 禁言提示条：只说明发信被关闭，读信功能照常 */
+.mute-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 12px;
+  padding: 10px 14px;
+  border: 1px solid rgba(240, 173, 78, 0.6);
+  border-radius: 10px;
+  background: rgba(240, 173, 78, 0.12);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.mute-banner__tip {
+  color: var(--text-dim);
+  font-size: 12px;
 }
 
 .mail-nav__item {
