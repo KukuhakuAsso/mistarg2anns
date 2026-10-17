@@ -3,7 +3,7 @@
 // 列表按「每次发信一行」平铺，只给主题与来源；正文与附件要点进详情，
 // 详情一次返回整段对话（根 + 全部回复）。能否回复由服务端的 canReply 决定（官方公告为 false），
 // 队伍会话（channel=team）在玩家侧只读：只用于接收官方消息，不再支持队伍内通讯。
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useGameState } from "@/composables/useGameState";
 import { useStatusMessage } from "@/composables/useStatusMessage";
 import { extractErrorMessage } from "@/api/errors";
@@ -58,13 +58,17 @@ const {
   clear: clearNotice,
 } = useStatusMessage();
 
-// 求提示：当前请求（提问 → 等报价 → 报价待确认 → 已答复 / 已拒绝 / 已关闭）。
-// 报价挂在请求上：quotedCost 是当前有效报价（降价后就是新价），确认时才按它扣费。
+// 求提示：进行中的请求可能有多条 —— 只有 pending 占用「每队 1 条」名额，
+// 一旦官方报价（quoted）就释放名额，所以可以有 1 条 pending + 多条待确认/待议价的请求。
+// 每条请求各自带 quotedCost，确认时按各自的价格扣费。
 const hintQuestion = ref("");
 const hintSubmitting = ref(false);
-// 正在执行的动作用途名（confirm / cheaper / close），用于禁用按钮防重复提交
+// 正在执行的动作用途（`${id}:confirm|cheaper|close`），逐条禁用按钮防重复提交
 const hintActing = ref("");
-const activeHint = ref(null);
+// 进行中的请求（pending / quoted），按 id 倒序
+const openHints = ref([]);
+// 从「提示记录」里跳转过来时高亮的那条
+const focusedHintId = ref(null);
 // 待报价名额：每队同时只能有 1 条（配额提示用）
 const hintPendingCount = ref(0);
 // 玩家端没有组件库，确认弹窗复用页面里的 modal 样式：{ title, text, confirmText, run }
@@ -132,25 +136,31 @@ const isHintCompose = computed(() => composeTarget.value === HINT_TARGET);
 
 // ---------- 求提示的派生状态（口径见 api-10 §10.12） ----------
 
-const hintStatus = computed(() => activeHint.value?.status ?? null);
-// 待报价名额已占满（每队上限 1）
+// 待报价名额已占满（每队上限 1；quoted 不占名额，所以仍可继续提问）
 const hintQuotaFull = computed(() => hintPendingCount.value >= 1);
-// 可申请更便宜：已报价、没申请过、官方也没表示过是最低价
-const canRequestCheaper = computed(
-  () =>
-    hintStatus.value === "quoted" &&
-    !activeHint.value?.cheaperRequestedAt &&
-    !activeHint.value?.isLowestPrice,
-);
-// 已申请更便宜、官方还没回应
-const cheaperPending = computed(
-  () =>
-    Boolean(activeHint.value?.cheaperRequestedAt) &&
-    !activeHint.value?.cheaperDecidedAt,
-);
-// 需要轮询：等报价中，或等官方回应议价
-const hintNeedsPolling = computed(
-  () => Boolean(activeHint.value) && (hintStatus.value === "pending" || cheaperPending.value),
+
+// 进行中的请求 = pending / quoted
+const isOpenHint = (item) =>
+  item?.status === "pending" || item?.status === "quoted";
+
+// 可申请更便宜：已报价、没申请过、官方也没表示过是最低价（逐条判断）
+const canRequestCheaperOf = (item) =>
+  item?.status === "quoted" &&
+  !item.cheaperRequestedAt &&
+  !item.isLowestPrice;
+
+// 已申请更便宜、官方还没回应（逐条判断）
+const cheaperPendingOf = (item) =>
+  Boolean(item?.cheaperRequestedAt) && !item?.cheaperDecidedAt;
+
+// 某条请求的某个动作是否正在执行
+const hintBusyOf = (item, action) =>
+  hintActing.value === `${item.id}:${action}`;
+
+// 需要轮询：求提示面板打开着，或提示记录弹窗打开着 —— 用「请求历史」拿服务端权威状态
+// （只有当前这一条的状态不够：官方可能在你没盯着时报价、拒绝、或回应降价）。
+const hintPollingWanted = computed(
+  () => isHintCompose.value || hintHistoryOpen.value,
 );
 // 回复模式下的主题预览：服务端会生成「回复：<根主题>」
 const replySubject = computed(() =>
@@ -477,8 +487,8 @@ function handleVisibilityChange() {
     loadMails();
   }
 
-  if (hintNeedsPolling.value) {
-    loadActiveHint();
+  if (hintPollingWanted.value) {
+    refreshHintSnapshot();
   }
 }
 
@@ -555,26 +565,36 @@ async function loadTipsBalance() {
   await refreshTeamTips();
 }
 
-// 把最新的请求写回状态，并按需要开/关轮询。
-function applyActiveHint(next) {
-  activeHint.value = next ?? null;
-  syncHintPolling();
-}
+// 把「请求历史」里的条目同步到进行中列表，并在状态真正变化时提示 / 刷新相关数据。
+// 只有 pending 占名额；quoted 会留在进行中列表里等玩家确认或议价，可能有多条。
+function applyHintList(items) {
+  const list = Array.isArray(items) ? items : [];
+  const previous = new Map(openHints.value.map((item) => [item.id, item]));
 
-async function loadActiveHint() {
-  if (!activeHint.value?.id) {
-    return;
+  for (const [id, before] of previous) {
+    const after = list.find((item) => item.id === id);
+    if (!after || after.status === before.status) continue;
+    if (after.status === "answered") {
+      setNotice("success", "官方答复已送达，可在「队伍会话」查看。");
+      // 答复是一条新的未读邮件：列表、余额、未读汇总一起刷新（可能是在别的标签页确认的）
+      Promise.all([loadMails(), loadTipsBalance(), refreshUnreadSummary()]);
+    } else if (after.status === "rejected") {
+      setNotice(
+        "error",
+        `官方拒绝了这条求提示${after.reason ? `：${after.reason}` : "。"}`,
+      );
+    } else if (after.status === "quoted") {
+      setNotice("success", `#${after.id} 官方已报价，可以确认或申请更便宜。`);
+    }
   }
 
-  try {
-    const response = await messageApi.getHintRequest(activeHint.value.id);
-    applyActiveHint(response?.data ?? null);
-  } catch (error) {
-    // 轮询失败静默处理：下一次 tick 会重试，避免刷屏报错。
-  }
+  openHints.value = list
+    .filter(isOpenHint)
+    .sort((a, b) => Number(b.id) - Number(a.id));
 }
 
 // 提问：只提交问题，不扣费；提交后开始等报价。
+// 只要没有 pending（名额未占），即使还有 quoted 在等支付也能再提一条。
 async function submitHintQuestion() {
   if (hintSubmitting.value) {
     return;
@@ -593,21 +613,24 @@ async function submitHintQuestion() {
     const data = response?.data ?? {};
     hintQuestion.value = "";
     hintPendingCount.value = Number(data.pendingCount ?? 1) || 1;
-    // 提问响应就是待报价状态，直接落到当前请求上，省一次 GET
-    applyActiveHint({
-      id: data.requestId,
-      status: data.status ?? "pending",
-      question: data.question ?? content,
-      cost: data.cost ?? null,
-      quotedCost: data.quotedCost ?? null,
-      cheaperRequestedAt: null,
-      cheaperDecidedAt: null,
-      isLowestPrice: false,
-      createdAt: new Date().toISOString(),
-      decidedAt: null,
-      replyMsgId: null,
-      reason: null,
-    });
+    // 提问响应就是待报价状态，直接插到列表里，省一次 GET
+    openHints.value = [
+      {
+        id: data.requestId,
+        status: data.status ?? "pending",
+        question: data.question ?? content,
+        cost: data.cost ?? null,
+        quotedCost: data.quotedCost ?? null,
+        cheaperRequestedAt: null,
+        cheaperDecidedAt: null,
+        isLowestPrice: false,
+        createdAt: new Date().toISOString(),
+        decidedAt: null,
+        replyMsgId: null,
+        reason: null,
+      },
+      ...openHints.value,
+    ];
     setNotice("success", "已提交，等待官方报价（报价前不扣点数）。");
   } catch (error) {
     setNotice("error", errorText(error, "提交求提示失败。"));
@@ -616,38 +639,45 @@ async function submitHintQuestion() {
   }
 }
 
-// 确认扣费：按当前报价扣本队 tips，答复随后进队伍会话。
-async function confirmActiveHint() {
-  if (hintActing.value || !activeHint.value) {
+// 确认扣费：按这条请求当前的报价扣本队 tips，答复随后进队伍会话。
+async function confirmHint(item) {
+  if (hintActing.value || item?.status !== "quoted") {
     return;
   }
 
-  const id = activeHint.value.id;
-  hintActing.value = "confirm";
-  setNotice("pending", "正在确认...");
+  const id = item.id;
+  hintActing.value = `${id}:confirm`;
+  setNotice("pending", `正在确认 #${id}...`);
   try {
     const response = await messageApi.confirmHint(id);
     const data = response?.data ?? {};
-    applyActiveHint({ ...activeHint.value, status: data.status ?? "answered", cost: data.cost ?? null, replyMsgId: data.msgId ?? null });
+    // 已扣费 → 从进行中列表移除
+    openHints.value = openHints.value.filter((row) => row.id !== id);
     setNotice(
       "success",
-      `已确认，扣除 ${data.cost ?? 0} 点；答复已发到「队伍会话」，可在收件箱查看。`,
+      `已确认 #${id}，扣除 ${data.cost ?? 0} 点；答复已发到「队伍会话」，可在收件箱查看。`,
     );
-    // 答复是一条新邮件，顺带刷新列表、余额与「待报价」名额（可能还占着别的请求）
-    await Promise.all([loadMails(), loadTipsBalance(), refreshHintPendingCount()]);
+    // 答复是一条新邮件：刷新列表、余额、「待报价」名额（可能还占着别的请求），
+    // 以及未读汇总（GET /msg/mails/summary）——顶栏角标要立刻反映出这条新答复
+    await Promise.all([
+      loadMails(),
+      loadTipsBalance(),
+      refreshHintPendingCount(),
+      refreshUnreadSummary(),
+    ]);
   } catch (error) {
     // 余额不足不是死路：报价保留，补点数后重试同一条即可
     if (error?.code === "E_TIPS_SHORT") {
       const detail = error?.payload?.error?.detail ?? {};
       setNotice(
         "error",
-        `本队 tips 不足（需要 ${detail.required ?? "?"}，当前 ${detail.balance ?? tipsBalance.value}）；补齐后可再次确认这条报价。`,
+        `本队 tips 不足（需要 ${detail.required ?? "?"}，当前 ${detail.balance ?? tipsBalance.value}）；补齐后可再次确认 #${id} 的报价。`,
       );
     } else {
       setNotice("error", errorText(error, "确认失败。"));
     }
     // 状态可能已被别处改动（如已处理），拉一次最新状态
-    await loadActiveHint();
+    await refreshHintSnapshot();
   } finally {
     hintActing.value = "";
   }
@@ -655,8 +685,8 @@ async function confirmActiveHint() {
 
 // 申请更便宜：整个提问只允许一次，不加价、不扣费；
 // 「可能答不全」这句提醒必须由前端在发请求之前给出（后端不提供）。
-function requestCheaper() {
-  if (hintActing.value || !canRequestCheaper.value) {
+function requestCheaper(item) {
+  if (hintActing.value || !canRequestCheaperOf(item)) {
     return;
   }
 
@@ -664,84 +694,81 @@ function requestCheaper() {
     title: "申请更便宜",
     text: "更便宜的提示可能无法回答所有问题，确定要申请吗？",
     confirmText: "申请",
-    run: submitCheaper,
+    run: () => submitCheaper(item),
   };
 }
 
-async function submitCheaper() {
-  const id = activeHint.value?.id;
+async function submitCheaper(item) {
+  const id = item?.id;
   hintConfirm.value = null;
   if (!id) {
     return;
   }
 
-  hintActing.value = "cheaper";
+  hintActing.value = `${id}:cheaper`;
   try {
     await messageApi.requestCheaperHint(id);
-    setNotice("success", "已申请，等待官方回应；期间也可以直接按当前价确认。");
+    setNotice("success", `已申请 #${id} 更便宜，等待官方回应；期间也可以直接按当前价确认。`);
   } catch (error) {
     setNotice("error", errorText(error, "申请失败。"));
   } finally {
     hintActing.value = "";
     // 409（已申请过 / 已是最低价）时以服务端状态为准，把入口置灰
-    await loadActiveHint();
+    await refreshHintSnapshot();
   }
 }
 
-// 关闭请求：放弃这条提示，服务端会清掉已备好的答复。
-function closeActiveHint() {
-  if (hintActing.value || !activeHint.value) {
+// 关闭请求：放弃这条提示，服务端会清掉已备好的答复。只影响这一条。
+function closeHint(item) {
+  if (hintActing.value || !isOpenHint(item)) {
     return;
   }
 
   hintConfirm.value = {
-    title: "关闭求提示",
+    title: `关闭求提示 #${item.id}`,
     text: "关闭后将放弃这条求提示（已备好的答复也会被清除），确认关闭？",
     confirmText: "关闭",
-    run: submitClose,
+    run: () => submitClose(item),
   };
 }
 
-async function submitClose() {
-  const id = activeHint.value?.id;
+async function submitClose(item) {
+  const id = item?.id;
   hintConfirm.value = null;
   if (!id) {
     return;
   }
 
-  hintActing.value = "close";
+  hintActing.value = `${id}:close`;
   try {
     const response = await messageApi.closeHint(id);
     const data = response?.data ?? {};
-    applyActiveHint({ ...activeHint.value, status: data.status ?? "closed" });
-    hintPendingCount.value = 0;
+    openHints.value = openHints.value.filter((row) => row.id !== id);
     setNotice(
       "success",
       Number(data.refunded) > 0
-        ? `已关闭，退回 ${data.refunded} 点。`
-        : "已关闭。",
+        ? `已关闭 #${id}，退回 ${data.refunded} 点。`
+        : `已关闭 #${id}。`,
     );
-    await Promise.all([loadTipsBalance(), loadHintRequests({ reset: true })]);
+    // 关闭可能释放 pending 名额，也可能只是结束一条 quoted，按服务端为准重算
+    await Promise.all([
+      loadTipsBalance(),
+      refreshHintPendingCount(),
+      loadHintRequests({ reset: true }),
+    ]);
   } catch (error) {
     setNotice("error", errorText(error, "关闭失败。"));
-    await loadActiveHint();
+    await refreshHintSnapshot();
   } finally {
     hintActing.value = "";
   }
 }
 
-// 重新提一条：清掉当前请求，回到提问表单。
-function startNewHint() {
-  applyActiveHint(null);
-  hintQuestion.value = "";
-}
-
-// 从历史里挑一条继续操作（把某个请求设成当前请求）。
-async function selectHintRequest(item) {
+// 从「提示记录」里跳到某一条进行中的请求（高亮它，并关闭弹窗）
+function focusHint(item) {
   hintHistoryOpen.value = false;
-  applyActiveHint(item);
+  focusedHintId.value = item?.id ?? null;
   clearNotice();
-  await loadActiveHint();
 }
 
 async function openHintHistory() {
@@ -819,21 +846,13 @@ async function refreshHintPendingCount() {
   }
 }
 
-// 刷新页面后恢复「当前请求」：优先还没报价的那条，其次是已报价等确认的。
-async function restoreActiveHint() {
+// 打开页面时恢复进行中的请求（pending / quoted），可能有多条。
+async function restoreOpenHints() {
   try {
     const response = await messageApi.getHintRequests({ limit: 20 });
     const data = response?.data ?? {};
-    const items = Array.isArray(data.items) ? data.items : [];
     hintPendingCount.value = Number(data.pendingCount ?? 0) || 0;
-
-    const active =
-      items.find((item) => item.status === "pending") ??
-      items.find((item) => item.status === "quoted") ??
-      null;
-    if (active) {
-      applyActiveHint(active);
-    }
+    applyHintList(Array.isArray(data.items) ? data.items : []);
   } catch (error) {
     // 恢复失败不影响页面其他部分
   }
@@ -888,11 +907,37 @@ function waitedText(value) {
 
 // ---------- 提示请求的轮询 ----------
 
-function syncHintPolling() {
-  if (hintNeedsPolling.value) {
-    startHintPolling();
-  } else {
-    stopHintPolling();
+// 用「请求历史」轮询当前状态：一次请求同时拿到 pendingCount 与每条请求的最新状态
+//（pending / quoted / answered / rejected / closed 以及议价字段）。
+let hintRefreshing = false;
+
+async function refreshHintSnapshot() {
+  if (hintRefreshing) {
+    return;
+  }
+
+  hintRefreshing = true;
+  try {
+    const response = await messageApi.getHintRequests({ limit: 20 });
+    const data = response?.data ?? {};
+    const items = Array.isArray(data.items) ? data.items : [];
+    hintPendingCount.value = Number(data.pendingCount ?? 0) || 0;
+
+    // 记录弹窗开着：按 id 合并状态，保留已加载的翻页内容，不重置分页
+    if (hintHistoryOpen.value && items.length && !hintRequestsLoading.value) {
+      const merged = new Map(hintRequests.value.map((item) => [item.id, item]));
+      for (const item of items) merged.set(item.id, item);
+      hintRequests.value = [...merged.values()].sort(
+        (a, b) => Number(b.id) - Number(a.id),
+      );
+    }
+
+    // 进行中的请求：用历史里的最新状态整体覆盖（可能有多条 pending / quoted）
+    applyHintList(items);
+  } catch (error) {
+    // 轮询失败静默处理：下一轮会重试，避免刷屏报错
+  } finally {
+    hintRefreshing = false;
   }
 }
 
@@ -903,17 +948,27 @@ function startHintPolling() {
 
   hintTimer = window.setInterval(() => {
     if (!document.hidden) {
-      loadActiveHint();
+      refreshHintSnapshot();
     }
   }, HINT_POLL_MS);
 }
 
 function stopHintPolling() {
   if (hintTimer !== null) {
-    clearInterval(hintTimer);
+    window.clearInterval(hintTimer);
     hintTimer = null;
   }
 }
+
+// 打开求提示面板 / 提示记录弹窗时立刻拉一次，并开始按 10 秒轮询；关掉就停
+watch(hintPollingWanted, (wanted) => {
+  if (wanted) {
+    refreshHintSnapshot();
+    startHintPolling();
+  } else {
+    stopHintPolling();
+  }
+});
 
 // ---------- 生命周期 ----------
 
@@ -924,7 +979,7 @@ onMounted(async () => {
 
   document.addEventListener("visibilitychange", handleVisibilityChange);
   // 未读角标（GET /msg/mails/summary）由 App.vue 的全局轮询统一负责，本页只加载自己的数据。
-  await Promise.all([loadMails(), loadTipsBalance(), restoreActiveHint()]);
+  await Promise.all([loadMails(), loadTipsBalance(), restoreOpenHints()]);
 });
 
 onBeforeUnmount(() => {
@@ -1050,7 +1105,9 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <!-- 请求提示：先提问（不扣费），官方报价后由玩家确认扣费；答复进队伍会话 -->
+          <!-- 请求提示：先提问（不扣费），官方报价后由玩家确认扣费；答复进队伍会话。
+               只有 pending 占「每队 1 条」名额：可以有 1 条 pending + 多条 quoted 同时存在，
+               每条各自确认（按各自 quotedCost 扣费）。 -->
           <template v-if="isHintCompose">
             <div class="hint-panel">
               <p class="helper-text">
@@ -1061,65 +1118,110 @@ onBeforeUnmount(() => {
                 <template v-if="tipsHasTeam && tipsToday">
                   （今日已累积 {{ tipsToday.accrued }}/{{ tipsToday.cap }}）
                 </template>
-                · 待报价 {{ hintPendingCount }}/1
+                · 待报价 {{ hintPendingCount }}/1（只有「待报价」占名额，待确认的不占）
               </p>
 
-              <!-- 还没有进行中的请求：填问题 -->
-              <template v-if="!activeHint">
-                <textarea
-                  id="hint-question"
-                  v-model="hintQuestion"
-                  class="mail-editor hint-question"
-                  rows="6"
-                  maxlength="2000"
-                  placeholder="描述卡住的地方（1–2000 字），官方会据此报价"
-                ></textarea>
-                <p v-if="!tipsHasTeam" class="helper-text">
-                  加入队伍后才能求提示。
-                </p>
-                <p v-else-if="hintQuotaFull" class="helper-text">
-                  已有一条待报价的求提示（每队同时只能 1 条），等官方报价或先关闭它。
-                </p>
-              </template>
+              <!-- 进行中的请求（pending / quoted），可以有多条 -->
+              <ul v-if="openHints.length" class="hint-open">
+                <li
+                  v-for="item in openHints"
+                  :key="item.id"
+                  :class="['hint-open__item', { 'is-focus': item.id === focusedHintId }]"
+                >
+                  <div class="hint-open__head">
+                    <span class="hint-open__id">#{{ item.id }}</span>
+                    <span class="hint-open__status">{{ hintStatusLabel(item.status) }}</span>
+                    <span class="hint-open__cost">{{ hintCostText(item) }}</span>
+                    <span v-if="item.status === 'pending'" class="hint-open__wait">
+                      已等待 {{ waitedText(item.createdAt) }}
+                    </span>
+                  </div>
+                  <p class="hint-open__question">{{ item.question }}</p>
 
-              <!-- 进行中：问题只读 + 状态机 -->
-              <template v-else>
-                <div class="hint-card">
-                  <p class="hint-card__label">
-                    我的问题（#{{ activeHint.id }}）
+                  <p v-if="item.status === 'pending'" class="helper-text">
+                    等待官方报价…（报价前不扣费）
                   </p>
-                  <p class="hint-card__question">{{ activeHint.question }}</p>
-                </div>
+                  <template v-else>
+                    <p class="helper-text">
+                      官方报价：<strong>{{ item.quotedCost }}</strong> 点（确认后才扣费）
+                    </p>
+                    <p v-if="cheaperPendingOf(item)" class="helper-text">
+                      已申请更便宜，等待官方回应；期间也可以直接按当前价确认。
+                    </p>
+                    <p v-else-if="item.isLowestPrice" class="helper-text">
+                      官方已表示这就是最低报价。
+                    </p>
+                    <p v-else-if="item.cheaperDecidedAt" class="helper-text">
+                      官方已回应你的降价申请，当前报价即最新价格。
+                    </p>
+                  </template>
 
-                <p v-if="hintStatus === 'pending'" class="helper-text">
-                  等待官方报价…（已等待 {{ waitedText(activeHint.createdAt) }}）
-                </p>
+                  <div class="hint-open__actions">
+                    <button
+                      v-if="canRequestCheaperOf(item)"
+                      class="soft-btn"
+                      type="button"
+                      :disabled="Boolean(hintActing)"
+                      @click="requestCheaper(item)"
+                    >
+                      {{ hintBusyOf(item, "cheaper") ? "申请中..." : "申请更便宜" }}
+                    </button>
+                    <button
+                      v-if="item.status === 'quoted'"
+                      class="primary-btn"
+                      type="button"
+                      :disabled="Boolean(hintActing)"
+                      @click="confirmHint(item)"
+                    >
+                      {{
+                        hintBusyOf(item, "confirm")
+                          ? "确认中..."
+                          : `确认（扣 ${item.quotedCost} 点）`
+                      }}
+                    </button>
+                    <button
+                      class="soft-btn"
+                      type="button"
+                      :disabled="Boolean(hintActing)"
+                      @click="closeHint(item)"
+                    >
+                      {{ hintBusyOf(item, "close") ? "关闭中..." : "关闭请求" }}
+                    </button>
+                  </div>
+                </li>
+              </ul>
 
-                <template v-else-if="hintStatus === 'quoted'">
+              <!-- 提交新请求：只要没有待报价（名额未占）就能提，既使还有待支付的请求 -->
+              <div class="hint-submit">
+                <template v-if="hintQuotaFull">
                   <p class="helper-text">
-                    官方报价：<strong>{{ activeHint.quotedCost }}</strong> 点（确认后才扣费）
-                  </p>
-                  <p v-if="cheaperPending" class="helper-text">
-                    已申请更便宜，等待官方回应；期间也可以直接按当前价确认。
-                  </p>
-                  <p v-else-if="activeHint.isLowestPrice" class="helper-text">
-                    官方已表示这就是最低报价。
-                  </p>
-                  <p v-else-if="activeHint.cheaperDecidedAt" class="helper-text">
-                    官方已回应你的降价申请，当前报价即最新价格。
+                    已有一条待报价的求提示（每队同时只能 1 条），等官方报价或先关闭它。
                   </p>
                 </template>
-
-                <p v-else-if="hintStatus === 'answered'" class="helper-text">
-                  已确认扣费，答复已发到「队伍会话」，可在收件箱查看。
-                </p>
-                <p v-else-if="hintStatus === 'rejected'" class="helper-text">
-                  官方拒绝了这条求提示{{ activeHint.reason ? `：${activeHint.reason}` : "。" }}（未扣费）
-                </p>
-                <p v-else-if="hintStatus === 'closed'" class="helper-text">
-                  这条求提示已关闭。
-                </p>
-              </template>
+                <template v-else>
+                  <textarea
+                    id="hint-question"
+                    v-model="hintQuestion"
+                    class="mail-editor hint-question"
+                    rows="5"
+                    maxlength="2000"
+                    placeholder="描述卡住的地方（1–2000 字），官方会据此报价"
+                  ></textarea>
+                  <p v-if="!tipsHasTeam" class="helper-text">
+                    加入队伍后才能求提示。
+                  </p>
+                  <button
+                    class="primary-btn"
+                    type="button"
+                    :disabled="
+                      hintSubmitting || !tipsHasTeam || !hintQuestion.trim()
+                    "
+                    @click="submitHintQuestion"
+                  >
+                    {{ hintSubmitting ? "提交中..." : "提交求提示" }}
+                  </button>
+                </template>
+              </div>
             </div>
 
             <div class="composer__footer">
@@ -1128,63 +1230,6 @@ onBeforeUnmount(() => {
               </button>
               <button class="soft-btn" type="button" @click="openLedger">
                 点数流水
-              </button>
-
-              <template v-if="activeHint">
-                <button
-                  v-if="hintStatus === 'answered' || hintStatus === 'rejected' || hintStatus === 'closed'"
-                  class="soft-btn"
-                  type="button"
-                  @click="startNewHint"
-                >
-                  再提一条
-                </button>
-                <button
-                  v-if="hintStatus === 'pending' || hintStatus === 'quoted'"
-                  class="soft-btn"
-                  type="button"
-                  :disabled="Boolean(hintActing)"
-                  @click="closeActiveHint"
-                >
-                  {{ hintActing === "close" ? "关闭中..." : "关闭请求" }}
-                </button>
-                <button
-                  v-if="canRequestCheaper"
-                  class="soft-btn"
-                  type="button"
-                  :disabled="Boolean(hintActing)"
-                  @click="requestCheaper"
-                >
-                  {{ hintActing === "cheaper" ? "申请中..." : "申请更便宜" }}
-                </button>
-                <button
-                  v-if="hintStatus === 'quoted'"
-                  class="primary-btn"
-                  type="button"
-                  :disabled="Boolean(hintActing)"
-                  @click="confirmActiveHint"
-                >
-                  {{
-                    hintActing === "confirm"
-                      ? "确认中..."
-                      : `确认（扣 ${activeHint.quotedCost} 点）`
-                  }}
-                </button>
-              </template>
-
-              <button
-                v-else
-                class="primary-btn"
-                type="button"
-                :disabled="
-                  hintSubmitting ||
-                  !tipsHasTeam ||
-                  hintQuotaFull ||
-                  !hintQuestion.trim()
-                "
-                @click="submitHintQuestion"
-              >
-                {{ hintSubmitting ? "提交中..." : "提交求提示" }}
               </button>
             </div>
           </template>
@@ -1402,7 +1447,7 @@ onBeforeUnmount(() => {
               <button
                 class="soft-btn"
                 type="button"
-                @click="selectHintRequest(item)"
+                @click="focusHint(item)"
               >
                 {{ item.status === "quoted" ? "去确认" : "查看" }}
               </button>
@@ -1749,8 +1794,17 @@ onBeforeUnmount(() => {
   min-height: 120px;
 }
 
-/* 进行中的求提示：只读展示问题本身 */
-.hint-card {
+/* 进行中的求提示（可同时有多条：1 条待报价 + 多条待确认） */
+.hint-open {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.hint-open__item {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -1760,20 +1814,54 @@ onBeforeUnmount(() => {
   background: var(--surface);
 }
 
-.hint-card__label {
-  margin: 0;
+.hint-open__item.is-focus {
+  border-color: #0f7cff;
+  box-shadow: 0 0 0 1px rgba(15, 124, 255, 0.35);
+}
+
+.hint-open__head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
   color: var(--text-dim);
   font-size: 11px;
   letter-spacing: 0.08em;
 }
 
-.hint-card__question {
+.hint-open__id {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.hint-open__cost {
+  color: var(--text);
+}
+
+.hint-open__wait {
+  margin-left: auto;
+}
+
+.hint-open__question {
   margin: 0;
   color: var(--text);
   font-size: 14px;
   line-height: 1.8;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.hint-open__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* 新请求提交区：与进行中的卡片留出间隔 */
+.hint-submit {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 /* 确认弹窗比历史弹窗窄一些 */
@@ -2054,6 +2142,10 @@ onBeforeUnmount(() => {
   line-height: 1.9;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.reply-bar {
+  margin-left: 5px;
 }
 
 .helper-text {
