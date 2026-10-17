@@ -675,8 +675,16 @@ async function refreshAccountStatus() {
     return { ok: false };
   }
 
+  // 记录发起时的账号：轮询期间可能切换了账号（或已登出），响应回来时这份状态就属于上一个账号了。
+  // 直接写入会把 A 的封禁/禁言记到 B 头上，封禁分支甚至会强制登出 B，所以必须先按账号比对再落状态。
+  const accountKey = currentAccountKey();
+
   try {
     const response = await meApi.getStatus();
+    if (accountKey !== currentAccountKey()) {
+      return { ok: false, stale: true };
+    }
+
     const data = response?.data ?? {};
     const team = data.team ?? null;
     state.accountStatus = {
