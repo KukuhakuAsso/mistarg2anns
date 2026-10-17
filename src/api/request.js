@@ -194,6 +194,8 @@ export async function request(path, options = {}) {
       });
     } catch (error) {
       clearAccessToken();
+      // 刷新也救不回来：会话已彻底失效，通知 App 强制登出（否则界面看似登录但什么都调不动）
+      notifySessionLost();
       throw error;
     }
   }
@@ -206,10 +208,27 @@ export async function request(path, options = {}) {
     error.status = response.status;
     error.payload = payload;
     error.code = payload?.error?.code || payload?.code;
+    // 账号被封禁：除 /me/* 三条申诉接口外一切接口都 403 E_BANNED。
+    // 广播一次，交给 App.vue 把界面切到申诉页（这里不直接依赖路由，避免循环引用）。
+    if (error.code === "E_BANNED" && typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("mistarg:banned", { detail: payload?.error?.detail ?? {} }),
+      );
+    }
+    // 刷新后仍是 401：会话无法恢复，交给 App 统一登出并回到登录页
+    if (response.status === 401 && useAuth) {
+      notifySessionLost();
+    }
     throw error;
   }
 
   return raw ? payload : payload;
+}
+
+// 会话彻底失效（刷新也救不回来）时广播，由 App.vue 统一登出并回到登录页。
+function notifySessionLost() {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent("mistarg:session-lost"));
 }
 
 export default request;

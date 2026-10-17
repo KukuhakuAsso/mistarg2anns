@@ -42,13 +42,14 @@ export const DESKTOP_CARD_SIZE = {
   gap: 12,
 };
 
-// 用户区的四个页面：桌面「用户」菜单与页面间的导航标签共用这一份定义，
-// id 同时就是路由名（/team、/register、/messages、/milestone）。
+// 用户区的页面：桌面「用户」菜单与页面间的导航标签共用这一份定义，
+// id 同时就是路由名（/team、/register、/messages、/milestone、/appeal）。
 export const USER_TABS = [
   { id: "team", name: "我的队伍" },
   { id: "register", name: "注册" },
   { id: "messages", name: "站内信" },
   { id: "milestone", name: "里程碑" },
+  { id: "appeal", name: "我的申诉" },
 ];
 
 // 「用户」菜单各入口的副标题；与 USER_TABS 的 id 一一对应。
@@ -58,6 +59,7 @@ function userMenuDetails({ unreadMessages, completedCount, folderTotal }) {
     register: "登录 / 注册",
     messages: `${unreadMessages} 条未读`,
     milestone: `${completedCount}/${folderTotal} 已完成`,
+    appeal: "封禁 / 禁言申诉",
   };
 }
 

@@ -3,6 +3,7 @@
 // 状态全部来自后端：currentTeam 为队伍对象，myJoinRequest 为未入队时的加入申请。
 import { computed, onMounted, ref } from "vue";
 import { useGameState } from "@/composables/useGameState";
+import { router } from "@/router";
 import { useNameAvailability } from "@/composables/useNameAvailability";
 import { useStatusMessage } from "@/composables/useStatusMessage";
 import { extractErrorMessage } from "@/api/errors";
@@ -73,6 +74,53 @@ const isLoggedIn = computed(() => Boolean(state.user.currentUser));
 const members = computed(() => currentTeam.value?.members ?? []);
 const currentAccountId = computed(() => state.user.currentUser?.id ?? null);
 
+// 队伍封禁（status=4）：只锁参赛与队伍结构（建队 / 加入 / 队伍结构操作 / 退队 / 取题提交），
+// 站内信、求提示的后续动作、账号设置等都不受影响（api-11 限制矩阵）。
+const teamBanned = computed(
+  () =>
+    state.accountStatus?.team?.status === 4 ||
+    currentTeam.value?.status === 4,
+);
+// 队伍级禁言（status=3 或 /me/status 的 team.muted）：只关发信与求提示提问，其余不受影响。
+// 展示优先级与拦截一致：封禁 > 禁言。
+const teamMuted = computed(
+  () =>
+    !teamBanned.value &&
+    Boolean(
+      state.accountStatus?.team?.muted || currentTeam.value?.status === 3,
+    ),
+);
+const teamMutedReason = computed(() => {
+  const info = state.accountStatus?.team;
+  const until = info?.until
+    ? `至 ${new Date(info.until).toLocaleString("zh-CN", { hour12: false })} 自动解除`
+    : "长期（不会自动解除）";
+  const reason = info?.reason ? `原因：${info.reason} · ` : "";
+  return `${reason}${until}。禁言只关闭发信与求提示提问，读信、账号设置与队伍结构操作不受影响。`;
+});
+const teamBannedReason = computed(() => {
+  const info = state.accountStatus?.team;
+  const until = info?.until
+    ? `至 ${new Date(info.until).toLocaleString("zh-CN", { hour12: false })} 自动解封`
+    : "长期封禁";
+  const reason = info?.reason ? `原因：${info.reason} · ` : "";
+  const appealHint = teamAppealAvailable.value
+    ? ""
+    : "队伍封禁申诉仅队长可提交。";
+  return `${reason}${until}。队伍封禁只冻结参赛与队伍结构，读信与账号设置不受影响。${appealHint}`;
+});
+// 队伍封禁由队长代表队伍申诉（scope=team，kind=ban）：teamAppeal 有值即说明我是队长
+const teamAppealAvailable = computed(() =>
+  Boolean(state.accountStatus?.teamAppeal),
+);
+
+// 队伍结构类操作在封禁期间一律拦截（服务端也会返回 E_FORBIDDEN）
+function blockIfTeamBanned() {
+  if (!teamBanned.value) return false;
+  setNotice("error", "队伍已被官方封禁，暂不能进行队伍结构操作。");
+  return true;
+}
+
 // 我的加入申请状态文案。
 const joinRequestStatusLabel = computed(() => {
   switch (myJoinRequest.value?.status) {
@@ -138,6 +186,8 @@ function isMe(member) {
 }
 
 async function handleCreateTeam() {
+  if (blockIfTeamBanned()) return;
+
   const validation = validateTeamName(createTeamName.value);
   if (!validation.ok) {
     setTeamNameState("invalid", validation.message);
@@ -167,6 +217,8 @@ async function handleCreateTeam() {
 }
 
 async function handleJoin() {
+  if (blockIfTeamBanned()) return;
+
   const result = await run("join", () => joinTeam(joinCode.value));
   if (result.ok) {
     joinCode.value = "";
@@ -174,10 +226,14 @@ async function handleJoin() {
 }
 
 function handleToggleAutoApprove() {
+  if (blockIfTeamBanned()) return;
+
   run("auto", () => setAutoApprove(!currentTeam.value?.autoApprove));
 }
 
 function handleLeaveTeam() {
+  if (blockIfTeamBanned()) return;
+
   if (!window.confirm("确定要退出当前队伍吗？")) {
     return;
   }
@@ -186,6 +242,8 @@ function handleLeaveTeam() {
 }
 
 function handleDissolve() {
+  if (blockIfTeamBanned()) return;
+
   if (!window.confirm("确定要解散队伍吗？该操作不可撤销。")) {
     return;
   }
@@ -194,6 +252,8 @@ function handleDissolve() {
 }
 
 function handleStart() {
+  if (blockIfTeamBanned()) return;
+
   if (
     !window.confirm(
       "确认参赛后队伍将进入锁定态，无法再拉人 / 踢人 / 退队 / 转让 / 解散。确定继续？",
@@ -206,6 +266,8 @@ function handleStart() {
 }
 
 function handleRemoveMember(member) {
+  if (blockIfTeamBanned()) return;
+
   if (!window.confirm(`确定要移出成员「${member.username}」吗？`)) {
     return;
   }
@@ -214,6 +276,8 @@ function handleRemoveMember(member) {
 }
 
 function handleTransfer(member) {
+  if (blockIfTeamBanned()) return;
+
   if (!window.confirm(`确定要把队长转让给「${member.username}」吗？`)) {
     return;
   }
@@ -241,6 +305,25 @@ function handleTransfer(member) {
     </header>
 
     <UserTabs />
+
+    <!-- 队伍封禁：只冻结参赛与队伍结构，读信 / 求提示后续动作 / 账号设置不受影响；队长可代表队伍申诉 -->
+    <div v-if="isLoggedIn && teamBanned" class="banned-banner">
+      <strong>队伍已被官方封禁</strong>
+      <span>{{ teamBannedReason }}</span>
+      <button
+        v-if="teamAppealAvailable"
+        class="banned-banner__action"
+        type="button"
+        @click="router.goToRoute('/appeal')"
+      >
+        代表队伍申诉
+      </button>
+    </div>
+    <!-- 队伍禁言：只关发信与求提示提问 -->
+    <div v-else-if="isLoggedIn && teamMuted" class="muted-banner">
+      <strong>队伍已被禁言</strong>
+      <span>{{ teamMutedReason }}</span>
+    </div>
 
     <div class="page-shell__body">
       <!-- 未登录 -->
@@ -698,6 +781,49 @@ textarea {
   border-radius: 999px;
   font-size: 10px;
   border: 1px solid transparent;
+}
+
+/* 队伍封禁提示条：说明封禁只影响参赛与队伍结构 */
+.banned-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 12px;
+  padding: 10px 14px;
+  border: 1px solid rgba(224, 49, 49, 0.55);
+  border-radius: 10px;
+  background: rgba(224, 49, 49, 0.12);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.banned-banner__action {
+  margin-left: auto;
+  padding: 4px 12px;
+  border: 1px solid rgba(224, 49, 49, 0.6);
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.banned-banner__action:hover {
+  background: rgba(224, 49, 49, 0.22);
+}
+
+/* 队伍禁言提示条：比封禁弱一级 */
+.muted-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 12px;
+  padding: 10px 14px;
+  border: 1px solid rgba(240, 173, 78, 0.6);
+  border-radius: 10px;
+  background: rgba(240, 173, 78, 0.12);
+  font-size: 13px;
+  line-height: 1.7;
 }
 
 .status--pending {

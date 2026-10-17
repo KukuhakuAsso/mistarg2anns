@@ -13,7 +13,7 @@ import StatusMessage from "@/components/StatusMessage.vue";
 import UserTabs from "@/components/UserTabs.vue";
 
 // 注册视图的状态与逻辑，包括登录、注册、用户名修改等功能。
-const { state } = useGameState();
+const { state, applyAccountSnapshot, consumeSessionNotice } = useGameState();
 // 当前的认证模式：login = 登录，register = 注册。
 const authMode = ref("login");
 // 表单提交状态，包括登录、登出等操作。
@@ -339,6 +339,12 @@ function renderTurnstileWidget() {
 // 进入页面时清空上一次的验证结果，探测一次服务健康（供状态条展示），再加载注册配置。
 onMounted(async () => {
   captchaResponse.value = "";
+
+  // 被强制登出（封禁 / 会话失效）时留下的一次性提示，在这里展示给用户
+  const notice = consumeSessionNotice();
+  if (notice) {
+    setAuthMessage("error", notice);
+  }
 
   try {
     await probeHealth();
@@ -809,6 +815,9 @@ async function handleAuthSubmit() {
         role: account.role ?? "player",
         team: account.team ?? null,
       };
+      // 封禁账号的登录是成功的（200 + account.banned）：立即按快照标记，
+      // 不再等 /me/status，也不会被当成「会话中途被封」而立刻登出。
+      applyAccountSnapshot(account);
     }
 
     setAuthMessage(
