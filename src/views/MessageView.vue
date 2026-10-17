@@ -9,6 +9,7 @@ import { useStatusMessage } from "@/composables/useStatusMessage";
 import { extractErrorMessage } from "@/api/errors";
 import StatusMessage from "@/components/StatusMessage.vue";
 import { messageApi } from "@/api/message";
+import { tipsApi } from "@/api/tips";
 import UserTabs from "@/components/UserTabs.vue";
 
 const { state, refreshUnreadSummary, refreshTeamTips } = useGameState();
@@ -78,6 +79,33 @@ const hintHistoryOpen = ref(false);
 const hintRequests = ref([]);
 const hintRequestsLoading = ref(false);
 const hintNextCursor = ref(null);
+
+// 本队点数流水（GET /api/tips/ledger）：与提示记录并列，从求提示面板打开。
+// 余额与流水都以服务端为准，不在本地推算。
+const ledgerOpen = ref(false);
+const ledgerItems = ref([]);
+const ledgerLoading = ref(false);
+const ledgerNextCursor = ref(null);
+const ledgerTeamId = ref(null);
+
+const LEDGER_REASON_LABELS = {
+  accrue: "自然增长",
+  puzzle: "解题奖励",
+  milestone: "里程碑奖励",
+  admin: "管理端发放/扣减",
+  spend: "点数消费",
+  hint: "求提示扣费",
+  refund: "退款",
+};
+
+function ledgerReasonLabel(reason) {
+  return LEDGER_REASON_LABELS[reason] || reason || "—";
+}
+
+function ledgerDeltaText(delta) {
+  const value = Number(delta) || 0;
+  return value > 0 ? `+${value}` : String(value);
+}
 
 // 提问后每 10 秒查一次报价，直到不再是 pending；申请更便宜等官方回应期间同样要盯着。
 const HINT_POLL_MS = 10000;
@@ -601,13 +629,12 @@ async function confirmActiveHint() {
     const response = await messageApi.confirmHint(id);
     const data = response?.data ?? {};
     applyActiveHint({ ...activeHint.value, status: data.status ?? "answered", cost: data.cost ?? null, replyMsgId: data.msgId ?? null });
-    hintPendingCount.value = 0;
     setNotice(
       "success",
       `已确认，扣除 ${data.cost ?? 0} 点；答复已发到「队伍会话」，可在收件箱查看。`,
     );
-    // 答复是一条新邮件，顺带刷新列表与余额
-    await Promise.all([loadMails(), loadTipsBalance()]);
+    // 答复是一条新邮件，顺带刷新列表、余额与「待报价」名额（可能还占着别的请求）
+    await Promise.all([loadMails(), loadTipsBalance(), refreshHintPendingCount()]);
   } catch (error) {
     // 余额不足不是死路：报价保留，补点数后重试同一条即可
     if (error?.code === "E_TIPS_SHORT") {
@@ -744,6 +771,51 @@ async function loadHintRequests({ reset = false } = {}) {
     setNotice("error", errorText(error, "加载提示请求历史失败。"));
   } finally {
     hintRequestsLoading.value = false;
+  }
+}
+
+// 本队点数流水：一页 20 条，按游标往后翻（GET /api/tips/ledger）
+async function openLedger() {
+  ledgerOpen.value = true;
+  ledgerItems.value = [];
+  ledgerNextCursor.value = null;
+  ledgerTeamId.value = null;
+  await loadLedger({ reset: true });
+}
+
+async function loadLedger({ reset = false } = {}) {
+  if (ledgerLoading.value) {
+    return;
+  }
+
+  ledgerLoading.value = true;
+  try {
+    const response = await tipsApi.getLedger({
+      cursor: reset ? 0 : (ledgerNextCursor.value ?? 0),
+      limit: 20,
+    });
+    const data = response?.data ?? {};
+    const items = Array.isArray(data.items) ? data.items : [];
+    ledgerItems.value = reset ? items : [...ledgerItems.value, ...items];
+    ledgerNextCursor.value = data.nextCursor ?? null;
+    // 无队伍时后端返回 teamId:null + 空列表，属正常空值
+    ledgerTeamId.value = data.teamId ?? null;
+  } catch (error) {
+    setNotice("error", errorText(error, "加载点数流水失败。"));
+  } finally {
+    ledgerLoading.value = false;
+  }
+}
+
+// 只刷新「待报价名额」：确认/关闭后不能直接把 pendingCount 清零 ——
+// 队伍可以同时有 1 条 pending + 1 条 quoted，确认掉 quoted 时 pending 仍占着名额。
+async function refreshHintPendingCount() {
+  try {
+    const response = await messageApi.getHintRequests({ limit: 1 });
+    const data = response?.data ?? {};
+    hintPendingCount.value = Number(data.pendingCount ?? 0) || 0;
+  } catch (error) {
+    // 配额数字读失败无伤大雅，下次历史 / 刷新会修正
   }
 }
 
@@ -1054,6 +1126,9 @@ onBeforeUnmount(() => {
               <button class="soft-btn" type="button" @click="openHintHistory">
                 提示记录
               </button>
+              <button class="soft-btn" type="button" @click="openLedger">
+                点数流水
+              </button>
 
               <template v-if="activeHint">
                 <button
@@ -1352,6 +1427,56 @@ onBeforeUnmount(() => {
             type="button"
             @click="hintHistoryOpen = false"
           >
+            关闭
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 本队点数流水（GET /api/tips/ledger）：余额变化都带 balanceAfter，可自查收支 -->
+    <div v-if="ledgerOpen" class="modal-backdrop" @click.self="ledgerOpen = false">
+      <div class="modal-card">
+        <h2>本队点数流水</h2>
+        <p
+          v-if="!ledgerItems.length && ledgerTeamId === null && !ledgerLoading"
+          class="helper-text"
+        >
+          还没有队伍：加入队伍后才会有点数流水。
+        </p>
+        <ul v-else-if="ledgerItems.length" class="ledger-list">
+          <li v-for="item in ledgerItems" :key="item.id">
+            <span
+              class="ledger-list__delta"
+              :class="{
+                'is-plus': Number(item.delta) > 0,
+                'is-minus': Number(item.delta) < 0,
+              }"
+            >
+              {{ ledgerDeltaText(item.delta) }}
+            </span>
+            <span class="ledger-list__reason">{{ ledgerReasonLabel(item.reason) }}</span>
+            <span class="ledger-list__balance">余额 {{ item.balanceAfter }}</span>
+            <time>{{ formatTime(item.createdAt) }}</time>
+            <small v-if="item.note" class="ledger-list__note">{{ item.note }}</small>
+            <small v-if="item.operator" class="ledger-list__note">
+              操作者：{{ item.operator }}
+            </small>
+          </li>
+        </ul>
+        <p v-else class="helper-text">
+          {{ ledgerLoading ? "加载中..." : "暂无流水。" }}
+        </p>
+        <div class="modal-card__footer">
+          <button
+            v-if="ledgerNextCursor"
+            class="soft-btn"
+            type="button"
+            :disabled="ledgerLoading"
+            @click="loadLedger()"
+          >
+            加载更多
+          </button>
+          <button class="soft-btn" type="button" @click="ledgerOpen = false">
             关闭
           </button>
         </div>
@@ -2018,6 +2143,50 @@ onBeforeUnmount(() => {
 .hint-list__id,
 .hint-list__cost,
 .hint-list time {
+  color: var(--text-dim);
+}
+
+.ledger-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ledger-list li {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) 96px 130px;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 12px;
+}
+
+.ledger-list li small {
+  grid-column: 1 / -1;
+  color: var(--text-dim);
+}
+
+.ledger-list__delta {
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.ledger-list__delta.is-plus {
+  color: var(--accent);
+}
+
+.ledger-list__delta.is-minus {
+  color: var(--danger);
+}
+
+.ledger-list__reason,
+.ledger-list__balance,
+.ledger-list time {
   color: var(--text-dim);
 }
 
