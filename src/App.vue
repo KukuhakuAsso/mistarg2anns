@@ -1,6 +1,6 @@
 <script setup>
 // 伪桌面布局：顶部设置栏 + 主界面（档案） + 右侧线索栏。
-import { computed, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, watch } from "vue";
 import TopBar from "@/components/TopBar.vue";
 import ClueBoard from "@/components/ClueBoard.vue";
 import DragGhost from "@/components/DragGhost.vue";
@@ -20,7 +20,7 @@ import { FOLDER_BY_ID } from "@/config/folders";
 import { FEATURE_ROUTES, router } from "@/router";
 import { useGameState } from "@/composables/useGameState";
 
-const { state } = useGameState();
+const { state, refreshUnreadSummary, refreshTeamTips } = useGameState();
 // 当前路由对象（hash 路由维护的全局响应式状态），下面的派生判断都基于它。
 const currentRoute = computed(() => router.currentRoute);
 
@@ -36,6 +36,53 @@ watch(
     },
     { immediate: true },
 );
+
+// 服务端数据轮询：未读角标与队伍 tips 余额（每 60 秒一次；页面隐藏时暂停，恢复可见时立即补刷）。
+// tips 是队伍级的，同队任何人消费都会让余额变化，所以不能只在进入某页时读一次。
+const UNREAD_POLL_MS = 60000;
+let unreadTimer = null;
+
+function refreshBadgeIfLoggedIn() {
+    if (state.user.currentUser) {
+        refreshUnreadSummary();
+        refreshTeamTips();
+    }
+}
+
+function handleVisibilityChange() {
+    if (!document.hidden) {
+        refreshBadgeIfLoggedIn();
+    }
+}
+
+// 登录 / 切换账号后立即刷新一次角标与队伍 tips。
+watch(
+    () => state.user.currentUser,
+    (currentUser) => {
+        if (currentUser) {
+            refreshUnreadSummary();
+            refreshTeamTips();
+        }
+    },
+);
+
+onMounted(() => {
+    refreshBadgeIfLoggedIn();
+    unreadTimer = window.setInterval(() => {
+        if (!document.hidden) {
+            refreshBadgeIfLoggedIn();
+        }
+    }, UNREAD_POLL_MS);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+});
+
+onBeforeUnmount(() => {
+    if (unreadTimer !== null) {
+        clearInterval(unreadTimer);
+        unreadTimer = null;
+    }
+    document.removeEventListener("visibilitychange", handleVisibilityChange);
+});
 
 // 当前打开的档案：仅 #/folder/:id 命中，未知 id 视为未打开。
 const activeFolder = computed(() =>
