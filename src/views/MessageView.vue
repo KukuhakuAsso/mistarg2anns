@@ -590,13 +590,21 @@ async function markActiveRead(mailId) {
 
 // 页面重新可见时补刷：详情打开则重拉这封邮件（未读/内容可能已变），否则刷新列表；
 // 同时刷新正在等报价的求提示。
-function handleVisibilityChange() {
+async function handleVisibilityChange() {
   if (document.hidden) {
     return;
   }
 
   if (activeMailId.value) {
-    fetchMail();
+    // 抓住发起时的 id：await 期间用户可能已经切到别的邮件。
+    // 这次刷新会顶掉「点开邮件」那次 fetchMail，因此「标记已读」的责任要由这里接过来，
+    // 否则打开未读邮件时刚好回到前台，邮件显示了却一直停在未读。
+    const mailId = activeMailId.value;
+    const loaded = await fetchMail(mailId);
+    // loaded=false 表示又被更新的请求接管了，标记权继续往后传，不能在这里擅自标
+    if (loaded) {
+      await markActiveRead(mailId);
+    }
   } else {
     loadMails();
   }
