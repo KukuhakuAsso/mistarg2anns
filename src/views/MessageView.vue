@@ -1107,16 +1107,30 @@ async function refreshHintSnapshot() {
     const { items, pendingCount } = await loadAllHintRequests();
     hintPendingCount.value = pendingCount;
 
-    // 记录弹窗开着：只同步已经翻到的行；不把没翻到的页塞进列表，
-    // 否则分页游标会与内容错位，「加载更多」会出现重复行。
+    // 记录弹窗开着：同步已翻到的行，并补上「比最新一行还新」的记录（别处新产生的）。
+    // 未翻到的旧页不塞进来，否则分页游标会与内容错位、「加载更多」出现重复行。
     if (hintHistoryOpen.value && !hintRequestsLoading.value) {
-      const loaded = new Map(hintRequests.value.map((item) => [item.id, item]));
-      for (const item of items) {
-        if (loaded.has(item.id)) loaded.set(item.id, item);
+      if (!hintRequests.value.length) {
+        // 打开时历史为空（或首页没拉成）：现在有记录了，按首页重新加载，顺带恢复游标
+        loadHintRequests({ reset: true });
+      } else {
+        const loaded = new Map(
+          hintRequests.value.map((item) => [item.id, item]),
+        );
+        const newestId = hintRequests.value.reduce(
+          (max, item) => Math.max(max, Number(item.id) || 0),
+          0,
+        );
+        for (const item of items) {
+          // 已加载的行：同步最新状态；新产生的行：id 一定比列表里最新一条更大
+          if (loaded.has(item.id) || Number(item.id) > newestId) {
+            loaded.set(item.id, item);
+          }
+        }
+        hintRequests.value = [...loaded.values()].sort(
+          (a, b) => Number(b.id) - Number(a.id),
+        );
       }
-      hintRequests.value = [...loaded.values()].sort(
-        (a, b) => Number(b.id) - Number(a.id),
-      );
     }
 
     // 进行中的请求：用完整历史里的最新状态覆盖（可能有多条 pending / quoted）
