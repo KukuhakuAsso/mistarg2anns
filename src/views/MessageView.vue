@@ -429,11 +429,17 @@ function switchChannel(channel) {
 
 // ---------- 邮件列表 ----------
 
+// 列表请求代号：切频道 / 切未读筛选、关闭详情后的刷新、可见性补刷、加载更多都可能重叠。
+// 只接受最新一次请求的结果——否则旧频道的慢响应会覆盖新筛选的行与游标，
+// 旧的 append 还会把别的频道的数据追加到当前列表后面。
+let mailsRequestGeneration = 0;
+
 async function loadMails({ append = false } = {}) {
   if (!isLoggedIn.value) {
     return;
   }
 
+  const requestId = ++mailsRequestGeneration;
   mailsLoading.value = true;
   try {
     const response = await messageApi.getMails({
@@ -444,6 +450,11 @@ async function loadMails({ append = false } = {}) {
       // 频道筛选也交给服务端（空值 = 不限频道）
       channel: channelFilter.value || undefined,
     });
+    // 期间又发起了新请求（换了筛选 / 又点了一次加载更多）：本次结果整体作废
+    if (requestId !== mailsRequestGeneration) {
+      return;
+    }
+
     const data = response?.data ?? {};
     const items = Array.isArray(data.items) ? data.items : [];
 
@@ -451,9 +462,16 @@ async function loadMails({ append = false } = {}) {
     mailsCursor.value = data.nextCursor ?? null;
     mailsHasMore.value = Boolean(data.hasMore);
   } catch (error) {
+    // 过期请求的错误同样不提示，避免旧筛选的失败盖住当前页面的正常状态
+    if (requestId !== mailsRequestGeneration) {
+      return;
+    }
     setNotice("error", errorText(error, "加载邮件列表失败。"));
   } finally {
-    mailsLoading.value = false;
+    // loading 归最新一次请求管，旧请求不要替它关掉
+    if (requestId === mailsRequestGeneration) {
+      mailsLoading.value = false;
+    }
   }
 }
 
