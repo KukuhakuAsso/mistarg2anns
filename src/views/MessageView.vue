@@ -590,13 +590,21 @@ async function markActiveRead(mailId) {
 
 // 页面重新可见时补刷：详情打开则重拉这封邮件（未读/内容可能已变），否则刷新列表；
 // 同时刷新正在等报价的求提示。
-function handleVisibilityChange() {
+async function handleVisibilityChange() {
   if (document.hidden) {
     return;
   }
 
   if (activeMailId.value) {
-    fetchMail();
+    // 抓住发起时的 id：await 期间用户可能已经切到别的邮件。
+    // 这次刷新会顶掉「点开邮件」那次 fetchMail，因此「标记已读」的责任要由这里接过来，
+    // 否则打开未读邮件时刚好回到前台，邮件显示了却一直停在未读。
+    const mailId = activeMailId.value;
+    const loaded = await fetchMail(mailId);
+    // loaded=false 表示又被更新的请求接管了，标记权继续往后传，不能在这里擅自标
+    if (loaded) {
+      await markActiveRead(mailId);
+    }
   } else {
     loadMails();
   }
@@ -976,13 +984,60 @@ async function refreshHintPendingCount() {
   }
 }
 
-// 打开页面时恢复进行中的请求（pending / quoted），可能有多条。
+// 历史单页上限 100（api-10 §10.7）；页数上限只用于防御游标异常时死循环。
+const HINT_HISTORY_PAGE_SIZE = 100;
+const HINT_HISTORY_MAX_PAGES = 50;
+
+// 拉全「请求历史」：只读第一页的话，较早的 pending / quoted 会落在页外，
+// 于是从「进行中」面板消失——玩家明明还能确认付款，却再也找不到入口。
+async function loadAllHintRequests() {
+  const items = [];
+  const seenIds = new Set();
+  const seenCursors = new Set();
+  let pendingCount = 0;
+  let cursor = 0;
+
+  for (let page = 0; page < HINT_HISTORY_MAX_PAGES; page += 1) {
+    const response = await messageApi.getHintRequests({
+      cursor,
+      limit: HINT_HISTORY_PAGE_SIZE,
+    });
+    const data = response?.data ?? {};
+    const batch = Array.isArray(data.items) ? data.items : [];
+    // pendingCount 是队伍级统计，第一页给的就是完整值
+    if (page === 0) {
+      pendingCount = Number(data.pendingCount ?? 0) || 0;
+    }
+
+    for (const item of batch) {
+      if (item?.id === null || item?.id === undefined) continue;
+      if (seenIds.has(item.id)) continue;
+      seenIds.add(item.id);
+      items.push(item);
+    }
+
+    if (
+      !data.hasMore ||
+      data.nextCursor === null ||
+      data.nextCursor === undefined
+    ) {
+      break;
+    }
+    // 游标没有前进就停，避免服务端异常时死循环
+    if (seenCursors.has(data.nextCursor)) break;
+    seenCursors.add(data.nextCursor);
+    cursor = data.nextCursor;
+  }
+
+  return { items, pendingCount };
+}
+
+// 打开页面时恢复进行中的请求（pending / quoted），可能有多条，也可能不在最新一页里。
 async function restoreOpenHints() {
   try {
-    const response = await messageApi.getHintRequests({ limit: 20 });
-    const data = response?.data ?? {};
-    hintPendingCount.value = Number(data.pendingCount ?? 0) || 0;
-    applyHintList(Array.isArray(data.items) ? data.items : []);
+    const { items, pendingCount } = await loadAllHintRequests();
+    hintPendingCount.value = pendingCount;
+    applyHintList(items);
   } catch (error) {
     // 恢复失败不影响页面其他部分
   }
@@ -1048,21 +1103,23 @@ async function refreshHintSnapshot() {
 
   hintRefreshing = true;
   try {
-    const response = await messageApi.getHintRequests({ limit: 20 });
-    const data = response?.data ?? {};
-    const items = Array.isArray(data.items) ? data.items : [];
-    hintPendingCount.value = Number(data.pendingCount ?? 0) || 0;
+    // 一次轮询拉全历史：进行中列表必须是「所有 open」，不能只是最新一页里的 open
+    const { items, pendingCount } = await loadAllHintRequests();
+    hintPendingCount.value = pendingCount;
 
-    // 记录弹窗开着：按 id 合并状态，保留已加载的翻页内容，不重置分页
-    if (hintHistoryOpen.value && items.length && !hintRequestsLoading.value) {
-      const merged = new Map(hintRequests.value.map((item) => [item.id, item]));
-      for (const item of items) merged.set(item.id, item);
-      hintRequests.value = [...merged.values()].sort(
+    // 记录弹窗开着：只同步已经翻到的行；不把没翻到的页塞进列表，
+    // 否则分页游标会与内容错位，「加载更多」会出现重复行。
+    if (hintHistoryOpen.value && !hintRequestsLoading.value) {
+      const loaded = new Map(hintRequests.value.map((item) => [item.id, item]));
+      for (const item of items) {
+        if (loaded.has(item.id)) loaded.set(item.id, item);
+      }
+      hintRequests.value = [...loaded.values()].sort(
         (a, b) => Number(b.id) - Number(a.id),
       );
     }
 
-    // 进行中的请求：用历史里的最新状态整体覆盖（可能有多条 pending / quoted）
+    // 进行中的请求：用完整历史里的最新状态覆盖（可能有多条 pending / quoted）
     applyHintList(items);
   } catch (error) {
     // 轮询失败静默处理：下一轮会重试，避免刷屏报错
