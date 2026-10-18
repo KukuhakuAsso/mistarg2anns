@@ -1,6 +1,6 @@
 <script setup>
 // 档案查看页：以文件缩略图陈列题目，点击后在可移动窗口中查看详情。
-import { computed, onBeforeUnmount, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import AppIcon from "@/components/AppIcon.vue";
 import { useClueDrag } from "@/composables/useClueDrag";
 import { useGameState } from "@/composables/useGameState";
@@ -20,6 +20,7 @@ const {
   isClueDiscovered,
   isTipUnlocked,
   unlockTip,
+  refreshTeamTips,
 } = useGameState();
 const { startDrag: startClueDrag } = useClueDrag();
 
@@ -32,6 +33,9 @@ const clues = computed(() =>
 const completed = computed(() =>
   state.completedFolders.includes(props.folder.id),
 );
+// 提示点数只认服务端余额（GET /api/tips/balance，App.vue 每 60 秒轮询）。
+// 本地不再有 tipPoints：解锁静态提示暂时不扣点（扣点接口尚未实现），也不会改动这个数字。
+const tipsBalance = computed(() => state.teamTips.balance);
 const clueReadCount = computed(
   () => clues.value.filter((entry) => isClueDiscovered(entry.id)).length,
 );
@@ -122,6 +126,13 @@ function stopDrag() {
 }
 
 onBeforeUnmount(stopDrag);
+
+// 进入档案时补刷一次余额：轮询间隔内可能已变化，避免拿旧值判断「点数不足」
+onMounted(() => {
+  if (state.user.currentUser) {
+    refreshTeamTips();
+  }
+});
 </script>
 
 <template>
@@ -211,7 +222,7 @@ onBeforeUnmount(stopDrag);
                 <section v-if="tipsOpen" class="tips-popover">
                   <header class="tips-popover__head">
                     <span>提示</span>
-                    <span>{{ state.tipPoints }} 点</span>
+                    <span>{{ tipsBalance }} 点</span>
                   </header>
                   <ol class="tips-popover__list">
                     <li
@@ -222,7 +233,7 @@ onBeforeUnmount(stopDrag);
                         class="tips-popover__item"
                         type="button"
                         :disabled="
-                          isTipUnlocked(tipId(index)) || state.tipPoints < 1
+                          isTipUnlocked(tipId(index)) || tipsBalance < 1
                         "
                         @click="unlockSelectedTip(index)"
                       >
@@ -231,7 +242,7 @@ onBeforeUnmount(stopDrag);
                           tip
                         }}</span>
                         <span v-else class="tips-popover__locked">
-                          {{ state.tipPoints > 0 ? "1 点解锁" : "点数不足" }}
+                          {{ tipsBalance > 0 ? "1 点解锁" : "点数不足" }}
                         </span>
                       </button>
                     </li>

@@ -45,7 +45,6 @@ function createDefaultState() {
     completedFolders: [],
     visitedFolders: [],
     discoveredClues: [],
-    tipPoints: 0,
     unreadMessages: 0,
     // 队伍级 tips（服务端权威数据，不持久化）：余额与今日累积，供顶栏与求提示面板共用
     teamTips: {
@@ -116,10 +115,6 @@ function loadState() {
       discoveredClues: Array.isArray(saved.discoveredClues)
         ? saved.discoveredClues
         : [],
-      tipPoints:
-        Number.isInteger(saved.tipPoints) && saved.tipPoints >= 0
-          ? saved.tipPoints
-          : fallback.tipPoints,
       unreadMessages:
         Number.isInteger(saved.unreadMessages) && saved.unreadMessages >= 0
           ? saved.unreadMessages
@@ -153,7 +148,6 @@ watch(
         completedFolders: value.completedFolders,
         visitedFolders: value.visitedFolders,
         discoveredClues: value.discoveredClues,
-        tipPoints: value.tipPoints,
         unreadMessages: value.unreadMessages,
         unlockedTips: value.unlockedTips,
         board: value.board,
@@ -310,11 +304,12 @@ function isTipUnlocked(tipId) {
   return state.unlockedTips.includes(tipId);
 }
 
-// 消耗 1 点提示点解锁一条提示；已解锁或点数不足时返回 false。
+// 解锁一条提示：只记录本地已解锁（服务端暂无静态提示的扣点接口，点击不做任何后端交互）。
+// 门槛读队伍余额 state.teamTips.balance（由 /tips/balance 轮询维护），但只读不改：
+// 解锁不会扣减这个数字，真正扣费等后端接口就绪后再接。
 function unlockTip(tipId) {
-  if (isTipUnlocked(tipId) || state.tipPoints < 1) return false;
+  if (isTipUnlocked(tipId) || state.teamTips.balance < 1) return false;
 
-  state.tipPoints -= 1;
   state.unlockedTips.push(tipId);
   return true;
 }
