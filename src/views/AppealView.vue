@@ -337,6 +337,9 @@ const STATUS_POLL_MS = 30000;
 let timer = null;
 let clearTimer = null;
 let lastFingerprint = "";
+// 组件是否已卸载：onMounted 里的 refreshAll 可能还没回来用户就离开了，
+// 那条续体不能再往已卸载的组件上注册 interval / 监听器（否则永远清不掉）。
+let disposed = false;
 
 function fingerprint(value) {
   if (!value) return "";
@@ -357,7 +360,7 @@ function fingerprint(value) {
 
 async function pollStatus() {
   const next = await loadStatus();
-  if (!next) return;
+  if (disposed || !next) return;
   const current = fingerprint(next);
   if (lastFingerprint && current !== lastFingerprint) {
     setMessage("info", "账号处罚状态已更新。");
@@ -377,6 +380,8 @@ function handleVisibilityChange() {
 
 onMounted(async () => {
   await refreshAll();
+  // 请求期间用户已经离开：这时再注册的 interval / 监听器不会再有机会被清理
+  if (disposed) return;
   lastFingerprint = fingerprint(status.value);
   timer = window.setInterval(() => {
     if (!document.hidden) pollStatus();
@@ -385,6 +390,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  disposed = true;
   if (timer !== null) {
     window.clearInterval(timer);
     timer = null;
