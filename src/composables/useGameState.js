@@ -635,7 +635,7 @@ async function refreshUnreadSummary() {
 
   try {
     const response = await messageApi.getMailsSummary();
-    state.unreadMessages = Number(response?.data?.threads ?? 0) || 0;
+    state.unreadMessages = Number(response?.data?.total ?? 0) || 0;
     return { ok: true, total: state.unreadMessages };
   } catch {
     return { ok: false };
