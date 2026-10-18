@@ -364,8 +364,14 @@ async function pollStatus() {
   const current = fingerprint(next);
   if (lastFingerprint && current !== lastFingerprint) {
     setMessage("info", "账号处罚状态已更新。");
+    // 链请求也可能很慢：每一段 await 之后都要重新确认组件还在，
+    // 否则卸载后的续体会在已销毁的组件上再排一个 6 秒的 clearTimer。
     await loadChain("account");
-    if (teamAppeal.value) await loadChain("team");
+    if (disposed) return;
+    if (teamAppeal.value) {
+      await loadChain("team");
+      if (disposed) return;
+    }
     // 让全站门禁（禁言隐藏发信入口 / 封禁跳转）跟上
     refreshAccountStatus();
     window.clearTimeout(clearTimer);
