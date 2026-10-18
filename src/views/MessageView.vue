@@ -171,7 +171,16 @@ const readOnlyHint = computed(() => {
     : "这封邮件不可回复（如官方公告）；如需联系工作人员，请使用「写信」。";
 });
 // 写信收件人选择「请求提示」时，撰写页显示求提示面板。
-const isHintCompose = computed(() => composeTarget.value === HINT_TARGET);
+// 必须同时满足：当前就在写信页、不是回复、收件人选的是「请求提示」。
+// 只看 composeTarget 的话，选了求提示再切回收信或去回复邮件时它仍是 "hint"：
+// 回复模式下收件人下拉已隐藏，正文区却被求提示面板顶替，邮件根本回不了；
+// 而且 hintPollingWanted 会跟着一直为 true，回到收信后仍在轮询提示历史。
+const isHintCompose = computed(
+  () =>
+    activeTab.value === "compose" &&
+    !composeReplyTo.value &&
+    composeTarget.value === HINT_TARGET,
+);
 
 // ---------- 求提示的派生状态（口径见 api-10 §10.12） ----------
 

@@ -620,6 +620,9 @@ async function dissolveTeam() {
 
 // ---------- 站内信（未读角标） ----------
 
+// 未读汇总请求代号：轮询、页面切换、标记已读后都会触发，只接受最新一次的结果。
+let unreadRequestGeneration = 0;
+
 // 刷新未读角标（GET /api/msg/mails/summary），把「有未读的对话数」写入全局状态供顶栏与桌面展示。
 // 失败时静默处理，不影响页面主流程。
 async function refreshUnreadSummary() {
@@ -628,14 +631,28 @@ async function refreshUnreadSummary() {
     return { ok: false };
   }
 
+  // 记录发起时的账号与请求代号：请求期间可能登出或切换账号（身份 watcher 会把角标清零），
+  // 迟到的响应属于上一个账号或更早的一次请求，直接丢弃，不能覆盖当前状态。
+  const accountKey = currentAccountKey();
+  const requestId = ++unreadRequestGeneration;
+
   try {
     const response = await messageApi.getMailsSummary();
+    if (
+      requestId !== unreadRequestGeneration ||
+      accountKey !== currentAccountKey()
+    ) {
+      return { ok: false, stale: true };
+    }
     state.unreadMessages = Number(response?.data?.total ?? 0) || 0;
     return { ok: true, total: state.unreadMessages };
   } catch {
     return { ok: false };
   }
 }
+
+// 余额请求代号：轮询、进入档案、确认求提示后都会触发，只接受最新一次的结果。
+let tipsRequestGeneration = 0;
 
 // 刷新队伍 tips 余额（GET /api/tips/balance），供顶栏与求提示面板共用。
 // 无队伍是正常空值（200 + teamId:null + 零值），不算错误；失败时静默，保持上一次的数字。
@@ -645,8 +662,19 @@ async function refreshTeamTips() {
     return { ok: false };
   }
 
+  // 同上：账号切换后迟到的响应会把上一个账号的队伍余额 / hasTeam 写回来，
+  // 让无队伍的账号看起来还在队里（还能去求提示）；更早的请求也不该覆盖更新的余额。
+  const accountKey = currentAccountKey();
+  const requestId = ++tipsRequestGeneration;
+
   try {
     const response = await tipsApi.getBalance();
+    if (
+      requestId !== tipsRequestGeneration ||
+      accountKey !== currentAccountKey()
+    ) {
+      return { ok: false, stale: true };
+    }
     const data = response?.data ?? {};
     state.teamTips = {
       loaded: true,
