@@ -429,11 +429,17 @@ function switchChannel(channel) {
 
 // ---------- 邮件列表 ----------
 
+// 列表请求代号：切频道 / 切未读筛选、关闭详情后的刷新、可见性补刷、加载更多都可能重叠。
+// 只接受最新一次请求的结果——否则旧频道的慢响应会覆盖新筛选的行与游标，
+// 旧的 append 还会把别的频道的数据追加到当前列表后面。
+let mailsRequestGeneration = 0;
+
 async function loadMails({ append = false } = {}) {
   if (!isLoggedIn.value) {
     return;
   }
 
+  const requestId = ++mailsRequestGeneration;
   mailsLoading.value = true;
   try {
     const response = await messageApi.getMails({
@@ -444,6 +450,11 @@ async function loadMails({ append = false } = {}) {
       // 频道筛选也交给服务端（空值 = 不限频道）
       channel: channelFilter.value || undefined,
     });
+    // 期间又发起了新请求（换了筛选 / 又点了一次加载更多）：本次结果整体作废
+    if (requestId !== mailsRequestGeneration) {
+      return;
+    }
+
     const data = response?.data ?? {};
     const items = Array.isArray(data.items) ? data.items : [];
 
@@ -451,13 +462,27 @@ async function loadMails({ append = false } = {}) {
     mailsCursor.value = data.nextCursor ?? null;
     mailsHasMore.value = Boolean(data.hasMore);
   } catch (error) {
+    // 过期请求的错误同样不提示，避免旧筛选的失败盖住当前页面的正常状态
+    if (requestId !== mailsRequestGeneration) {
+      return;
+    }
     setNotice("error", errorText(error, "加载邮件列表失败。"));
   } finally {
-    mailsLoading.value = false;
+    // loading 归最新一次请求管，旧请求不要替它关掉
+    if (requestId === mailsRequestGeneration) {
+      mailsLoading.value = false;
+    }
   }
 }
 
 // ---------- 邮件详情 ----------
+
+// 详情请求代号：打开 A 还没回来就切到 B（或直接关闭）时，A 的响应不能再写内容 / 报错 / 关 loading。
+let detailRequestGeneration = 0;
+
+function isCurrentDetail(mailId, requestId) {
+  return requestId === detailRequestGeneration && mailId === activeMailId.value;
+}
 
 // 打开一封邮件：id 传列表里的 mailId，详情返回这一封 + 它回复过的链。
 async function openMail(mailId) {
@@ -466,12 +491,20 @@ async function openMail(mailId) {
   messages.value = [];
   clearNotice();
 
-  await fetchMail();
-  await markActiveRead();
+  // 只有这次选择仍然有效时才继续标记已读：
+  // 否则 A 的迟到响应会拿 B 的 activeMailId 去调 markRead，把 B 标成已读。
+  const loaded = await fetchMail(mailId);
+  if (!loaded) {
+    return;
+  }
+  await markActiveRead(mailId);
 }
 
 // 关闭邮件详情，回到收信列表；顺带刷新未读角标。
 function closeMail() {
+  // 作废在途的详情请求：关掉详情后迟到的响应不能再把 mail / messages 填回去
+  detailRequestGeneration += 1;
+  messagesLoading.value = false;
   activeMailId.value = null;
   mail.value = null;
   messages.value = [];
@@ -480,15 +513,21 @@ function closeMail() {
 }
 
 // 详情 = 打开的那封 + 它回复过的链（mail + replyChain），无增量；拉一次即可。
-async function fetchMail() {
-  const mailId = activeMailId.value;
+// mailId 默认取当前打开的那封；返回 true 表示这份结果仍是当前选择（已写入状态）。
+async function fetchMail(mailId = activeMailId.value) {
   if (!mailId) {
-    return;
+    return false;
   }
 
+  const requestId = ++detailRequestGeneration;
   messagesLoading.value = true;
   try {
     const response = await messageApi.getMail(mailId);
+    // 期间已经打开了别的邮件（或关掉了详情）：本次响应整体作废
+    if (!isCurrentDetail(mailId, requestId)) {
+      return false;
+    }
+
     const data = response?.data ?? {};
     mail.value = data.mail ?? null;
 
@@ -500,23 +539,36 @@ async function fetchMail() {
       messages.value.push(mail.value);
     }
     messages.value.push(...chain);
+    return true;
   } catch (error) {
+    // 过期请求的错误同样不提示：那是上一封邮件的事
+    if (!isCurrentDetail(mailId, requestId)) {
+      return false;
+    }
     setNotice("error", errorText(error, "加载邮件内容失败。"));
+    return false;
   } finally {
-    messagesLoading.value = false;
+    // loading 归最新一次请求管
+    if (requestId === detailRequestGeneration) {
+      messagesLoading.value = false;
+    }
   }
 }
 
-// 逐封已读：只标记当前打开的这一封（unread=1 时）；幂等，清掉自己即可，不影响同链其它记录。
-async function markActiveRead() {
-  const mailId = activeMailId.value;
-  if (!mailId || Number(mail.value?.unread) !== 1) {
+// 逐封已读：只标记本次打开的这一封（unread=1 时）；幂等，清掉自己即可，不影响同链其它记录。
+// mailId 由调用方显式传入，不在 await 之后读 activeMailId —— 那时它可能已经指向别的邮件了。
+async function markActiveRead(mailId) {
+  if (!mailId || mail.value?.mailId !== mailId) {
+    return;
+  }
+  if (Number(mail.value?.unread) !== 1) {
     return;
   }
 
   try {
     await messageApi.markRead(mailId);
-    if (mail.value) {
+    // 标记期间可能已切到别的邮件：只清这一封自己的标记，别去动当前显示那封的 unread
+    if (mail.value?.mailId === mailId) {
       mail.value.unread = 0;
     }
     for (const item of mails.value) {
@@ -526,6 +578,10 @@ async function markActiveRead() {
     }
     refreshUnreadSummary();
   } catch (error) {
+    // 已经切走就不再提示上一封的错误
+    if (mail.value?.mailId !== mailId) {
+      return;
+    }
     setNotice("error", errorText(error, "标记已读失败。"));
   }
 }
