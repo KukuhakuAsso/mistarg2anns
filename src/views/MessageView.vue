@@ -64,6 +64,8 @@ const mails = ref([]);
 const mailsLoading = ref(false);
 const mailsCursor = ref(null);
 const mailsHasMore = ref(false);
+// 每封邮件的入场序号（按到达批次从 0 起）：追加新批次时只给新邮件编号，旧行保持原有节奏。
+const mailsEnterIndex = ref(new Map());
 const MAILS_PAGE_SIZE = 20;
 
 // 当前打开的邮件对话：activeMailId 用列表里的 mailId，服务端会归一到所在对话的根。
@@ -238,6 +240,11 @@ const emptyHint = computed(() =>
     ? "已加载的邮件中没有符合条件的记录；可点「加载更早的邮件」继续查找。"
     : "暂无邮件记录。",
 );
+
+// 邮件行的入场序号：同一批新邮件从 0 逐封错开，翻页追加不会因下标变大而挤在一起。
+function rowEnterIndex(item) {
+  return mailsEnterIndex.value.get(item.mailId) ?? 0;
+}
 
 // 写信可选收件人：官方（问题反馈）与请求提示。
 const composeRecipients = [
@@ -458,7 +465,12 @@ async function loadMails({ append = false } = {}) {
     const data = response?.data ?? {};
     const items = Array.isArray(data.items) ? data.items : [];
 
+    // 新邮件按本批到达顺序从 0 编号；旧邮件沿用各自原有编号，不会被翻页改动节奏。
+    const enterIndex = new Map(append ? mailsEnterIndex.value : []);
+    items.forEach((item, index) => enterIndex.set(item.mailId, index));
+
     mails.value = append ? [...mails.value, ...items] : items;
+    mailsEnterIndex.value = enterIndex;
     mailsCursor.value = data.nextCursor ?? null;
     mailsHasMore.value = Boolean(data.hasMore);
   } catch (error) {
@@ -1226,56 +1238,65 @@ onBeforeUnmount(() => {
         </button>
         <p v-else class="mail-nav__locked">写信已关闭（禁言中）</p>
 
-        <p class="mail-nav__group">收信</p>
+        <div class="mail-nav__section">
+          <p class="mail-nav__group">收信</p>
+          <div class="mail-nav__items">
+            <button
+              v-for="item in INBOX_VIEWS"
+              :key="item.value"
+              type="button"
+              :class="[
+                'mail-nav__item',
+                { 'is-active': activeView === item.value },
+              ]"
+              @click="switchView(item.value)"
+            >
+              <span>{{ item.label }}</span>
+              <span
+                v-if="item.value === 'unread' && state.unreadMessages > 0"
+                class="unread-badge"
+              >
+                {{ state.unreadMessages }}
+              </span>
+            </button>
+          </div>
+        </div>
 
-        <button
-          v-for="item in INBOX_VIEWS"
-          :key="item.value"
-          type="button"
-          :class="[
-            'mail-nav__item',
-            { 'is-active': activeView === item.value },
-          ]"
-          @click="switchView(item.value)"
-        >
-          <span>{{ item.label }}</span>
-          <span
-            v-if="item.value === 'unread' && state.unreadMessages > 0"
-            class="unread-badge"
-          >
-            {{ state.unreadMessages }}
-          </span>
-        </button>
+        <div class="mail-nav__section">
+          <p class="mail-nav__group">频道</p>
+          <div class="mail-nav__items">
+            <button
+              v-for="item in CHANNEL_VIEWS"
+              :key="item.value || 'all'"
+              type="button"
+              :class="[
+                'mail-nav__item',
+                { 'is-active': activeChannel === item.value },
+              ]"
+              @click="switchChannel(item.value)"
+            >
+              <span>{{ item.label }}</span>
+            </button>
+          </div>
+        </div>
 
-        <p class="mail-nav__group">频道</p>
-
-        <button
-          v-for="item in CHANNEL_VIEWS"
-          :key="item.value || 'all'"
-          type="button"
-          :class="[
-            'mail-nav__item',
-            { 'is-active': activeChannel === item.value },
-          ]"
-          @click="switchChannel(item.value)"
-        >
-          <span>{{ item.label }}</span>
-        </button>
-
-        <p class="mail-nav__group">来源</p>
-
-        <button
-          v-for="item in SOURCE_VIEWS"
-          :key="item.value || 'all'"
-          type="button"
-          :class="[
-            'mail-nav__item',
-            { 'is-active': activeSource === item.value },
-          ]"
-          @click="switchSource(item.value)"
-        >
-          <span>{{ item.label }}</span>
-        </button>
+        <div class="mail-nav__section">
+          <p class="mail-nav__group">来源</p>
+          <div class="mail-nav__items">
+            <button
+              v-for="item in SOURCE_VIEWS"
+              :key="item.value || 'all'"
+              type="button"
+              :class="[
+                'mail-nav__item',
+                { 'is-active': activeSource === item.value },
+              ]"
+              @click="switchSource(item.value)"
+            >
+              <span>{{ item.label }}</span>
+            </button>
+          </div>
+        </div>
       </aside>
 
       <!-- 右侧邮件区：撰写页或收信面板 -->
@@ -1525,9 +1546,10 @@ onBeforeUnmount(() => {
 
               <div v-else class="letter-list">
                 <article
-                  v-for="message in messages"
+                  v-for="(message, index) in messages"
                   :key="message.mailId"
                   class="letter"
+                  :style="{ '--row-index': String(index) }"
                 >
                   <header class="letter__head">
                     <div class="letter__from">
@@ -1589,6 +1611,7 @@ onBeforeUnmount(() => {
                   'inbox-row--button',
                   { 'is-unread': item.unread > 0 },
                 ]"
+                :style="{ '--row-index': String(rowEnterIndex(item)) }"
                 @click="openMail(item.mailId)"
               >
                 <span class="inbox-sender" :title="senderRoleLabel(item)">{{
@@ -1832,6 +1855,12 @@ onBeforeUnmount(() => {
   border: 1px solid var(--border);
   border-radius: 12px;
   background: color-mix(in srgb, var(--surface) 82%, transparent);
+}
+
+/* 功能分组容器：宽屏时透明掉，按钮仍直接排在单列里；窄屏才变成「标签 + 可换行的一组」。 */
+.mail-nav__section,
+.mail-nav__items {
+  display: contents;
 }
 
 .mail-nav__group {
@@ -2167,13 +2196,47 @@ onBeforeUnmount(() => {
   color: var(--accent);
 }
 
-/* 详情里的频道 / 来源一行 */
+/* 信件抬头信息：发件人 / 频道 / 来源 三列，标签在上、值在下。
+   列优先填充（grid-auto-flow: column）正好让「标签 + 值」两两落进同一列。 */
 .message-detail__meta-group {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin-top: 8px;
+  display: grid;
+  grid-auto-flow: column;
+  grid-template-rows: auto auto;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px 14px;
+  margin-top: 14px;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-alt) 60%, transparent);
+}
+
+.detail-label {
+  color: var(--text-dim);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/* 值：单行省略，长频道名不会把三列撑变形。 */
+.message-detail__meta-group > span:not(.detail-label) {
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.4;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 发件人是这一行里最该先看到的。 */
+.message-detail__meta-group > span:nth-child(2) {
+  font-weight: 600;
+}
+
+/* 第 2、3 列左侧加竖线，把三组信息隔开。 */
+.message-detail__meta-group > span:nth-child(n + 3) {
+  padding-left: 14px;
+  border-left: 1px solid var(--border);
 }
 
 .inbox-more {
@@ -2186,7 +2249,8 @@ onBeforeUnmount(() => {
   flex: 1;
   flex-direction: column;
   min-height: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .inbox-row {
@@ -2228,6 +2292,9 @@ onBeforeUnmount(() => {
   font: inherit;
   text-align: left;
   cursor: pointer;
+  /* 邮件行从右向左浮现；--row-index 是「本批第几封」，每批新邮件都从 0 重新逐封错开。 */
+  animation: mail-slide-in 0.34s cubic-bezier(0.22, 0.61, 0.36, 1) backwards;
+  animation-delay: calc(var(--row-index, 0) * 35ms);
 }
 
 .inbox-row--button:hover {
@@ -2313,7 +2380,8 @@ onBeforeUnmount(() => {
   min-height: 0;
   padding: 20px 24px 24px;
   background: color-mix(in srgb, var(--surface) 76%, transparent);
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 /* ---------- 信件详情：邮件式版式 ---------- */
@@ -2342,6 +2410,9 @@ onBeforeUnmount(() => {
   gap: 12px;
   padding-bottom: 18px;
   border-bottom: 1px dashed var(--border);
+  /* 每封信同样自右向左浮现，--row-index 由回复链顺序提供。 */
+  animation: mail-slide-in 0.34s cubic-bezier(0.22, 0.61, 0.36, 1)
+    calc(var(--row-index, 0) * 35ms) backwards;
 }
 
 .letter:last-child {
@@ -2534,20 +2605,64 @@ onBeforeUnmount(() => {
     padding: 10px 12px;
   }
 
-  /* 窄屏下功能列改为横向排列在邮件区上方。 */
+  /* 窄屏：功能列转到邮件区上方铺满整行，内部按功能分组换行。 */
   .mail-layout {
     flex-direction: column;
   }
 
   .mail-nav {
-    flex-direction: row;
-    flex-wrap: wrap;
     width: auto;
+    gap: 8px;
+    padding: 12px;
+  }
+
+  /* 窄屏：每个功能分组独立成行，标签占左侧一列，按钮在右侧换行，不会跨分类混排。 */
+  .mail-nav__section {
+    display: grid;
+    grid-template-columns: 34px minmax(0, 1fr);
+    align-items: start;
+    gap: 8px;
+  }
+
+  .mail-nav__items {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
   }
 
   .mail-nav__group {
     margin: 0;
-    align-self: center;
+    padding: 8px 0 0;
+    letter-spacing: 0.06em;
+  }
+
+  .mail-nav__item {
+    padding: 7px 10px;
+  }
+
+  /* 「写信」是独立按钮，不跟着列宽拉满，底色只贴合文字。 */
+  .mail-nav > .mail-nav__item {
+    align-self: flex-start;
+  }
+}
+
+/* 邮件入场：自右向左滑入并淡入。列表行与详情里的信件共用同一条曲线。 */
+@keyframes mail-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(28px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .inbox-row--button,
+  .letter {
+    animation: none;
   }
 }
 </style>
