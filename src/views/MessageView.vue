@@ -2394,6 +2394,8 @@ onBeforeUnmount(() => {
   color: var(--text);
   font-size: 20px;
   line-height: 1.4;
+  /* 长串无空格的标题（URL / 编号）必须折行：详情容器已裁掉横向溢出，不折行就看不全。 */
+  overflow-wrap: anywhere;
 }
 
 /* 多条消息按时间顺序纵向排列，每条是一封独立信件。 */
