@@ -335,7 +335,7 @@ function handleTransfer(member) {
       </div>
 
       <!-- 加载中 -->
-      <div v-else-if="loading" class="page-shell__column">
+      <div v-else-if="loading" class="page-shell__column page-shell__column--static">
         <section class="panel-card">
           <p class="helper-text">正在加载队伍信息...</p>
         </section>
@@ -362,7 +362,7 @@ function handleTransfer(member) {
           </div>
         </section>
 
-        <section class="panel-card">
+        <section class="panel-card panel-card--static">
           <p class="panel-card__label">创建队伍</p>
           <div class="team-action-group">
             <input
@@ -401,7 +401,7 @@ function handleTransfer(member) {
           </div>
         </section>
 
-        <section class="panel-card">
+        <section class="panel-card panel-card--static">
           <p class="panel-card__label">加入队伍</p>
           <div class="team-action-group">
             <input
@@ -877,5 +877,148 @@ textarea {
 .team-notice {
   width: min(700px, 100%);
   margin: 0 auto;
+}
+
+/* ---------- 入场动效：页面既有元素自下向上浮现（不新增任何装饰节点） ---------- */
+
+@keyframes team-rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 卡片内部与列表行位移更小，避免和卡片本身的浮起叠加得过于夸张。 */
+@keyframes team-rise-soft {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 页头与用户导航保持静态（与其他功能页一致），只有提示条参与浮现。 */
+.banned-banner,
+.muted-banner,
+.team-notice {
+  animation: team-rise-in 0.42s cubic-bezier(0.22, 0.61, 0.36, 1) backwards;
+}
+
+.banned-banner,
+.muted-banner {
+  animation-delay: 0.04s;
+}
+
+.team-notice {
+  animation-delay: 0.16s;
+}
+
+/* 内容列按顺序逐张浮起；--rise-delay 会向下继承，卡片内部沿用同一条时间轴。 */
+.page-shell__column > * {
+  --rise-delay: 0.06s;
+  animation: team-rise-in 0.44s cubic-bezier(0.22, 0.61, 0.36, 1)
+    var(--rise-delay) backwards;
+}
+
+.page-shell__column > :nth-child(2) {
+  --rise-delay: 0.12s;
+}
+
+.page-shell__column > :nth-child(3) {
+  --rise-delay: 0.18s;
+}
+
+.page-shell__column > :nth-child(4) {
+  --rise-delay: 0.24s;
+}
+
+.page-shell__column > :nth-child(5) {
+  --rise-delay: 0.3s;
+}
+
+.page-shell__column > :nth-child(6) {
+  --rise-delay: 0.36s;
+}
+
+/* 卡片内容：在所属卡片起步后再浮起，保证先后关系清晰。 */
+.panel-card > * {
+  animation: team-rise-soft 0.34s cubic-bezier(0.22, 0.61, 0.36, 1)
+    calc(var(--rise-delay, 0s) + 0.12s) backwards;
+}
+
+.panel-card > :nth-child(2) {
+  animation-delay: calc(var(--rise-delay, 0s) + 0.16s);
+}
+
+.panel-card > :nth-child(3) {
+  animation-delay: calc(var(--rise-delay, 0s) + 0.2s);
+}
+
+.panel-card > :nth-child(4) {
+  animation-delay: calc(var(--rise-delay, 0s) + 0.24s);
+}
+
+/* 建队 / 加入队伍两块表单直接呈现，不做上浮：它们需要立刻可填写。 */
+.page-shell__column > .panel-card--static,
+.panel-card--static > * {
+  animation: none;
+}
+
+/* 加载占位同理：只是等待提示，不要跟着浮现，加载完成后的正式内容才走入场动效。 */
+.page-shell__column--static * {
+  animation: none;
+}
+
+/* 成员 / 加入申请逐行浮起；超出六行后沿用同一档延迟，避免延迟无限增长。 */
+.member-list li,
+.application-item {
+  animation: team-rise-soft 0.32s cubic-bezier(0.22, 0.61, 0.36, 1)
+    calc(var(--rise-delay, 0s) + 0.26s) backwards;
+}
+
+.member-list li:nth-child(2),
+.application-item:nth-child(2) {
+  animation-delay: calc(var(--rise-delay, 0s) + 0.305s);
+}
+
+.member-list li:nth-child(3),
+.application-item:nth-child(3) {
+  animation-delay: calc(var(--rise-delay, 0s) + 0.35s);
+}
+
+.member-list li:nth-child(4),
+.application-item:nth-child(4) {
+  animation-delay: calc(var(--rise-delay, 0s) + 0.395s);
+}
+
+.member-list li:nth-child(5),
+.application-item:nth-child(5) {
+  animation-delay: calc(var(--rise-delay, 0s) + 0.44s);
+}
+
+.member-list li:nth-child(n + 6),
+.application-item:nth-child(n + 6) {
+  animation-delay: calc(var(--rise-delay, 0s) + 0.485s);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .banned-banner,
+  .muted-banner,
+  .team-notice,
+  .page-shell__column > *,
+  .panel-card > *,
+  .member-list li,
+  .application-item {
+    animation: none;
+  }
 }
 </style>
