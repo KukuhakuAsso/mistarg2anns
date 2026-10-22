@@ -1,7 +1,7 @@
 // 队名规则（与后端 validateTeamName 对齐）：
 // 1–32 个字符，只允许各国文字 / 数字 / 空格与常见 ASCII 标点，禁止 emoji、不可见字符与组合音标。
 // 与用户名规则的差异：@ 与 M2xxxxxx 编号形态在这里是允许的，那两条限制只对用户名生效。
-const ALLOWED_NAME_PATTERN = /^[\p{L}\p{N}\p{Zs}_\-.+&'()\[\]!#$%*=?^{|}~@]+$/u;
+const ALLOWED_NAME_PATTERN = /^[\p{L}\p{N}\p{Zs}_\-.+&'()[\]!#$%*=?^{|}~@]+$/u;
 const EMOJI_PATTERN = /\p{Extended_Pictographic}/u;
 const INVISIBLE_PATTERN = /\p{C}/u; // 控制字符、零宽字符、双向文本控制符等
 const COMBINING_PATTERN = /\p{M}/u; // 组合音标
