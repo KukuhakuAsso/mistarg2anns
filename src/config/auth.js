@@ -79,15 +79,19 @@ export async function loginWithPassword({ type, identifier, password }) {
       // 400 时后端在 detail.fields 里写明不合规的具体原因，优先展示它。
       throw new Error(
         extractFieldMessages(error).join("；") || "登录信息格式不正确。",
+        { cause: error },
       );
     }
 
     if (code === "E_AUTH") {
-      throw new Error("账号或密码错误。");
+      throw new Error("账号或密码错误。", { cause: error });
     }
 
     if (code === "E_BANNED") {
-      throw new Error(detail?.reason ? `账号已被封禁：${detail.reason}` : "账号已被封禁。");
+      throw new Error(
+        detail?.reason ? `账号已被封禁：${detail.reason}` : "账号已被封禁。",
+        { cause: error },
+      );
     }
 
     if (code === "E_QUOTA") {
@@ -96,9 +100,10 @@ export async function loginWithPassword({ type, identifier, password }) {
         retryAfterSec > 0
           ? `登录过于频繁，请等待 ${waitText} 后再试。`
           : "登录过于频繁，请稍后再试。",
+        { cause: error },
       );
     }
 
-    throw new Error(extractErrorMessage(error, "登录失败。"));
+    throw new Error(extractErrorMessage(error, "登录失败。"), { cause: error });
   }
 }
