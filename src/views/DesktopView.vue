@@ -5,12 +5,19 @@ import DesktopAppItem from "@/components/DesktopAppItem.vue";
 import FolderItem from "@/components/FolderItem.vue";
 import UserPanel from "@/components/UserPanel.vue";
 import { useGameState } from "@/composables/useGameState";
+import { usePuzzleMap } from "@/composables/usePuzzleMap";
 import { DESKTOP_APPS, createDesktopMenu } from "@/config/desktop";
-import { MAIN_FOLDERS } from "@/config/folders";
 
 const emit = defineEmits(["open", "open-page"]);
 
-const { state, folderStates, completedCount, markFolderVisited } = useGameState();
+const { state, markFolderVisited } = useGameState();
+// 档案（stage1 目录）完全由 GET /api/puzzle/map 决定：未解锁项后端不返回，前端不做本地推算。
+const { folders, progress, load, loading, error, loaded } = usePuzzleMap();
+// 未登录时不拉取（否则会得到一串 401）；登录后由 App.vue 统一拉取，
+// 这里只在「回到桌面时还没有数据」的场合补一次（例如刚加入队伍拿到取题资格）。
+if (state.user.currentUser && !loaded.value) {
+    load();
+}
 const showUserPanel = ref(false);
 const userPanelPosition = ref({ x: 0, y: 0 });
 const activeMenu = ref({
@@ -25,8 +32,8 @@ const activeMenu = ref({
 const menuMap = computed(() =>
     createDesktopMenu({
         unreadMessages: state.unreadMessages ?? 0,
-        completedCount: completedCount.value,
-        folderTotal: MAIN_FOLDERS.length,
+        completedCount: progress.value.solvedCount,
+        folderTotal: progress.value.totalPuzzles,
     }),
 );
 // 桌面卡片数据，根据应用和文件夹状态动态生成。
@@ -39,27 +46,16 @@ const desktopCards = computed(() => [
         accent: app.accent,
         description: app.description,
     })),
-    ...folderStates.value.map((folder) => ({
+    ...folders.value.map((folder) => ({
         id: folder.id,
         kind: "folder",
         name: folder.name,
         icon: "folder",
         accent: folder.completed ? "amber" : "slate",
-        description: folder.unlocked ? `${folder.puzzleCount} 题 · ${folder.clueCount} 线索` : hintOf(folder),
+        description: folder.subtitle,
         folder,
     })),
 ]);
-// 根据文件夹状态生成提示信息的函数。
-function hintOf(folder) {
-    if (folder.unlocked) return "";
-    if (folder.hidden) {
-        return `完成全部 ${MAIN_FOLDERS.length} 份档案后解锁`;
-    }
-
-    const index = MAIN_FOLDERS.findIndex((item) => item.id === folder.id);
-    const previous = MAIN_FOLDERS[index - 1];
-    return previous ? `完成「${previous.name}」后解锁` : "可直接进入";
-}
 // 处理文件夹打开事件。
 function handleFolderOpen(folderId) {
     markFolderVisited(folderId);
@@ -130,15 +126,17 @@ function handleUserMenuClick(item) {
 
 <template>
     <section class="desktop">
-        <!-- <header class="desktop__head">
-            <div>
-                <p class="desktop__eyebrow">工作台</p>
-                <h1 class="desktop__title">档案终端</h1>
-            </div>
-            <span class="desktop__status">
-                已解锁 {{ unlockedCount }}/{{ folderStates.length }}
-            </span>
-        </header> -->
+        <p v-if="loading" class="desktop__notice">正在加载题目结构…</p>
+        <p v-else-if="error && state.user.currentUser" class="desktop__notice desktop__notice--error">
+            {{ error }}
+            <button
+                class="bar-btn"
+                type="button"
+                @click="load({ force: true })"
+            >
+                重试
+            </button>
+        </p>
 
         <div class="desktop__launcher">
             <ul class="desktop__grid">
@@ -157,7 +155,6 @@ function handleUserMenuClick(item) {
                     <FolderItem
                         v-else
                         :folder="item.folder"
-                        :hint="hintOf(item.folder)"
                         class="desktop-card"
                         @open="handleFolderOpen($event)"
                     />
@@ -175,19 +172,6 @@ function handleUserMenuClick(item) {
             @item-click="handleUserMenuClick"
         />
 
-        <!-- <section class="desktop__archive-panel">
-            <header class="desktop__section-head">
-                <h2>档案柜</h2>
-                <span>已完成 {{ completedCount }}/{{ MAIN_FOLDERS.length }}</span>
-            </header>
-
-            <p class="desktop__desc">
-                共 {{ folderStates.length }} 份档案，按进度依次解锁。
-                已解锁 {{ unlockedCount }} 份，已完成 {{ completedCount }} 份。
-            </p>
-
-            
-        </section> -->
     </section>
 </template>
 
@@ -198,6 +182,23 @@ function handleUserMenuClick(item) {
     gap: 22px;
     height: 100%;
     min-height: 0;
+}
+
+.desktop__notice {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-size: 13px;
+    color: var(--text-dim);
+}
+
+.desktop__notice--error {
+    color: var(--text);
+    border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
 }
 
 .desktop__head {

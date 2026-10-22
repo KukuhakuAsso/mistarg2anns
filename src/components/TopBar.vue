@@ -3,13 +3,9 @@
 import { computed } from "vue";
 import AppIcon from "@/components/AppIcon.vue";
 import { useGameState } from "@/composables/useGameState";
+import { usePuzzleMap } from "@/composables/usePuzzleMap";
 import { useTheme } from "@/composables/useTheme";
-import { FOLDERS, MAIN_FOLDERS } from "@/config/folders";
-import {
-  apiConfig,
-  apiEnvironment,
-  setApiEnvironment,
-} from "@/config/api";
+import { apiConfig, apiEnvironment, setApiEnvironment } from "@/config/api";
 
 defineProps({
   inFolder: { type: Boolean, default: false },
@@ -17,8 +13,8 @@ defineProps({
 
 const emit = defineEmits(["go-desktop"]);
 
-const { state, unlockedCount, completedCount, toggleCluePanel, resetProgress } =
-  useGameState();
+const { state, toggleCluePanel, resetProgress } = useGameState();
+const { progress } = usePuzzleMap();
 const { themeIcon, themeLabel, cycleTheme } = useTheme();
 const isTestEnvironment = computed(() => apiEnvironment.value === "test");
 const testEnvironmentAvailable = Boolean(apiConfig.testTicket);
@@ -48,7 +44,7 @@ const teamTipsTitle = computed(() => {
 
 function handleReset() {
   const confirmed = window.confirm(
-    "确定要重置进度吗？已解锁的档案与线索板排布都会被清空。",
+    "确定要清空本地记录吗？线索板排布与浏览标记会被清空；解题进度由服务端保存，不受影响。",
   );
   if (confirmed) resetProgress();
 }
@@ -89,9 +85,8 @@ function toggleApiEnvironment() {
     </div>
 
     <div class="top-bar__group">
-      <span class="top-bar__stat">
-        解锁 {{ unlockedCount }}/{{ FOLDERS.length }} · 完成
-        {{ completedCount }}/{{ MAIN_FOLDERS.length }}
+      <span class="top-bar__stat" title="已解出题数 / 当前可见题数">
+        解出 {{ progress.solvedCount }}/{{ progress.totalPuzzles }}
       </span>
       <span class="top-bar__stat" :title="teamTipsTitle">
         {{ teamTipsText }}
@@ -124,7 +119,7 @@ function toggleApiEnvironment() {
       <button
         class="bar-btn bar-btn--danger"
         type="button"
-        title="清空进度与线索板"
+        title="清空本地记录与线索板"
         @click="handleReset()"
       >
         <AppIcon name="reset" />

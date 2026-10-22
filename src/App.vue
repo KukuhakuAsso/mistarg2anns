@@ -17,7 +17,7 @@ import TimelineView from "@/views/TimelineView.vue";
 import ChangePasswordView from "@/views/ChangePasswordView.vue";
 import ForgotPasswordView from "@/views/ForgotPasswordView.vue";
 import AppealView from "@/views/AppealView.vue";
-import { FOLDER_BY_ID } from "@/config/folders";
+import { usePuzzleMap } from "@/composables/usePuzzleMap";
 import { FEATURE_ROUTES, router } from "@/router";
 import { useGameState } from "@/composables/useGameState";
 
@@ -29,6 +29,13 @@ const {
     markAccountBanned,
     forceLogout,
 } = useGameState();
+// 题目结构（stage1 目录 → stage2 题目）是服务端权威数据，档案页的路由参数要在这里解出。
+const {
+    folders: puzzleFolders,
+    load: loadPuzzleMap,
+    reset: resetPuzzleMap,
+    loading: mapLoading,
+} = usePuzzleMap();
 // 当前路由对象（hash 路由维护的全局响应式状态），下面的派生判断都基于它。
 const currentRoute = computed(() => router.currentRoute);
 
@@ -89,12 +96,19 @@ watch(
             refreshUnreadSummary();
             refreshTeamTips();
             refreshAccountStatus();
+            loadPuzzleMap();
+        } else {
+            // 登出 / 换账号：清掉上一个账号的解锁进度
+            resetPuzzleMap();
         }
     },
 );
 
 onMounted(() => {
     refreshBadgeIfLoggedIn();
+    if (state.user.currentUser) {
+        loadPuzzleMap();
+    }
     unreadTimer = window.setInterval(() => {
         if (!document.hidden) {
             refreshBadgeIfLoggedIn();
@@ -145,11 +159,21 @@ function handleSessionLost() {
     forceLogout("登录状态已失效，请重新登录。");
 }
 
-// 当前打开的档案：仅 #/folder/:id 命中，未知 id 视为未打开。
+// 当前打开的档案：仅 #/folder/:id 命中，未知 id（未解锁 / 已删除）视为未打开。
 const activeFolder = computed(() =>
     currentRoute.value.name === "folder"
-        ? FOLDER_BY_ID.get(currentRoute.value.params.folderId) ?? null
+        ? puzzleFolders.value.find(
+              (folder) => folder.id === currentRoute.value.params.folderId,
+          ) ?? null
         : null,
+);
+
+// 路由指向档案但 map 还在路上：先显示加载态，避免闪一下桌面再跳回来。
+const folderPending = computed(
+    () =>
+        currentRoute.value.name === "folder" &&
+        !activeFolder.value &&
+        mapLoading.value,
 );
 
 // 当前功能页名（模板据此挑选视图组件）；只有登记在 router 名单里的才算，其余返回 null 落回桌面。
@@ -231,6 +255,9 @@ function backToDesktop() {
                 <ForgotPasswordView
                     v-else-if="activeFeature === 'forgot'"
                 />
+                <section v-else-if="folderPending" class="app-state">
+                    正在加载题目结构…
+                </section>
                 <DesktopView v-else @open="openFolder" @open-page="openFeature" />
             </main>
 
@@ -262,5 +289,11 @@ function backToDesktop() {
     min-width: 0;
     padding: 24px 28px 32px;
     overflow-y: auto;
+}
+
+.app-state {
+    padding: 24px 4px;
+    font-size: 13px;
+    color: var(--text-dim);
 }
 </style>

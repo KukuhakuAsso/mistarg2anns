@@ -232,3 +232,44 @@ function notifySessionLost() {
 }
 
 export default request;
+
+// 非 JSON 通道（素材 blob、可塑区组件 ESM）也要带同一份鉴权头：
+// 这两类下发同样走取题门禁，只靠 Cookie 拿不到登录态（刷新令牌只挂在 /api/auth 路径上）。
+function getAuthHeaders(extra = {}) {
+  const headers = getApiHeaders(extra);
+  const token = getAccessToken();
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  return headers;
+}
+
+// 带登录态的原始请求层：给「不是 JSON」的通道用（素材二进制、可塑区组件 ESM）。
+//
+// 这些接口同样走取题门禁，但响应体是 JS 代码或二进制，既没有 { ok, data } 信封，
+// 也不能当文本读（blob 会被 text() 破坏），所以不能走 request()。
+// 这里复用同一套令牌与刷新逻辑：401 时先刷新再重试一次，
+// 避免 access token 过期后素材/组件直接失败、而普通接口却自动恢复。
+// 返回原始 Response，由调用方决定 text() / blob()。
+export async function fetchWithAuth(url, options = {}, { retried = false } = {}) {
+  const { headers = {}, ...init } = options;
+  const response = await fetch(url, {
+    ...init,
+    credentials: "include",
+    headers: { ...getAuthHeaders(), ...headers },
+  });
+
+  if (response.status !== 401 || retried) {
+    return response;
+  }
+
+  try {
+    await refreshAccessToken();
+  } catch {
+    // 刷新也救不回来：保持原有 401 响应，由调用方提示；同时通知会话失效
+    notifySessionLost();
+    return response;
+  }
+
+  return fetchWithAuth(url, options, { retried: true });
+}

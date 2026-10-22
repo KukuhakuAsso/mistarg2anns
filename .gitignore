@@ -4,3 +4,5 @@ output/
 .env.local
 .env.*.local
 scripts/reset-test-db.local.mjs
+# 本地验证用单元测试，不入库（node --test 会自动发现 tests/*.test.js）
+tests/

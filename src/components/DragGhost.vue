@@ -1,15 +1,25 @@
 <script setup>
-// 拖拽浮层：跟随指针显示被拖动的线索，避免改动手柄自身布局。
+// 拖拽浮层：跟随指针显示被拖动的卡片（外观与板面上的卡片保持一致）。
 import { computed } from "vue";
 import { useClueDrag } from "@/composables/useClueDrag";
-import { CLUE_BY_ID } from "@/config/folders";
+import { useGameState } from "@/composables/useGameState";
 import { CARD_H, CARD_W } from "@/config/board";
+import puzzleThumbnail from "@/assets/test.jpg";
 
+const { state } = useGameState();
 const { drag } = useClueDrag();
 
-const clue = computed(() =>
-    drag.clueId ? (CLUE_BY_ID.get(drag.clueId) ?? null) : null,
-);
+// 拖动中的卡：标题与来源来自 boardLabels 快照（拖进板面的题目）
+const clue = computed(() => {
+    if (!drag.clueId) return null;
+    const label = state.boardLabels?.[drag.clueId];
+    return label
+        ? { id: drag.clueId, title: label.title, folderName: label.subtitle }
+        : null;
+});
+
+// 与 ClueCard 一致的兜底：题目卡没有专属缩略图，用统一占位图，避免拖动时只剩文字
+const thumbSrc = computed(() => clue.value?.thumbnail || puzzleThumbnail);
 
 const style = computed(() => ({
     width: `${drag.w || CARD_W}px`,
@@ -24,8 +34,8 @@ const style = computed(() => ({
             <div class="drag-ghost__text">
                 <span class="drag-ghost__title">{{ clue.title }}</span>
             </div>
-            <div v-if="clue.thumbnail" class="drag-ghost__thumb">
-                <img :src="clue.thumbnail" :alt="clue.title" />
+            <div class="drag-ghost__thumb">
+                <img :src="thumbSrc" :alt="clue.title" />
             </div>
             <div class="drag-ghost__text">
                 <span class="drag-ghost__foot">{{ clue.folderName }}</span>
@@ -53,9 +63,10 @@ const style = computed(() => ({
 }
 
 .drag-ghost__thumb {
+    flex: 1;
+    min-height: 0;
     overflow: hidden;
     width: 100%;
-    aspect-ratio: 4 / 3;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     background: var(--surface-alt);

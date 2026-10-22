@@ -1,13 +1,9 @@
-// 全局游戏状态：档案解锁进度 + 线索栏（已发现线索 / 板面排布）。
+// 全局游戏状态：服务端权威数据（账号 / 队伍 / 未读 / tips / 处罚）+ 本地收藏板。
 // 单例模块，任意组件直接调用 useGameState() 即可读写同一份状态。
+//
+// 题目与目录全部来自 GET /api/puzzle/map（含解锁、已解状态），本模块不再保留任何 mock 题目 / 线索数据。
 
 import { computed, reactive, watch } from "vue";
-import {
-  CLUE_BY_ID,
-  FOLDERS,
-  HIDDEN_FOLDER_ID,
-  MAIN_FOLDERS,
-} from "@/config/folders";
 import { CARD_GAP, CARD_H, CARD_W } from "@/config/board";
 import { validateTeamName } from "@/config/team";
 import { extractErrorMessage, extractFieldMessage } from "@/api/errors";
@@ -39,12 +35,10 @@ function createEmptyAccountStatus() {
   };
 }
 
-// 生成一份全新的初始状态：所有档案未完成、无发现线索、板面为空、未登录。
+// 生成一份全新的初始状态：无浏览标记、收藏板为空、未登录。
 function createDefaultState() {
   return {
-    completedFolders: [],
     visitedFolders: [],
-    discoveredClues: [],
     unreadMessages: 0,
     // 队伍级 tips（服务端权威数据，不持久化）：余额与今日累积，供顶栏与求提示面板共用
     teamTips: {
@@ -63,6 +57,7 @@ function createDefaultState() {
     sessionNotice: "",
     unlockedTips: [],
     board: [],
+    boardLabels: {},
     user: {
       currentUser: null,
       users: [],
@@ -82,14 +77,14 @@ function createDefaultState() {
   };
 }
 
-// 校验一条板面排布数据是否合法：必须有有效线索 ID 和有限的坐标。
-function isPlacement(item) {
+// 校验一条板面排布数据是否合法：卡片 id 必须能在 boardLabels 快照里解析到，坐标必须有限。
+function isPlacement(item, labels = {}) {
   return (
     Boolean(item) &&
     typeof item.clueId === "string" &&
     Number.isFinite(item.x) &&
     Number.isFinite(item.y) &&
-    CLUE_BY_ID.has(item.clueId)
+    Boolean(labels[item.clueId])
   );
 }
 // 从 localStorage 读取并校验持久化的游戏进度；缺失或损坏时退回初始状态。
@@ -102,18 +97,25 @@ function loadState() {
     if (!raw) return fallback;
 
     const saved = JSON.parse(raw);
+    // 板面卡片的标题快照（拖进来的题目）：先于 board 还原，过滤排布时要用它判断 id 是否可解析。
+    const boardLabels =
+      saved.boardLabels && typeof saved.boardLabels === "object"
+        ? Object.fromEntries(
+            Object.entries(saved.boardLabels).filter(
+              ([id, value]) =>
+                typeof id === "string" &&
+                Boolean(value) &&
+                typeof value.title === "string",
+            ),
+          )
+        : {};
     // 以默认状态为底再覆盖「可持久化」的字段：
     // 这样新增的、不持久化的字段（teamTips、accountStatus 等）不会因为本地存的是旧结构而缺失。
     return {
       ...fallback,
-      completedFolders: Array.isArray(saved.completedFolders)
-        ? saved.completedFolders
-        : [],
+      boardLabels,
       visitedFolders: Array.isArray(saved.visitedFolders)
         ? saved.visitedFolders
-        : [],
-      discoveredClues: Array.isArray(saved.discoveredClues)
-        ? saved.discoveredClues
         : [],
       unreadMessages:
         Number.isInteger(saved.unreadMessages) && saved.unreadMessages >= 0
@@ -125,7 +127,9 @@ function loadState() {
       unlockedTips: Array.isArray(saved.unlockedTips)
         ? saved.unlockedTips.filter((tipId) => typeof tipId === "string")
         : [],
-      board: Array.isArray(saved.board) ? saved.board.filter(isPlacement) : [],
+      board: Array.isArray(saved.board)
+        ? saved.board.filter((item) => isPlacement(item, boardLabels))
+        : [],
       user: {
         ...fallback.user,
       },
@@ -145,12 +149,11 @@ watch(
   (value) => {
     try {
       const persistedState = {
-        completedFolders: value.completedFolders,
         visitedFolders: value.visitedFolders,
-        discoveredClues: value.discoveredClues,
         unreadMessages: value.unreadMessages,
         unlockedTips: value.unlockedTips,
         board: value.board,
+        boardLabels: value.boardLabels,
         ui: value.ui,
       };
 
@@ -183,63 +186,39 @@ watch(
 );
 
 // ---------- 派生状态 ----------
-//派生：当前已解锁的档案 ID 集合。主线档案依次解锁，隐藏档案在主线全部完成后解锁。
-// 解锁规则：主线档案依次解锁，隐藏档案在主线全部完成后解锁
-const unlockedFolderIds = computed(() => {
-  const unlocked = new Set();
 
-  MAIN_FOLDERS.forEach((folder, index) => {
-    const previous = index === 0 ? null : MAIN_FOLDERS[index - 1];
-    if (!previous || state.completedFolders.includes(previous.id)) {
-      unlocked.add(folder.id);
-    }
-  });
-
-  if (
-    MAIN_FOLDERS.every((folder) => state.completedFolders.includes(folder.id))
-  ) {
-    unlocked.add(HIDDEN_FOLDER_ID);
-  }
-
-  return unlocked;
-});
-
-// 派生：把静态档案列表与当前进度合并，生成供界面直接使用的档案状态数组。
-const folderStates = computed(() =>
-  FOLDERS.map((folder) => ({
-    ...folder,
-    unlocked: unlockedFolderIds.value.has(folder.id),
-    completed: state.completedFolders.includes(folder.id),
-    visited: state.visitedFolders.includes(folder.id),
-    puzzleCount: folder.entries.filter((entry) => entry.kind === "puzzle")
-      .length,
-    clueCount: folder.entries.filter((entry) => entry.kind === "clue").length,
-  })),
-);
-// 派生：已解锁档案数量。
-const unlockedCount = computed(
-  () => folderStates.value.filter((folder) => folder.unlocked).length,
-);
-
-// 派生：已完成档案数量。
-const completedCount = computed(() => state.completedFolders.length);
-
-// 派生：板面上已放置的线索，附带其坐标。
+// 派生：板面上已放置的卡片，附带其坐标（标题来自 boardLabels 快照）。
 const boardClues = computed(() =>
   state.board
     .map((placement) => {
-      const clue = CLUE_BY_ID.get(placement.clueId);
-      return clue ? { ...clue, x: placement.x, y: placement.y } : null;
+      const label = state.boardLabels?.[placement.clueId];
+      if (!label) return null;
+      return {
+        id: placement.clueId,
+        kind: "puzzle",
+        title: label.title,
+        folderName: label.subtitle,
+        thumbnail: null,
+        x: placement.x,
+        y: placement.y,
+      };
     })
     .filter(Boolean),
 );
 
-// 派生：已发现但尚未放到板面上的线索池。
+// 派生：尚未放到板面上的卡片池（待用区）。
 const poolClues = computed(() => {
   const onBoard = new Set(state.board.map((placement) => placement.clueId));
-  return state.discoveredClues
-    .filter((clueId) => CLUE_BY_ID.has(clueId) && !onBoard.has(clueId))
-    .map((clueId) => CLUE_BY_ID.get(clueId));
+
+  return Object.entries(state.boardLabels ?? {})
+    .filter(([id]) => !onBoard.has(id))
+    .map(([id, label]) => ({
+      id,
+      kind: "puzzle",
+      title: label.title,
+      folderName: label.subtitle,
+      thumbnail: null,
+    }));
 });
 
 // ---------- 队伍派生状态 ----------
@@ -270,33 +249,22 @@ const teamPendingRequests = computed(
 
 // ---------- 操作 ----------
 
-// 将某个档案标记为已完成，并顺带记录为已访问。
-function setFolderCompleted(folderId) {
-  if (!state.completedFolders.includes(folderId)) {
-    state.completedFolders.push(folderId);
-  }
-  if (!state.visitedFolders.includes(folderId)) {
-    state.visitedFolders.push(folderId);
-  }
-}
-
-// 仅将某个档案标记为已访问，不影响完成状态。
+// 仅将某个档案标记为已访问（本地记录，只用于桌面「新文件」角标）。
 function markFolderVisited(folderId) {
   if (!state.visitedFolders.includes(folderId)) {
     state.visitedFolders.push(folderId);
   }
 }
 
-// 记录一条新发现的线索，重复发现会被忽略。
-function discoverClue(clueId) {
-  if (!state.discoveredClues.includes(clueId)) {
-    state.discoveredClues.push(clueId);
-  }
-}
-
-// 查询某条线索是否已被发现。
-function isClueDiscovered(clueId) {
-  return state.discoveredClues.includes(clueId);
+// 记录一张「从档案拖进板面的题目」卡片的标题快照。
+// 板面只存 id + 坐标，标题与来源存在这里：题目来自服务端 map，
+// 靠这份快照才能在脱离 map 时（刷新、换页）照常渲染板面卡片。
+function registerBoardCard({ id, title, subtitle } = {}) {
+  if (!id || !title) return;
+  state.boardLabels = {
+    ...state.boardLabels,
+    [id]: { title, subtitle: subtitle || "" },
+  };
 }
 
 // 查询某条提示是否已解锁。
@@ -813,9 +781,6 @@ function consumeSessionNotice() {
 export function useGameState() {
   return {
     state,
-    folderStates,
-    unlockedCount,
-    completedCount,
     boardClues,
     poolClues,
     // 队伍派生状态
@@ -824,10 +789,8 @@ export function useGameState() {
     isTeamCaptain,
     teamLocked,
     teamPendingRequests,
-    setFolderCompleted,
     markFolderVisited,
-    discoverClue,
-    isClueDiscovered,
+    registerBoardCard,
     isTipUnlocked,
     unlockTip,
     placeClue,

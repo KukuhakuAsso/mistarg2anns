@@ -33,7 +33,7 @@ const thumbSrc = computed(() => props.clue.thumbnail || puzzleThumbnail);
             <button
                 class="icon-btn icon-btn--sm"
                 type="button"
-                title="移回待用区"
+                :title="clue.kind === 'puzzle' ? '从板面移除' : '移回待用区'"
                 @pointerdown.stop
                 @click="emit('remove')"
             >
