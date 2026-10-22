@@ -7,6 +7,7 @@
 // 缓存按原始路径复用，引用计数归零时释放，避免同一素材被重复下载或过早撤销。
 import { onBeforeUnmount, ref, unref, watch } from "vue";
 import { fetchWithAuth } from "@/api/request";
+import { extractErrorMessage } from "@/api/errors";
 import { resolveServerUrl } from "@/config/api";
 
 const cache = new Map();
@@ -20,7 +21,14 @@ function acquire(path) {
         headers: { Accept: "*/*" },
       });
       if (!response.ok) {
-        throw new Error(`素材加载失败（${response.status}）`);
+        // 失败时是标准 JSON 错误体；429 额外带上等待秒数，其余直接用后端文案
+        const payload = await response.json().catch(() => null);
+        const waitSec = Number(payload?.error?.detail?.retry_after_sec) || 0;
+        throw new Error(
+          response.status === 429 && waitSec > 0
+            ? `请求过于频繁，请 ${waitSec} 秒后再试`
+            : extractErrorMessage(payload, `素材加载失败（${response.status}）`),
+        );
       }
       const blob = await response.blob();
       return URL.createObjectURL(blob);

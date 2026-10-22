@@ -330,9 +330,11 @@ function addClueToBoard(clueId, boardWidth) {
   placeClue(clueId, x, y);
 }
 
-// 切换线索栏的展开 / 收起状态。
+// 切换线索栏的展开 / 收起状态。未登录时不允许打开（返回 false）。
 function toggleCluePanel() {
+  if (!state.user.currentUser) return false;
   state.ui.cluePanelOpen = !state.ui.cluePanelOpen;
+  return true;
 }
 
 // 清空全部游戏进度并恢复初始状态，但保留当前界面设置。

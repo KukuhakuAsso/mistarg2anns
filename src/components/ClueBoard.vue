@@ -40,7 +40,11 @@ function onPoolPointerDown(event, clueId) {
 </script>
 
 <template>
-    <aside v-show="state.ui.cluePanelOpen" class="clue-board">
+    <!-- 线索栏需要登录：未登录时即使本地记着「展开」也不显示 -->
+    <aside
+        v-show="state.user.currentUser && state.ui.cluePanelOpen"
+        class="clue-board"
+    >
         <header class="clue-board__head">
             <h2 class="clue-board__title">线索栏</h2>
             <span class="clue-board__count">

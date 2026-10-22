@@ -19,6 +19,9 @@ const { themeIcon, themeLabel, cycleTheme } = useTheme();
 const isTestEnvironment = computed(() => apiEnvironment.value === "test");
 const testEnvironmentAvailable = Boolean(apiConfig.testTicket);
 
+// 线索栏需要登录后才能使用（内容是账号相关的本地记录），未登录时按钮置灰。
+const isLoggedIn = computed(() => Boolean(state.user.currentUser));
+
 // 右上角的 tips 是本队共享余额（服务端权威数据）：无队伍时提示加入队伍后开始累积，
 // 未加载时先用占位符，避免先显示一个假的 0。
 const teamTipsText = computed(() => {
@@ -70,8 +73,9 @@ function toggleApiEnvironment() {
       <button
         class="bar-btn"
         type="button"
-        :class="{ 'is-active': state.ui.cluePanelOpen }"
-        title="显示 / 隐藏线索栏"
+        :class="{ 'is-active': isLoggedIn && state.ui.cluePanelOpen }"
+        :disabled="!isLoggedIn"
+        :title="isLoggedIn ? '显示 / 隐藏线索栏' : '登录后才能打开线索栏'"
         @click="toggleCluePanel()"
       >
         <AppIcon name="board" />
