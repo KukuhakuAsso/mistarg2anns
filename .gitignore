@@ -3,3 +3,5 @@ node_modules/
 output/
 .env.local
 .env.*.local
+# 本地验证用单元测试，不入库（node --test 会自动发现 tests/*.test.js）
+tests/
