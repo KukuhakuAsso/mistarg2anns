@@ -10,6 +10,7 @@ import PuzzleArticle from "@/components/puzzle/PuzzleArticle.vue";
 import PuzzleCover from "@/components/puzzle/PuzzleCover.vue";
 import { puzzleApi } from "@/api/puzzle";
 import { extractErrorMessage } from "@/api/errors";
+import { failedMediaPaths, retryFailedMedia } from "@/composables/useMediaObjectUrl";
 import { useGameState } from "@/composables/useGameState";
 import { useClueDrag } from "@/composables/useClueDrag";
 import { usePuzzleMap } from "@/composables/usePuzzleMap";
@@ -36,6 +37,18 @@ const tips = computed(() =>
 const puzzles = computed(() =>
   props.folder.entries.filter((entry) => entry.kind === "puzzle"),
 );
+
+// 本档案里加载失败的封面：只有它们才值得显示「重试」入口。
+// 用路径集合和失败列表取交集，别的档案 / 线索栏的失败不会让这里亮起来。
+const failedCoverPaths = computed(() => {
+  const failed = failedMediaPaths.value;
+  const hit = new Set();
+  for (const entry of puzzles.value) {
+    const url = entry.cover?.url;
+    if (url && failed.has(url)) hit.add(url);
+  }
+  return [...hit];
+});
 
 const selected = ref(null);
 const view = ref(null);
@@ -193,6 +206,18 @@ onBeforeUnmount(stopDrag);
         <AppIcon name="check" :size="14" />
         本档案已完成
       </span>
+
+      <!-- 封面加载失败时才出现：一次把这批封面重新取一遍（不会重新下载已成功的） -->
+      <button
+        v-if="failedCoverPaths.length"
+        class="bar-btn folder-view__retry"
+        type="button"
+        :title="`重新加载 ${failedCoverPaths.length} 张封面`"
+        @click="retryFailedMedia(failedCoverPaths)"
+      >
+        <AppIcon name="reset" />
+        <span>重试封面 {{ failedCoverPaths.length }}</span>
+      </button>
     </header>
 
     <section class="file-area" aria-label="题目文件">
@@ -346,6 +371,12 @@ onBeforeUnmount(stopDrag);
   gap: 4px;
   font-size: 13px;
   color: var(--accent);
+}
+
+/* 重试入口跟「已完成」徽章同排，只在有失败封面时出现 */
+.folder-view__retry {
+  flex: none;
+  color: var(--text);
 }
 
 .file-area {
