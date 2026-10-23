@@ -9,15 +9,16 @@ import { CARD_H, CARD_W } from "@/config/board";
 const { state } = useGameState();
 const { drag } = useClueDrag();
 
-// 拖动中的卡：标题、来源与封面来自 boardLabels 快照（拖进板面的题目）
+// 拖动中的卡：优先用这次拖拽携带的元数据（从档案拖新题时 boardLabels 里还没有它），
+// 其次回落到已收藏的快照（从待用区 / 板面拖动时）。
 const clue = computed(() => {
     if (!drag.clueId) return null;
-    const label = state.boardLabels?.[drag.clueId];
+    const label = drag.meta ?? state.boardLabels?.[drag.clueId] ?? null;
     return label
         ? {
               id: drag.clueId,
               title: label.title,
-              folderName: label.subtitle,
+              folderName: label.subtitle ?? "",
               cover: label.cover ?? null,
           }
         : null;

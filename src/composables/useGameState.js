@@ -277,12 +277,28 @@ function toCover(value) {
 // 记录一张「从档案拖进板面的题目」卡片的标题快照。
 // 板面只存 id + 坐标，标题、来源与封面存在这里：题目来自服务端 map，
 // 靠这份快照才能在脱离 map 时（刷新、换页）照常渲染板面卡片。
-function registerBoardCard({ id, title, subtitle, cover } = {}) {
+// createIfMissing=false 时只更新已存在的快照（用于「解出后换完成态封面」）——
+// 否则解一道从没拖过的题，它会自己跑进待用区。
+function registerBoardCard(
+  { id, title, subtitle, cover } = {},
+  { createIfMissing = true } = {},
+) {
   if (!id || !title) return;
+  if (!createIfMissing && !state.boardLabels?.[id]) return;
   state.boardLabels = {
     ...state.boardLabels,
     [id]: { title, subtitle: subtitle || "", cover: toCover(cover) },
   };
+}
+
+// 从收藏里彻底移除一张卡（待用区的删除按钮、或卡片上的移除）：
+// board 与 boardLabels 必须一起删，否则 boardLabels 里会留下再也看不到的孤儿条目。
+function uncollectCard(cardId) {
+  if (!cardId) return;
+  state.board = state.board.filter((item) => item.clueId !== cardId);
+  const labels = { ...(state.boardLabels ?? {}) };
+  delete labels[cardId];
+  state.boardLabels = labels;
 }
 
 // 查询某条提示是否已解锁。
@@ -811,6 +827,7 @@ export function useGameState() {
     teamPendingRequests,
     markFolderVisited,
     registerBoardCard,
+    uncollectCard,
     isTipUnlocked,
     unlockTip,
     placeClue,
