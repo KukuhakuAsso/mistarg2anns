@@ -4,10 +4,10 @@
 import { computed } from "vue";
 import AppIcon from "@/components/AppIcon.vue";
 import ClueCard from "@/components/ClueCard.vue";
+import PuzzleCover from "@/components/puzzle/PuzzleCover.vue";
 import { useClueDrag } from "@/composables/useClueDrag";
 import { useGameState } from "@/composables/useGameState";
 import { CARD_GAP, CARD_H } from "@/config/board";
-import puzzleThumbnail from "@/assets/test.jpg";
 
 const {
     state,
@@ -40,11 +40,15 @@ function onPoolPointerDown(event, clueId) {
 </script>
 
 <template>
-    <aside v-show="state.ui.cluePanelOpen" class="clue-board">
+    <!-- 线索栏需要登录：未登录时即使本地记着「展开」也不显示 -->
+    <aside
+        v-show="state.user.currentUser && state.ui.cluePanelOpen"
+        class="clue-board"
+    >
         <header class="clue-board__head">
             <h2 class="clue-board__title">线索栏</h2>
             <span class="clue-board__count">
-                {{ boardClues.length }} / {{ state.discoveredClues.length }}
+                {{ boardClues.length }} 项
             </span>
             <div class="clue-board__tools">
                 <button
@@ -78,7 +82,7 @@ function onPoolPointerDown(event, clueId) {
                     @remove="removeClueFromBoard(clue.id)"
                 />
                 <p v-if="boardClues.length === 0" class="board__empty">
-                    把下面的线索拖进来，自由排布
+                    把题目文件或线索拖进来，自由排布
                 </p>
             </div>
         </div>
@@ -86,7 +90,7 @@ function onPoolPointerDown(event, clueId) {
         <section class="pool">
             <h3 class="pool__title">待用线索</h3>
             <p v-if="poolClues.length === 0" class="pool__empty">
-                在档案中阅读线索并加入，即可在此取用
+                从档案里把题目拖到板面；把板面卡片拖出板面，会回到这里
             </p>
             <ul v-else class="pool__list">
                 <li
@@ -99,7 +103,7 @@ function onPoolPointerDown(event, clueId) {
                     @pointerdown="onPoolPointerDown($event, clue.id)"
                 >
                     <span class="pool__thumb" aria-hidden="true">
-                        <img :src="clue.thumbnail || puzzleThumbnail" :alt="clue.title" />
+                        <PuzzleCover :cover="clue.cover" :alt="clue.title" />
                     </span>
                     <span class="pool__meta">
                         <span class="pool__label">{{ clue.title }}</span>

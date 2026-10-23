@@ -81,6 +81,23 @@ export function buildApiUrl(path) {
   return `${base.replace(/\/+$/, "")}${apiPrefix}${safePath}`;
 }
 
+// 后端返回的素材 / 组件地址都是后端自身的绝对路径（`/api/puzzle/media/18`）。
+// 开发与生产部署的 API 前缀可能是 `/api-mist` 等，直接用会打到静态站点上 404，
+// 所以统一在这里把 `/api` 前缀换成当前生效的 baseUrl + basePath；外链与 blob/data 原样返回。
+export function resolveServerUrl(path) {
+  const raw = String(path ?? "").trim();
+  if (!raw) return "";
+  if (/^(?:https?:)?\/\//i.test(raw) || /^(?:blob|data):/i.test(raw)) {
+    return raw;
+  }
+  if (raw.startsWith("/api/")) {
+    const base = (apiConfig.baseUrl || "").replace(/\/+$/, "");
+    const prefix = apiConfig.basePath || "/api";
+    return `${base}${prefix}${raw.slice("/api".length)}`;
+  }
+  return raw;
+}
+
 // 生成通用请求头；处于测试环境且配置了测试票据时，额外带上 X-Mistarg-Test-Ticket。
 export function getApiHeaders(extra = {}) {
   const headers = {
