@@ -1,4 +1,4 @@
-import { buildApiUrl, getApiHeaders } from "@/config/api";
+import { buildApiUrl, getApiHeaders, isApiUrl } from "@/config/api";
 import { extractErrorMessage } from "@/api/errors";
 
 // access token key JWT，2 小时。所有需要登录的接口用 Authorization: Bearer <token>
@@ -251,15 +251,23 @@ function getAuthHeaders(extra = {}) {
 // 这里复用同一套令牌与刷新逻辑：401 时先刷新再重试一次，
 // 避免 access token 过期后素材/组件直接失败、而普通接口却自动恢复。
 // 返回原始 Response，由调用方决定 text() / blob()。
+//
+// 信任边界：只对指向本 API 部署的地址带凭证。素材 / 组件的 url 来自服务端下发的
+// 描述符，resolveServerUrl() 对绝对地址是原样透传的 —— 一旦后端改了约定（CDN 直链、
+// 脏数据、被篡改的记录），无条件加 Authorization 就会把访问令牌与测试票据送给第三方。
 export async function fetchWithAuth(url, options = {}, { retried = false } = {}) {
   const { headers = {}, ...init } = options;
+  const trusted = isApiUrl(url);
+
   const response = await fetch(url, {
     ...init,
-    credentials: "include",
-    headers: { ...getAuthHeaders(), ...headers },
+    // 外部地址连 Cookie 也不带：那里的会话与本应用的登录态无关
+    credentials: trusted ? "include" : "omit",
+    headers: trusted ? { ...getAuthHeaders(), ...headers } : { ...headers },
   });
 
-  if (response.status !== 401 || retried) {
+  // 外部地址的 401 说明不了本站会话的状态：不刷新令牌、也不触发登出
+  if (!trusted || response.status !== 401 || retried) {
     return response;
   }
 
