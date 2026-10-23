@@ -144,8 +144,13 @@ export function renderMarkdown(source) {
     const fence = line.match(FENCE_RE);
     if (fence) {
       const marker = fence[1][0];
+      const fenceLength = fence[1].length;
       const language = fence[2];
-      const closing = new RegExp(`^\\s{0,3}${marker}{3,}\\s*$`);
+      // 闭合围栏至少要有开栏那么长（CommonMark）：否则「4 个反引号包住 3 个反引号」
+      // 的示例会在内层那行提前闭合，剩下的内容又被当成新的代码块。
+      const closing = new RegExp(
+        "^\\s{0,3}" + marker + "{" + fenceLength + ",}\\s*$",
+      );
       const body = [];
       index += 1;
       while (index < lines.length && !closing.test(lines[index])) {
