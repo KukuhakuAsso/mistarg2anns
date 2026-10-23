@@ -77,7 +77,12 @@ const modalPositionWidth = computed(() =>
   Math.min(960, window.innerWidth - 32),
 );
 
+// 取题请求的代次：关闭弹窗或改开别的题后，旧请求的响应必须作废，
+// 否则加载慢的那道题迟到的响应会把用户正在看的题整个换掉。
+let viewToken = 0;
+
 async function openEntry(entry) {
+  const token = ++viewToken;
   selected.value = entry;
   view.value = null;
   viewError.value = "";
@@ -92,11 +97,13 @@ async function openEntry(entry) {
   };
   try {
     const payload = await puzzleApi.getView(entry.id);
+    if (token !== viewToken) return;
     const puzzle = payload?.data?.puzzle ?? null;
     if (!puzzle) throw new Error("题目不存在或尚未解锁");
     view.value = puzzle;
     viewStatus.value = "ready";
   } catch (error) {
+    if (token !== viewToken) return;
     viewStatus.value = "error";
     viewError.value =
       error?.status === 404
@@ -106,6 +113,7 @@ async function openEntry(entry) {
 }
 
 function closeEntry() {
+  viewToken += 1;
   selected.value = null;
   view.value = null;
   viewStatus.value = "idle";
