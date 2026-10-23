@@ -10,7 +10,10 @@ import PuzzleArticle from "@/components/puzzle/PuzzleArticle.vue";
 import PuzzleCover from "@/components/puzzle/PuzzleCover.vue";
 import { puzzleApi } from "@/api/puzzle";
 import { extractErrorMessage } from "@/api/errors";
-import { failedMediaPaths, retryFailedMedia } from "@/composables/useMediaObjectUrl";
+import {
+  failedMediaPaths,
+  retryFailedMedia,
+} from "@/composables/useMediaObjectUrl";
 import { useGameState } from "@/composables/useGameState";
 import { useClueDrag } from "@/composables/useClueDrag";
 import { usePuzzleMap } from "@/composables/usePuzzleMap";
@@ -68,6 +71,12 @@ const modalWidth = computed(() =>
   Math.min(modalWide.value ? 960 : 680, window.innerWidth - 32),
 );
 
+// 实际宽度要等 view 回来才确定，但位置必须一开始就定好：若先按窄版定位，
+// 宽版展开后右边缘会顶出视口。所以定位统一按最宽形态计算。
+const modalPositionWidth = computed(() =>
+  Math.min(960, window.innerWidth - 32),
+);
+
 async function openEntry(entry) {
   selected.value = entry;
   view.value = null;
@@ -75,10 +84,12 @@ async function openEntry(entry) {
   viewStatus.value = "loading";
   tipsOpen.value = false;
   windowPosition.value = {
-    x: Math.max(16, Math.round((window.innerWidth - modalWidth.value) / 3)),
+    x: Math.max(
+      16,
+      Math.round((window.innerWidth - modalPositionWidth.value) / 3),
+    ),
     y: Math.max(16, Math.round((window.innerHeight - 480) / 3)),
   };
-  console.log("Opening entry:", entry);
   try {
     const payload = await puzzleApi.getView(entry.id);
     const puzzle = payload?.data?.puzzle ?? null;
@@ -296,7 +307,9 @@ onBeforeUnmount(stopDrag);
                         @click="unlockSelectedTip(index)"
                       >
                         <span>Tips {{ index + 1 }}</span>
-                        <span v-if="isTipUnlocked(tipId(index))">{{ tip }}</span>
+                        <span v-if="isTipUnlocked(tipId(index))">{{
+                          tip
+                        }}</span>
                         <span v-else class="tips-popover__locked">
                           {{ tipsBalance > 0 ? "1 点解锁" : "点数不足" }}
                         </span>
@@ -326,7 +339,11 @@ onBeforeUnmount(stopDrag);
             <StatusMessage :message="viewError" tone="error" />
           </div>
 
-          <PuzzleArticle v-else-if="view" :puzzle="view" @solved="handleSolved" />
+          <PuzzleArticle
+            v-else-if="view"
+            :puzzle="view"
+            @solved="handleSolved"
+          />
         </div>
       </article>
     </Teleport>
