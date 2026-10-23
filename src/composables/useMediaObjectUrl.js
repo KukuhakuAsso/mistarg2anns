@@ -129,6 +129,17 @@ function release(record) {
   record.promise.then((url) => URL.revokeObjectURL(url)).catch(() => {});
 }
 
+// 非组件场景（如 Markdown 正文里的图片）复用同一份缓存与引用计数。
+// 与 useMediaObjectUrl 一样持有「记录」而不是路径：释放时必须还回同一条，
+// 否则失败重试后可能减到别人新建记录的计数，把还在用的 blob 撤销掉（图直接裂开）。
+export function acquireMediaRecord(path, options) {
+  return acquire(path, options);
+}
+
+export function releaseMediaRecord(record) {
+  release(record);
+}
+
 // 使用素材的 blob URL 的组合式函数。
 // source 可以是字符串、ref，或返回字符串的 getter。
 // 返回对象包含：

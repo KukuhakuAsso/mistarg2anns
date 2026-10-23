@@ -9,6 +9,7 @@ import { puzzleApi } from "@/api/puzzle";
 import { extractErrorMessage } from "@/api/errors";
 import { renderMarkdown } from "@/utils/miniMarkdown";
 import { useMediaObjectUrl } from "@/composables/useMediaObjectUrl";
+import { useMarkdownMedia } from "@/composables/useMarkdownMedia";
 import { useStatusMessage } from "@/composables/useStatusMessage";
 
 const props = defineProps({
@@ -22,6 +23,11 @@ const attachments = computed(() => props.puzzle.attachments ?? []);
 const descriptionHtml = computed(() =>
   renderMarkdown(props.puzzle.description || ""),
 );
+
+// 描述里的图片（`/api/puzzle/media/:id`）同样受取题门禁保护：
+// 渲染器只输出 data-media-path 占位，这里在 DOM 更新后补上带鉴权的 blob URL。
+const descriptionRef = ref(null);
+useMarkdownMedia(descriptionRef, descriptionHtml);
 
 const coverRatio = computed(() => {
   const ratios = { "16:9": "16 / 9", "4:3": "4 / 3", "1:1": "1 / 1" };
@@ -123,9 +129,11 @@ async function submitAnswer() {
       <span v-if="solved" class="puzzle__badge">已解出</span>
     </header>
 
-    <!-- description 是白名单 Markdown 渲染结果（标签全部由渲染器拼出，不含原始 HTML） -->
+    <!-- description 是白名单 Markdown 渲染结果（标签全部由渲染器拼出，不含原始 HTML）；
+         其中的受保护图片由 useMarkdownMedia 回填带鉴权的 blob URL -->
     <div
       v-if="descriptionHtml"
+      ref="descriptionRef"
       class="puzzle__description"
       v-html="descriptionHtml"
     />
@@ -311,6 +319,20 @@ async function submitAnswer() {
 .puzzle__description :deep(img) {
   max-width: 100%;
   border-radius: var(--radius);
+}
+
+/* 受保护图片：加载中先隐藏（此时没有 src，浏览器会画出 alt 文本）；
+   失败时保留节点，让 alt 文本作为占位显示，标题里带后端原因。 */
+.puzzle__description :deep(img[data-media-state="pending"]) {
+  display: none;
+}
+
+.puzzle__description :deep(img[data-media-state="error"]) {
+  padding: 6px 10px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  font-size: 12px;
+  color: var(--text-dim);
 }
 
 .puzzle__description :deep(a) {
