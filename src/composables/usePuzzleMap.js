@@ -15,6 +15,11 @@ const state = reactive({
 });
 
 let inflight = null;
+// 每次 reset() 都 +1，作废所有在飞的请求。
+// 只把 inflight 置空是不够的：那个 async 函数仍在 await，回来照样写 state，
+// 结果是登出后又被写回上一个账号的题目结构（还把 loaded 置回 true，
+// 之后登录直接命中缓存、连请求都不发）。
+let generation = 0;
 
 // 题目条目：kind 目前只有 puzzle（resource 为将来的资源型条目预留）。
 function toEntry(item) {
@@ -60,12 +65,17 @@ export function usePuzzleMap() {
     if (inflight) return inflight;
     if (state.loaded && !force) return Promise.resolve(state);
 
+    // 本次请求所属的代次：成功、失败、收尾三处都要拿它校验，
+    // 否则 reset() 之后旧请求仍会覆盖新账号的状态。
+    const current = generation;
     state.loading = true;
     state.error = "";
 
-    inflight = (async () => {
+    const task = (async () => {
       try {
         const payload = await puzzleApi.getMap();
+        // 已被 reset 作废：一个字段都不要写
+        if (current !== generation) return state;
         const data = payload?.data ?? {};
         state.folders = (data.map?.children ?? []).map(toFolder);
         state.progress = {
@@ -74,22 +84,30 @@ export function usePuzzleMap() {
         };
         state.loaded = true;
       } catch (error) {
+        // 迟到的错误已经与当前账号无关，别弹也别写
+        if (current !== generation) return state;
         // 门禁类错误（未入队 / 未确认参赛 / 未开赛 / 队伍封禁）文案由后端给出，直接展示。
         state.error = extractErrorMessage(error, "题目列表加载失败");
         state.folders = [];
         state.loaded = false;
       } finally {
-        state.loading = false;
-        inflight = null;
+        // 只有自己这一代次才收尾：旧请求清掉 inflight / loading，
+        // 会把还在飞的新请求的转圈关掉，也让下一次 load() 误判为"没人在拉"。
+        if (current === generation) {
+          state.loading = false;
+          inflight = null;
+        }
       }
       return state;
     })();
 
-    return inflight;
+    inflight = task;
+    return task;
   }
 
   // 登出 / 换账号时清空，避免把上一个账号的解锁进度留在界面上。
   function reset() {
+    generation += 1; // 作废在飞请求，它们的响应回来不会再落库
     state.loaded = false;
     state.loading = false;
     state.error = "";
