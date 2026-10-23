@@ -90,16 +90,16 @@ function closeEntry() {
 }
 
 // 按住题目文件即可拖到右侧线索栏：落点落在板面上会生成一张卡片并持久化。
-// 卡片标题/来源来自 map，所以先登记快照再开始拖拽。
+// 元数据随拖拽一起带过去，由 useClueDrag 在「真的落板成功」时才登记收藏 ——
+// 在这里登记的话，普通点击读题、拖到一半取消都会把题目永久塞进待用区。
 function startPuzzleDrag(event, entry) {
   if (event.pointerType === "mouse" && event.button !== 0) return;
-  registerBoardCard({
+  startClueDrag(event, entry.id, "puzzle", {
     id: entry.id,
     title: entry.title,
     subtitle: props.folder.name,
     cover: entry.cover,
   });
-  startClueDrag(event, entry.id, "puzzle");
 }
 
 // 提示的本地解锁键：同一题目同一序号稳定，换题不会串。
@@ -121,15 +121,19 @@ async function handleSolved({ puzzleKey }) {
   if (entry) entry.solved = true;
   if (view.value) view.value.solved = true;
   await refresh();
-  // 重新拉 map 后封面可能换成完成态；板面快照存的是旧封面，跟着更新一次
+  // 重新拉 map 后封面可能换成完成态；板面快照存的是旧封面，跟着更新一次。
+  // 只更新「已经收藏过」的卡片：解出一道从没拖进板面的题，不该把它塞进待用区。
   const fresh = puzzles.value.find((item) => item.id === puzzleKey);
   if (fresh) {
-    registerBoardCard({
-      id: fresh.id,
-      title: fresh.title,
-      subtitle: props.folder.name,
-      cover: fresh.cover,
-    });
+    registerBoardCard(
+      {
+        id: fresh.id,
+        title: fresh.title,
+        subtitle: props.folder.name,
+        cover: fresh.cover,
+      },
+      { createIfMissing: false },
+    );
   }
 }
 

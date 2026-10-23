@@ -17,6 +17,7 @@ const {
     clearBoard,
     arrangeBoard,
     addClueToBoard,
+    uncollectCard,
 } = useGameState();
 const { boardEl, drag, startDrag } = useClueDrag();
 
@@ -33,9 +34,15 @@ function currentBoardWidth() {
     return boardEl.value ? boardEl.value.getBoundingClientRect().width : 0;
 }
 
-function onPoolPointerDown(event, clueId) {
+function onPoolPointerDown(event, clue) {
     if (event.target.closest("button")) return;
-    startDrag(event, clueId, "pool");
+    // 带上元数据：重新落板时会刷新这份快照（也兜住历史数据里 label 丢失的情况）
+    startDrag(event, clue.id, "pool", {
+        id: clue.id,
+        title: clue.title,
+        subtitle: clue.folderName,
+        cover: clue.cover,
+    });
 }
 </script>
 
@@ -100,7 +107,7 @@ function onPoolPointerDown(event, clueId) {
                     :class="{
                         'is-dragging': drag.active && drag.clueId === clue.id,
                     }"
-                    @pointerdown="onPoolPointerDown($event, clue.id)"
+                    @pointerdown="onPoolPointerDown($event, clue)"
                 >
                     <span class="pool__thumb" aria-hidden="true">
                         <PuzzleCover :cover="clue.cover" :alt="clue.title" />
@@ -116,6 +123,14 @@ function onPoolPointerDown(event, clueId) {
                         @click="addClueToBoard(clue.id, currentBoardWidth())"
                     >
                         <AppIcon name="plus" :size="14" />
+                    </button>
+                    <button
+                        class="icon-btn icon-btn--sm"
+                        type="button"
+                        title="从待用区移除"
+                        @click="uncollectCard(clue.id)"
+                    >
+                        <AppIcon name="trash" :size="14" />
                     </button>
                 </li>
             </ul>

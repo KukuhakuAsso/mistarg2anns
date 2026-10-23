@@ -71,6 +71,14 @@ async function submitAnswer() {
     if (data.alreadySolved) {
       solved.value = true;
       setStatus("info", "这道题已经解过了");
+      // 队友（或同一账号的另一台设备）已经解出：本组件只能改自己的显示，
+      // 档案页的「已解出」勾、顶栏进度、队友解出后新解锁的题目、完成态封面，
+      // 都要靠父级重拉 map 才会更新；不通知父级就只能硬刷新页面才能自愈。
+      emit("solved", {
+        puzzleKey: data.puzzleKey ?? props.puzzle.key,
+        progress: data.progress ?? null,
+        tips: data.tips ?? null,
+      });
     } else if (data.correct) {
       solved.value = true;
       answer.value = "";

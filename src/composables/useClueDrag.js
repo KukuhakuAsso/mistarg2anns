@@ -25,6 +25,9 @@ const drag = reactive({
     w: CARD_W,
     h: CARD_H,
     overBoard: false,
+    // 这次拖的是什么（id/title/subtitle/cover）。落板成功才拿它登记收藏，
+    // 拖拽浮层也用它渲染 —— 此时 boardLabels 里可能还没有这张卡。
+    meta: null,
 });
 
 function boardRect() {
@@ -42,13 +45,14 @@ function clamp(value, min, max) {
 }
 
 export function useClueDrag() {
-    const { placeClue, removeClueFromBoard } = useGameState();
+    const { placeClue, removeClueFromBoard, registerBoardCard } = useGameState();
 
     function stop() {
         drag.active = false;
         drag.clueId = null;
         drag.source = null;
         drag.overBoard = false;
+        drag.meta = null;
         window.removeEventListener("pointermove", handleMove);
         window.removeEventListener("pointerup", handleUp);
         window.removeEventListener("pointercancel", stop);
@@ -67,6 +71,9 @@ export function useClueDrag() {
         if (drag.clueId && rect && drag.overBoard) {
             const x = clamp(drag.x - rect.left - drag.offsetX, 0, rect.width - drag.w);
             const y = clamp(drag.y - rect.top - drag.offsetY, 0, rect.height - drag.h);
+            // 只有真正落到板面上才算「收藏」。在 pointerdown 就登记的话，
+            // 普通点击（只想读题）和拖到一半松手放弃都会把题目永久塞进待用区。
+            if (drag.meta) registerBoardCard(drag.meta);
             placeClue(drag.clueId, Math.round(x), Math.round(y));
         } else if (drag.clueId && drag.source === "board") {
             removeClueFromBoard(drag.clueId);
@@ -75,7 +82,7 @@ export function useClueDrag() {
         stop();
     }
 
-    function startDrag(event, clueId, source) {
+    function startDrag(event, clueId, source, meta = null) {
         if (event.pointerType === "mouse" && event.button !== 0) return;
         event.preventDefault();
 
@@ -86,6 +93,7 @@ export function useClueDrag() {
         drag.active = true;
         drag.x = event.clientX;
         drag.y = event.clientY;
+        drag.meta = meta;
 
         if (source === "board") {
             drag.w = rect.width || CARD_W;
