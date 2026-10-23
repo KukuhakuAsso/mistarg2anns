@@ -7,7 +7,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import AppIcon from "@/components/AppIcon.vue";
 import StatusMessage from "@/components/StatusMessage.vue";
 import PuzzleArticle from "@/components/puzzle/PuzzleArticle.vue";
-import puzzleThumbnail from "@/assets/test.jpg";
+import PuzzleCover from "@/components/puzzle/PuzzleCover.vue";
 import { puzzleApi } from "@/api/puzzle";
 import { extractErrorMessage } from "@/api/errors";
 import { useGameState } from "@/composables/useGameState";
@@ -97,6 +97,7 @@ function startPuzzleDrag(event, entry) {
     id: entry.id,
     title: entry.title,
     subtitle: props.folder.name,
+    cover: entry.cover,
   });
   startClueDrag(event, entry.id, "puzzle");
 }
@@ -120,6 +121,16 @@ async function handleSolved({ puzzleKey }) {
   if (entry) entry.solved = true;
   if (view.value) view.value.solved = true;
   await refresh();
+  // 重新拉 map 后封面可能换成完成态；板面快照存的是旧封面，跟着更新一次
+  const fresh = puzzles.value.find((item) => item.id === puzzleKey);
+  if (fresh) {
+    registerBoardCard({
+      id: fresh.id,
+      title: fresh.title,
+      subtitle: props.folder.name,
+      cover: fresh.cover,
+    });
+  }
 }
 
 function startDrag(event) {
@@ -200,7 +211,7 @@ onBeforeUnmount(stopDrag);
             @click="openEntry(entry)"
           >
             <span class="puzzle-file__thumbnail">
-              <img :src="puzzleThumbnail" alt="" />
+              <PuzzleCover :cover="entry.cover" />
               <span class="puzzle-file__index" aria-hidden="true">
                 {{ String(index + 1).padStart(2, "0") }}
               </span>
@@ -277,15 +288,17 @@ onBeforeUnmount(stopDrag);
           </button>
         </header>
 
-        <div v-if="viewStatus === 'loading'" class="entry-modal__state">
-          正在取题…
-        </div>
+        <div class="entry-modal__body">
+          <div v-if="viewStatus === 'loading'" class="entry-modal__state">
+            正在取题…
+          </div>
 
-        <div v-else-if="viewStatus === 'error'" class="entry-modal__state">
-          <StatusMessage :message="viewError" tone="error" />
-        </div>
+          <div v-else-if="viewStatus === 'error'" class="entry-modal__state">
+            <StatusMessage :message="viewError" tone="error" />
+          </div>
 
-        <PuzzleArticle v-else-if="view" :puzzle="view" @solved="handleSolved" />
+          <PuzzleArticle v-else-if="view" :puzzle="view" @solved="handleSolved" />
+        </div>
       </article>
     </Teleport>
   </section>
@@ -462,22 +475,33 @@ onBeforeUnmount(stopDrag);
   max-width: calc(100vw - 32px);
   max-height: calc(100vh - 32px);
   overflow-y: auto;
-  padding: 20px;
+  /* 滚动容器的 padding 会被 sticky 头部覆盖（内容从 padding 上方穿出），
+     所以这里不留内边距，改由头部与 body 自己带 */
+  padding: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
   box-shadow: 0 16px 40px color-mix(in srgb, var(--text) 18%, transparent);
 }
 
+/* 题目头部钉在滚动容器顶端：翻页时标题 / Tips / 关闭按钮始终可见 */
 .entry-modal__head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  padding-bottom: 12px;
+  padding: 20px 20px 12px;
   margin-bottom: 14px;
   border-bottom: 1px solid var(--border);
+  background: var(--surface);
   cursor: grab;
   user-select: none;
+}
+
+.entry-modal__body {
+  padding: 0 20px 20px;
 }
 
 .entry-modal__head > div {

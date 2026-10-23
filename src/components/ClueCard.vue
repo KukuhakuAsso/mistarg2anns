@@ -2,8 +2,8 @@
 // 线索栏板面上的卡片：可拖动改位置，拖出板面即退回待用区。
 import { computed } from "vue";
 import AppIcon from "@/components/AppIcon.vue";
+import PuzzleCover from "@/components/puzzle/PuzzleCover.vue";
 import { useClueDrag } from "@/composables/useClueDrag";
-import puzzleThumbnail from "@/assets/test.jpg";
 
 const props = defineProps({
     clue: { type: Object, required: true },
@@ -17,8 +17,6 @@ const { startDrag } = useClueDrag();
 const style = computed(() => ({
     transform: `translate(${props.clue.x}px, ${props.clue.y}px)`,
 }));
-
-const thumbSrc = computed(() => props.clue.thumbnail || puzzleThumbnail);
 </script>
 
 <template>
@@ -42,7 +40,7 @@ const thumbSrc = computed(() => props.clue.thumbnail || puzzleThumbnail);
         </header>
 
         <div class="clue-card__thumb" aria-hidden="true">
-            <img :src="thumbSrc" :alt="clue.title" />
+            <PuzzleCover :cover="clue.cover" :alt="clue.title" />
         </div>
 
         <footer class="clue-card__foot">{{ clue.folderName }}</footer>

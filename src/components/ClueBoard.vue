@@ -4,10 +4,10 @@
 import { computed } from "vue";
 import AppIcon from "@/components/AppIcon.vue";
 import ClueCard from "@/components/ClueCard.vue";
+import PuzzleCover from "@/components/puzzle/PuzzleCover.vue";
 import { useClueDrag } from "@/composables/useClueDrag";
 import { useGameState } from "@/composables/useGameState";
 import { CARD_GAP, CARD_H } from "@/config/board";
-import puzzleThumbnail from "@/assets/test.jpg";
 
 const {
     state,
@@ -103,7 +103,7 @@ function onPoolPointerDown(event, clueId) {
                     @pointerdown="onPoolPointerDown($event, clue.id)"
                 >
                     <span class="pool__thumb" aria-hidden="true">
-                        <img :src="clue.thumbnail || puzzleThumbnail" :alt="clue.title" />
+                        <PuzzleCover :cover="clue.cover" :alt="clue.title" />
                     </span>
                     <span class="pool__meta">
                         <span class="pool__label">{{ clue.title }}</span>

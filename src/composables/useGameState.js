@@ -98,15 +98,26 @@ function loadState() {
 
     const saved = JSON.parse(raw);
     // 板面卡片的标题快照（拖进来的题目）：先于 board 还原，过滤排布时要用它判断 id 是否可解析。
+    // 老存档没有 cover 字段，归一化成 null（渲染时回退占位图）。
     const boardLabels =
       saved.boardLabels && typeof saved.boardLabels === "object"
         ? Object.fromEntries(
-            Object.entries(saved.boardLabels).filter(
-              ([id, value]) =>
-                typeof id === "string" &&
-                Boolean(value) &&
-                typeof value.title === "string",
-            ),
+            Object.entries(saved.boardLabels)
+              .filter(
+                ([id, value]) =>
+                  typeof id === "string" &&
+                  Boolean(value) &&
+                  typeof value.title === "string",
+              )
+              .map(([id, value]) => [
+                id,
+                {
+                  title: value.title,
+                  subtitle:
+                    typeof value.subtitle === "string" ? value.subtitle : "",
+                  cover: toCover(value.cover),
+                },
+              ]),
           )
         : {};
     // 以默认状态为底再覆盖「可持久化」的字段：
@@ -198,7 +209,7 @@ const boardClues = computed(() =>
         kind: "puzzle",
         title: label.title,
         folderName: label.subtitle,
-        thumbnail: null,
+        cover: label.cover ?? null,
         x: placement.x,
         y: placement.y,
       };
@@ -217,7 +228,7 @@ const poolClues = computed(() => {
       kind: "puzzle",
       title: label.title,
       folderName: label.subtitle,
-      thumbnail: null,
+      cover: label.cover ?? null,
     }));
 });
 
@@ -256,14 +267,21 @@ function markFolderVisited(folderId) {
   }
 }
 
+// 封面快照只留渲染需要的字段，别把整条 map 数据塞进 localStorage。
+function toCover(value) {
+  const url = typeof value?.url === "string" ? value.url : "";
+  if (!url) return null;
+  return { url, alt: typeof value.alt === "string" ? value.alt : "" };
+}
+
 // 记录一张「从档案拖进板面的题目」卡片的标题快照。
-// 板面只存 id + 坐标，标题与来源存在这里：题目来自服务端 map，
+// 板面只存 id + 坐标，标题、来源与封面存在这里：题目来自服务端 map，
 // 靠这份快照才能在脱离 map 时（刷新、换页）照常渲染板面卡片。
-function registerBoardCard({ id, title, subtitle } = {}) {
+function registerBoardCard({ id, title, subtitle, cover } = {}) {
   if (!id || !title) return;
   state.boardLabels = {
     ...state.boardLabels,
-    [id]: { title, subtitle: subtitle || "" },
+    [id]: { title, subtitle: subtitle || "", cover: toCover(cover) },
   };
 }
 

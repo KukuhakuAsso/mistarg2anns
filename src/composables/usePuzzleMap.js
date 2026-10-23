@@ -26,6 +26,8 @@ function toEntry(item) {
     renderKind: item.renderKind || "none",
     solved: Boolean(item.solved),
     unlocked: true,
+    // map 已按本队进度选好封面（未解主封面 / 已解完成态封面），前端直接渲染
+    cover: item.cover ?? null,
   };
 }
 
