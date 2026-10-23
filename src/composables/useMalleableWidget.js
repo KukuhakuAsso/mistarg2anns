@@ -55,7 +55,9 @@ async function loadAsset(asset) {
     }
 
     const code = await response.text();
-    if (asset.integrity && !(await verifySha384(code, asset.integrity))) {
+    // 完整性校验是硬门槛：描述符缺 integrity / 形态不对一律视为校验不通过，
+    // 绝不放行未校验的代码。verifySha384() 对空值与畸形值已经返回 false
+    if (!(await verifySha384(code, asset.integrity))) {
       throw new Error("组件完整性校验未通过，已阻止执行");
     }
     // 将组件代码转为 Blob URL 并动态 import，确保只执行通过校验的代码。
