@@ -15,7 +15,12 @@ const { state, markFolderVisited } = useGameState();
 const { folders, progress, load, loading, error, loaded } = usePuzzleMap();
 // 未登录时不拉取（否则会得到一串 401）；登录后由 App.vue 统一拉取，
 // 这里只在「回到桌面时还没有数据」的场合补一次（例如刚加入队伍拿到取题资格）。
-if (state.user.currentUser && !loaded.value) {
+//
+// 已经失败过就别再自动补拉：失败时地图为空，App 会把桌面视图挂回来，
+// 而桌面视图一挂载又触发 load() → loading 置真 → 立刻被「正在加载题目结构…」顶掉，
+// 于是形成"挂载 / 卸载"死循环（实测在 #/folder/:id 上每秒上千次请求，
+// 且每次挂载都会清掉 error，用户永远看不到失败提示）。重试交给下方的按钮。
+if (state.user.currentUser && !loaded.value && !error.value) {
     load();
 }
 const showUserPanel = ref(false);
