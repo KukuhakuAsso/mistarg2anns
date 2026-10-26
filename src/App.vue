@@ -18,6 +18,7 @@ import ChangePasswordView from "@/views/ChangePasswordView.vue";
 import ForgotPasswordView from "@/views/ForgotPasswordView.vue";
 import AppealView from "@/views/AppealView.vue";
 import { usePuzzleMap } from "@/composables/usePuzzleMap";
+import { useClueBoardSync } from "@/composables/useClueBoardSync";
 import { FEATURE_ROUTES, router } from "@/router";
 import { useGameState } from "@/composables/useGameState";
 
@@ -36,6 +37,14 @@ const {
     reset: resetPuzzleMap,
     loading: mapLoading,
 } = usePuzzleMap();
+// 线索栏快照（api-13）：GET 不限流，POST 同账号 5 分钟一次，由它统一节流。
+const {
+    pull: pullClueBoard,
+    flush: flushClueBoard,
+    scheduleFlush: scheduleClueBoardFlush,
+    reset: resetClueBoard,
+    hydrateFromMap: hydrateClueBoardLabels,
+} = useClueBoardSync();
 // 当前路由对象（hash 路由维护的全局响应式状态），下面的派生判断都基于它。
 const currentRoute = computed(() => router.currentRoute);
 
@@ -85,6 +94,9 @@ function refreshBadgeIfLoggedIn() {
 function handleVisibilityChange() {
     if (!document.hidden) {
         refreshBadgeIfLoggedIn();
+        // 别的设备可能刚改过线索栏：回到页面时补一次 GET，并且有本地改动就试着上传
+        pullClueBoard();
+        flushClueBoard();
     }
 }
 
@@ -97,17 +109,34 @@ watch(
             refreshTeamTips();
             refreshAccountStatus();
             loadPuzzleMap();
+            // 线索栏：拿到本账号的服务端快照后再考虑上传
+            pullClueBoard();
         } else {
             // 登出 / 换账号：清掉上一个账号的解锁进度
             resetPuzzleMap();
+            resetClueBoard();
         }
     },
 );
+
+// 本地线索栏一改（拖入 / 移动 / 拖出 / 清空 / 删除）就排一次上传；
+// 冷却没到时 flush 会直接返回，本地状态照常可用。
+watch(
+    () =>
+        state.board
+            .map((item) => `${item.clueId}:${item.x}:${item.y}`)
+            .join("|") + `#${(state.removedClues ?? []).join(",")}`,
+    () => scheduleClueBoardFlush(),
+);
+
+// map 回来后用它补全同步卡片的标题 / 封面（boardLabels 不同步，只补在板面上的卡）。
+watch(puzzleFolders, () => hydrateClueBoardLabels());
 
 onMounted(() => {
     refreshBadgeIfLoggedIn();
     if (state.user.currentUser) {
         loadPuzzleMap();
+        pullClueBoard();
     }
     unreadTimer = window.setInterval(() => {
         if (!document.hidden) {

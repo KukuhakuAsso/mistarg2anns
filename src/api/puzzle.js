@@ -19,6 +19,17 @@ export const puzzleApi = {
       useAuth: true,
     }),
 
+  // 购买一条预置提示（api-10 §10.11）。无请求体；队伍级买断、只扣一次、不可退款。
+  // 成功 data: { hint, charged, alreadyUnlocked, balance }；余额不足 → 400 E_TIPS_SHORT。
+  buyHint: (key, id) =>
+    request(
+      `/puzzle/${encodeURIComponent(String(key ?? ""))}/hints/${encodeURIComponent(String(id ?? ""))}/buy`,
+      {
+        method: "POST",
+        useAuth: true,
+      },
+    ),
+
   // 提交答案。请求体字段为 snake_case（与后端实测一致），
   // 响应 data: { correct, alreadySolved, puzzleKey, progress, tips, newMilestones }。
   submit: ({ puzzleKey, answer }) =>
