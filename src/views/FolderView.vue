@@ -1,4 +1,4 @@
-<script setup>
+﻿<script setup>
 // 档案（目录）页：题目列表来自 GET /api/puzzle/map，点击后在可移动窗口里取单题视图。
 //
 // 未解锁的题目根本不会出现在 map 里，所以这里没有锁定态；
@@ -17,7 +17,6 @@ import {
 import { useGameState } from "@/composables/useGameState";
 import { useClueDrag } from "@/composables/useClueDrag";
 import { usePuzzleMap } from "@/composables/usePuzzleMap";
-import { buildPlaceholderTips } from "@/config/tips";
 
 const props = defineProps({
   folder: { type: Object, required: true },
@@ -26,16 +25,21 @@ const props = defineProps({
 const emit = defineEmits(["close"]);
 
 const { refresh } = usePuzzleMap();
-const { state, isTipUnlocked, unlockTip, refreshTeamTips, registerBoardCard } =
-  useGameState();
+const {
+  state,
+  refreshTeamTips,
+  registerBoardCard,
+  applyTipsBalance,
+} = useGameState();
 const { startDrag: startClueDrag } = useClueDrag();
 
-// 题目内的 Tips 弹层：内容为占位（见 config/tips.js），解锁只记在本地、不扣 tips 余额。
+// 题目内的预置提示（api-10 §10.11）：列表随题目视图一起下发，unlocked 已按本队购买记录
+// 与 0 价派生；未解锁项没有 content，购买成功后由接口就地返回该条的 unlocked + content。
 const tipsOpen = ref(false);
 const tipsBalance = computed(() => state.teamTips.balance);
-const tips = computed(() =>
-  buildPlaceholderTips(view.value?.title || selected.value?.title || ""),
-);
+const hints = computed(() => view.value?.hints ?? []);
+const tipsError = ref("");
+const buyingHintId = ref(null);
 
 const puzzles = computed(() =>
   props.folder.entries.filter((entry) => entry.kind === "puzzle"),
@@ -88,6 +92,8 @@ async function openEntry(entry) {
   viewError.value = "";
   viewStatus.value = "loading";
   tipsOpen.value = false;
+  tipsError.value = "";
+  buyingHintId.value = null;
   windowPosition.value = {
     x: Math.max(
       16,
@@ -134,17 +140,76 @@ function startPuzzleDrag(event, entry) {
   });
 }
 
-// 提示的本地解锁键：同一题目同一序号稳定，换题不会串。
-function tipId(index) {
-  return `${selected.value?.id ?? "puzzle"}-tip-${index + 1}`;
-}
-
 function toggleTips() {
   tipsOpen.value = !tipsOpen.value;
+  tipsError.value = "";
 }
 
-function unlockSelectedTip(index) {
-  unlockTip(tipId(index));
+// 提示被出题人改过（404 / 已购正文更新）时静默重取一次视图，不重置弹窗位置。
+async function reloadView(token) {
+  const key = view.value?.key;
+  if (!key) return;
+  try {
+    const payload = await puzzleApi.getView(key);
+    if (token !== viewToken) return;
+    const puzzle = payload?.data?.puzzle ?? null;
+    if (puzzle) view.value = puzzle;
+  } catch {
+    // 重取失败保持当前内容：错误文案已经给过一次了
+  }
+}
+
+// 就地替换一条提示：别整棵 view 换掉，否则正文里的可塑区会跟着重建。
+function replaceHint(next) {
+  const list = view.value?.hints;
+  if (!Array.isArray(list) || !next) return;
+  const target = list.find((item) => item.id === next.id);
+  if (target) Object.assign(target, next);
+}
+
+// 购买一条预置提示：一步买断、队伍共享、不可退款（api-10 §10.11）。
+async function buyHint(hint) {
+  const puzzle = view.value;
+  if (!puzzle || buyingHintId.value !== null) return;
+
+  const cost = Number(hint?.cost) || 0;
+  const confirmText =
+    cost > 0
+      ? `花费 ${cost} 点，购买后全队可见，确定购买吗？`
+      : `「${hint?.name || "该提示"}」是免费提示，确定解锁吗？`;
+  if (!window.confirm(confirmText)) return;
+
+  const token = viewToken;
+  buyingHintId.value = hint.id;
+  tipsError.value = "";
+  try {
+    const payload = await puzzleApi.buyHint(puzzle.key, hint.id);
+    if (token !== viewToken) return;
+    const data = payload?.data ?? {};
+    replaceHint(data.hint);
+    applyTipsBalance(data.balance);
+  } catch (error) {
+    if (token !== viewToken) return;
+    if (error?.code === "E_TIPS_SHORT") {
+      // 余额不足：服务端整体回滚（不扣费、不落购买记录），补点数后重新购买即可
+      const detail = error.payload?.error?.detail ?? {};
+      const balance = Number(detail.balance);
+      const required = Number(detail.required);
+      tipsError.value =
+        Number.isFinite(balance) && Number.isFinite(required)
+          ? `点数不足（当前 ${balance} / 需要 ${required}）`
+          : "点数不足，请先让队伍补充提示点";
+      if (Number.isFinite(balance)) applyTipsBalance(balance);
+    } else if (error?.status === 404) {
+      // 提示被删掉 / 不属于本题：以服务端为准重取视图
+      tipsError.value = "提示已变更，已重新获取题目";
+      await reloadView(token);
+    } else {
+      tipsError.value = extractErrorMessage(error, "购买失败，请稍后重试");
+    }
+  } finally {
+    if (token === viewToken) buyingHintId.value = null;
+  }
 }
 
 // 解出后：当前题立即置为已解出，并重新拉一次 map 让新解锁的题目出现（api-12）。
@@ -289,7 +354,7 @@ onBeforeUnmount(stopDrag);
                 {{ view?.title || selected.title }}
               </h2>
 
-              <div class="tips-control" @pointerdown.stop>
+              <div v-if="view" class="tips-control" @pointerdown.stop>
                 <button
                   class="tips-control__button"
                   type="button"
@@ -304,24 +369,43 @@ onBeforeUnmount(stopDrag);
                     <span>提示</span>
                     <span>{{ tipsBalance }} 点</span>
                   </header>
-                  <ol class="tips-popover__list">
-                    <li v-for="(tip, index) in tips" :key="tipId(index)">
-                      <button
-                        class="tips-popover__item"
-                        type="button"
-                        :disabled="
-                          isTipUnlocked(tipId(index)) || tipsBalance < 1
-                        "
-                        @click="unlockSelectedTip(index)"
-                      >
-                        <span>Tips {{ index + 1 }}</span>
-                        <span v-if="isTipUnlocked(tipId(index))">{{
-                          tip
-                        }}</span>
-                        <span v-else class="tips-popover__locked">
-                          {{ tipsBalance > 0 ? "1 点解锁" : "点数不足" }}
-                        </span>
-                      </button>
+                  <p v-if="tipsError" class="tips-popover__error">
+                    {{ tipsError }}
+                  </p>
+                  <p v-if="!hints.length" class="tips-popover__empty">
+                    本题没有预置提示
+                  </p>
+                  <ol v-else class="tips-popover__list">
+                    <li v-for="hint in hints" :key="hint.id">
+                      <div class="tips-popover__item">
+                        <span class="tips-popover__name">{{ hint.name }}</span>
+                        <!-- 已解锁：纯文本渲染，保留出题人写的换行 -->
+                        <p
+                          v-if="hint.unlocked"
+                          class="tips-popover__content"
+                        >
+                          {{ hint.content }}
+                        </p>
+                        <div v-else class="tips-popover__buy-row">
+                          <span class="tips-popover__locked">
+                            全队可见 · 不可退款
+                          </span>
+                          <button
+                            class="tips-popover__buy"
+                            type="button"
+                            :disabled="buyingHintId !== null"
+                            @click="buyHint(hint)"
+                          >
+                            {{
+                              buyingHintId === hint.id
+                                ? "购买中…"
+                                : hint.cost > 0
+                                  ? `${hint.cost} 点购买`
+                                  : "免费解锁"
+                            }}
+                          </button>
+                        </div>
+                      </div>
                     </li>
                   </ol>
                 </section>
@@ -613,7 +697,10 @@ onBeforeUnmount(stopDrag);
   z-index: 1;
   top: calc(100% + 8px);
   left: 0;
-  width: min(320px, calc(100vw - 72px));
+  display: flex;
+  flex-direction: column;
+  width: min(340px, calc(100vw - 72px));
+  max-height: min(420px, calc(100vh - 140px));
   padding: 10px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
@@ -623,11 +710,29 @@ onBeforeUnmount(stopDrag);
 
 .tips-popover__head {
   display: flex;
+  flex: none;
   justify-content: space-between;
   padding: 0 2px 8px;
   border-bottom: 1px solid var(--border);
   font-family: var(--mono);
   font-size: 11px;
+  color: var(--text-dim);
+}
+
+.tips-popover__error {
+  flex: none;
+  margin-top: 8px;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  font-size: 12px;
+  color: var(--danger);
+}
+
+.tips-popover__empty {
+  margin-top: 8px;
+  font-size: 12px;
   color: var(--text-dim);
 }
 
@@ -637,34 +742,66 @@ onBeforeUnmount(stopDrag);
   gap: 4px;
   margin: 8px 0 0;
   padding: 0;
+  overflow-y: auto;
   list-style: none;
 }
 
 .tips-popover__item {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  width: 100%;
+  gap: 4px;
   padding: 7px 8px;
-  border: 1px solid transparent;
+  border: 1px solid var(--border);
   border-radius: 2px;
-  background: transparent;
-  color: var(--text);
-  font-size: 12px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.tips-popover__item:hover:not(:disabled) {
-  border-color: var(--border);
   background: var(--surface-alt);
+  font-size: 12px;
 }
 
-.tips-popover__item:disabled {
-  cursor: default;
+.tips-popover__name {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent);
+}
+
+/* 正文是出题人写的纯文本：保留换行，不按 Markdown 解析 */
+.tips-popover__content {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.tips-popover__buy-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .tips-popover__locked {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.tips-popover__buy {
+  flex: none;
+  padding: 3px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.tips-popover__buy:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.tips-popover__buy:disabled {
+  cursor: default;
   color: var(--text-dim);
 }
 
