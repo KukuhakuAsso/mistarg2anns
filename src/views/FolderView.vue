@@ -1,4 +1,10 @@
-﻿<script setup>
+﻿<script>
+// 本次会话内记住用户拖出来的弹窗高度：切题、关窗再开都沿用，刷新页面才回到 2/3。
+// 放在模块作用域（不在 setup 里），所以离开档案页再回来也还在。
+let rememberedModalHeight = 0;
+</script>
+
+<script setup>
 // 档案（目录）页：题目列表来自 GET /api/puzzle/map，点击后在可移动窗口里取单题视图。
 //
 // 未解锁的题目根本不会出现在 map 里，所以这里没有锁定态；
@@ -63,6 +69,15 @@ const viewStatus = ref("idle"); // idle | loading | ready | error
 const viewError = ref("");
 const windowPosition = ref({ x: 0, y: 0 });
 const dragOffset = ref(null);
+// 弹窗高度：用户可拖动调整，初始值按可用高度的 2/3，离开档案页再回来沿用本会话内的记忆值。
+const modalHeight = ref(0);
+const resizeOffset = ref(null);
+
+const MODAL_MIN_HEIGHT = 280;
+
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), Math.max(min, max));
+}
 
 const modalWide = computed(() => Boolean(view.value?.malleable?.wide));
 
@@ -80,6 +95,27 @@ const modalWidth = computed(() =>
 const modalPositionWidth = computed(() =>
   Math.min(960, window.innerWidth - 32),
 );
+
+// 弹窗顶部以下还能用多高。高度一律夹在这个范围内 —— 否则底边会跑出视口，
+// 内容区滚到底也够不到最下面的答题框。
+function availableHeight() {
+  return Math.max(0, window.innerHeight - windowPosition.value.y - 16);
+}
+
+// 高度范围。视口极小时可用空间可能比最小高度还小，这时以可用空间为准，别硬撑出视口。
+function heightBounds() {
+  const available = availableHeight();
+  return { min: Math.min(MODAL_MIN_HEIGHT, available), max: available };
+}
+
+// 初始高度：可用高度的 2/3。用户拖过就沿用它（同一会话内不再重置）。
+function fitModalHeight() {
+  const { min, max } = heightBounds();
+  const base = rememberedModalHeight > 0
+    ? rememberedModalHeight
+    : Math.round(max * (2 / 3));
+  return clamp(base, min, max);
+}
 
 // 取题请求的代次：关闭弹窗或改开别的题后，旧请求的响应必须作废，
 // 否则加载慢的那道题迟到的响应会把用户正在看的题整个换掉。
@@ -101,6 +137,8 @@ async function openEntry(entry) {
     ),
     y: Math.max(16, Math.round((window.innerHeight - 480) / 3)),
   };
+  // 位置定了才能算可用高度
+  modalHeight.value = fitModalHeight();
   try {
     const payload = await puzzleApi.getView(entry.id);
     if (token !== viewToken) return;
@@ -247,9 +285,12 @@ function startDrag(event) {
 
 function dragWindow(event) {
   if (!dragOffset.value) return;
+  const nextX = Math.max(0, event.clientX - dragOffset.value.x);
+  const nextY = Math.max(0, event.clientY - dragOffset.value.y);
   windowPosition.value = {
-    x: Math.max(0, event.clientX - dragOffset.value.x),
-    y: Math.max(0, event.clientY - dragOffset.value.y),
+    // 高度是固定的，拖到视口外底边就会溢出（内容区滚到底也够不到答题框），所以夹住
+    x: Math.min(nextX, Math.max(0, window.innerWidth - modalWidth.value - 8)),
+    y: Math.min(nextY, Math.max(0, window.innerHeight - modalHeight.value - 8)),
   };
 }
 
@@ -258,14 +299,69 @@ function stopDrag() {
   document.removeEventListener("pointermove", dragWindow);
 }
 
+// 右下角把手：只改高度，夹在 [最小高度, 顶部以下可用空间] 内
+function startResize(event) {
+  if (event.pointerType === "mouse" && event.button !== 0) return;
+  event.preventDefault();
+  event.stopPropagation();
+  resizeOffset.value = { y: event.clientY, height: modalHeight.value };
+  document.addEventListener("pointermove", resizeWindow);
+  document.addEventListener("pointerup", stopResize, { once: true });
+  document.addEventListener("pointercancel", stopResize, { once: true });
+}
+
+function resizeWindow(event) {
+  if (!resizeOffset.value) return;
+  const { min, max } = heightBounds();
+  const next =
+    resizeOffset.value.height + (event.clientY - resizeOffset.value.y);
+  modalHeight.value = clamp(next, min, max);
+}
+
+function stopResize() {
+  if (resizeOffset.value) rememberedModalHeight = modalHeight.value;
+  resizeOffset.value = null;
+  document.removeEventListener("pointermove", resizeWindow);
+  document.removeEventListener("pointercancel", stopResize);
+}
+
+// 键盘也能调（把手可获得焦点）
+function nudgeHeight(event) {
+  const step = event.key === "ArrowUp" ? -24 : event.key === "ArrowDown" ? 24 : 0;
+  if (!step) return;
+  event.preventDefault();
+  const { min, max } = heightBounds();
+  modalHeight.value = clamp(modalHeight.value + step, min, max);
+  rememberedModalHeight = modalHeight.value;
+}
+
+// 视口变化（窗口缩放 / 转屏）：位置与高度都夹回可用范围。
+// 高度以「用户选过的值」为基准重新夹取，这样窗口缩小再放大能回到原高度，
+// 而不是停在被压缩后的最小值。
+function handleViewportResize() {
+  if (!selected.value) return;
+  windowPosition.value = {
+    x: clamp(windowPosition.value.x, 0, Math.max(0, window.innerWidth - modalWidth.value - 8)),
+    y: clamp(windowPosition.value.y, 0, Math.max(0, window.innerHeight - MODAL_MIN_HEIGHT - 8)),
+  };
+  const { min, max } = heightBounds();
+  const target = rememberedModalHeight > 0 ? rememberedModalHeight : modalHeight.value;
+  modalHeight.value = clamp(target, min, max);
+}
+
 // 进入档案时补刷一次余额：轮询间隔内可能已变化，避免拿旧值判断「点数不足」
 onMounted(() => {
   if (state.user.currentUser) {
     refreshTeamTips();
   }
+  window.addEventListener("resize", handleViewportResize);
 });
 
-onBeforeUnmount(stopDrag);
+onBeforeUnmount(() => {
+  stopDrag();
+  stopResize();
+  window.removeEventListener("resize", handleViewportResize);
+});
 </script>
 
 <template>
@@ -342,7 +438,10 @@ onBeforeUnmount(stopDrag);
       <article
         v-if="selected"
         class="entry-modal"
-        :style="[windowStyle, { width: `${modalWidth}px` }]"
+        :style="[
+          windowStyle,
+          { width: `${modalWidth}px`, height: modalHeight ? `${modalHeight}px` : undefined },
+        ]"
         role="dialog"
         :aria-label="view?.title || selected.title"
       >
@@ -437,6 +536,16 @@ onBeforeUnmount(stopDrag);
             @solved="handleSolved"
           />
         </div>
+
+        <span
+          class="entry-modal__resize"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="拖动或按上下方向键调整题目窗口高度"
+          tabindex="0"
+          @pointerdown="startResize"
+          @keydown="nudgeHeight"
+        />
       </article>
     </Teleport>
   </section>
@@ -616,11 +725,16 @@ onBeforeUnmount(stopDrag);
 .entry-modal {
   position: fixed;
   z-index: 20;
+  /* 高度由脚本计算（初始 = 可用高度 2/3，可拖拽调整），这里不设 max-height，
+     免得与计算值打架、把底边又裁回视口外 */
+  display: flex;
+  flex-direction: column;
   max-width: calc(100vw - 32px);
-  max-height: calc(100vh - 32px);
-  overflow-y: auto;
-  /* 滚动容器的 padding 会被 sticky 头部覆盖（内容从 padding 上方穿出），
-     所以这里不留内边距，改由头部与 body 自己带 */
+  /* 兜底：脚本算出的高度总在视口内，这里防的是将来改动漏夹 */
+  max-height: calc(100vh - 16px);
+  /* 提示弹层要从窗口里溢出来，所以不能裁内容 */
+  overflow: visible;
+  /* 滚动交给 body：窗口高度固定，header 自然固定在顶部，把手也不会被滚走 */
   padding: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -628,12 +742,12 @@ onBeforeUnmount(stopDrag);
   box-shadow: 0 16px 40px color-mix(in srgb, var(--text) 18%, transparent);
 }
 
-/* 题目头部钉在滚动容器顶端：翻页时标题 / Tips / 关闭按钮始终可见 */
+/* 题目头部固定在窗口顶端：翻页时标题 / Tips / 关闭按钮始终可见 */
 .entry-modal__head {
-  position: sticky;
-  top: 0;
+  position: relative;
   z-index: 2;
   display: flex;
+  flex: none;
   align-items: flex-start;
   gap: 12px;
   padding: 20px 20px 12px;
@@ -645,7 +759,53 @@ onBeforeUnmount(stopDrag);
 }
 
 .entry-modal__body {
+  flex: 1;
+  /* 关键：min-height:0 才允许 flex 子项收缩，否则不出现滚动条而是撑破窗口 */
+  min-height: 0;
+  overflow-y: auto;
   padding: 0 20px 20px;
+}
+
+/* 右下角高度把手 */
+.entry-modal__resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  border-bottom-right-radius: var(--radius);
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.entry-modal__resize::after {
+  content: "";
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 9px;
+  height: 9px;
+  background-image: repeating-linear-gradient(
+    135deg,
+    var(--text-dim) 0 1px,
+    transparent 1px 3px
+  );
+  opacity: 0.65;
+}
+
+.entry-modal__resize:hover::after,
+.entry-modal__resize:focus-visible::after {
+  background-image: repeating-linear-gradient(
+    135deg,
+    var(--accent) 0 1px,
+    transparent 1px 3px
+  );
+  opacity: 1;
+}
+
+.entry-modal__resize:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
 }
 
 .entry-modal__head > div {
