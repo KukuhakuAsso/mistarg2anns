@@ -29,9 +29,9 @@ const descriptionHtml = computed(() =>
 const descriptionRef = ref(null);
 useMarkdownMedia(descriptionRef, descriptionHtml);
 
-const coverRatio = computed(() => {
-  const ratios = { "16:9": "16 / 9", "4:3": "4 / 3", "1:1": "1 / 1" };
-  return ratios[cover.value?.ratio] || "16 / 9";
+const coverAspect = computed(() => {
+  const ratios = { "16:9": 16 / 9, "4:3": 4 / 3, "1:1": 1 };
+  return ratios[cover.value?.ratio] ?? 16 / 9;
 });
 
 // 封面同样受取题门禁保护，走带鉴权的 blob URL；高度按 ratio 预留，避免加载后跳动。
@@ -113,21 +113,23 @@ async function submitAnswer() {
 
 <template>
   <article class="puzzle">
+    <header class="puzzle__head">
+      <h1 class="puzzle__title">{{ puzzle.title }}</h1>
+      <span v-if="solved" class="puzzle__badge">已解出</span>
+    </header>
+
+    <!-- 封面放在标题之后：先看到题名，图不抢走首屏。
+         高度上限来自父级 --cover-max（内容区高度的 40%），宽度随之收缩，所以不裁切也不留大片空框 -->
     <figure
       v-if="cover"
       class="puzzle__cover"
-      :style="{ aspectRatio: coverRatio }"
+      :style="{ '--cover-aspect': coverAspect }"
     >
       <img v-if="coverStatus === 'ready'" :src="coverSrc" :alt="cover.alt" />
       <span v-else-if="coverStatus === 'error'" class="puzzle__cover-fallback">
         封面加载失败
       </span>
     </figure>
-
-    <header class="puzzle__head">
-      <h1 class="puzzle__title">{{ puzzle.title }}</h1>
-      <span v-if="solved" class="puzzle__badge">已解出</span>
-    </header>
 
     <!-- description 是白名单 Markdown 渲染结果（标签全部由渲染器拼出，不含原始 HTML）；
          其中的受保护图片由 useMarkdownMedia 回填带鉴权的 blob URL -->
@@ -188,8 +190,11 @@ async function submitAnswer() {
 }
 
 .puzzle__cover {
-  margin: 0;
-  width: 100%;
+  /* 宽度跟着高度上限收缩：1:1 的封面不会被撑成一条带大片留白的横条 */
+  width: min(100%, calc(var(--cover-max, 200px) * var(--cover-aspect, 1.7778)));
+  max-height: var(--cover-max, 200px);
+  aspect-ratio: var(--cover-aspect, 1.7778);
+  margin: 0 auto;
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -200,7 +205,8 @@ async function submitAnswer() {
   display: block;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  /* 配置的比例与图片实际比例不一致时也不裁切，宁可留白 */
+  object-fit: contain;
 }
 
 .puzzle__cover-fallback {

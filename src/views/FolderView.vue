@@ -9,7 +9,7 @@ let rememberedModalHeight = 0;
 //
 // 未解锁的题目根本不会出现在 map 里，所以这里没有锁定态；
 // 直接请求未解锁题的 view 会得到 404（与不存在同形），按正常提示处理即可。
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import AppIcon from "@/components/AppIcon.vue";
 import StatusMessage from "@/components/StatusMessage.vue";
 import PuzzleArticle from "@/components/puzzle/PuzzleArticle.vue";
@@ -72,6 +72,15 @@ const dragOffset = ref(null);
 // 弹窗高度：用户可拖动调整，初始值按可用高度的 2/3，离开档案页再回来沿用本会话内的记忆值。
 const modalHeight = ref(0);
 const resizeOffset = ref(null);
+// 内容区高度只有渲染后才知道：封面高度上限按它的 40% 算，避免封面把题面挤走
+const bodyRef = ref(null);
+const coverMaxHeight = ref(0);
+
+function measureCoverCap() {
+  const el = bodyRef.value;
+  if (!el) return;
+  coverMaxHeight.value = Math.max(120, Math.round(el.clientHeight * 0.4));
+}
 
 const MODAL_MIN_HEIGHT = 280;
 
@@ -349,6 +358,10 @@ function handleViewportResize() {
   modalHeight.value = clamp(target, min, max);
 }
 
+// 窗口高度变化（打开 / 拖拽把手 / 视口缩放）后重新算封面上限。
+// 拖拽过程中 modalHeight 每帧都在变，nextTick 里只做一次 clientHeight 读取，开销可忽略。
+watch(modalHeight, () => nextTick(measureCoverCap));
+
 // 进入档案时补刷一次余额：轮询间隔内可能已变化，避免拿旧值判断「点数不足」
 onMounted(() => {
   if (state.user.currentUser) {
@@ -440,7 +453,11 @@ onBeforeUnmount(() => {
         class="entry-modal"
         :style="[
           windowStyle,
-          { width: `${modalWidth}px`, height: modalHeight ? `${modalHeight}px` : undefined },
+          {
+            width: `${modalWidth}px`,
+            height: modalHeight ? `${modalHeight}px` : undefined,
+            '--cover-max': coverMaxHeight ? `${coverMaxHeight}px` : undefined,
+          },
         ]"
         role="dialog"
         :aria-label="view?.title || selected.title"
@@ -521,7 +538,7 @@ onBeforeUnmount(() => {
           </button>
         </header>
 
-        <div class="entry-modal__body">
+        <div ref="bodyRef" class="entry-modal__body">
           <div v-if="viewStatus === 'loading'" class="entry-modal__state">
             正在取题…
           </div>
