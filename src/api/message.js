@@ -51,32 +51,50 @@ export const messageApi = {
   // 给了 replyTo 则是回复，主题由服务端按根主题生成，客户端传的 subject 会被忽略。
   // 玩家侧不传 channel：后端不再支持队伍内通讯，新邮件只会落在自己的账号级频道，
   // 面向官方的新邮件统一走下面的 feedback。
-  sendMail: ({ subject, content, contentType = "text", replyTo } = {}) =>
+  // attachments（2026-10-31 起）：[{ objectKey, filename, mime, sizeBytes }]，≤3 张，新邮件与回复都支持。
+  sendMail: ({
+    subject,
+    content,
+    contentType = "text",
+    replyTo,
+    attachments,
+  } = {}) =>
     request("/msg/mails", {
       method: "POST",
       body: {
         ...(replyTo ? { reply_to: replyTo } : { subject }),
         content,
         content_type: contentType,
+        ...(attachments?.length ? { attachments } : {}),
       },
       useAuth: true,
     }),
 
-  // 问题反馈（POST /api/msg/feedback）：任何登录用户可用，不要求有队伍；subject 为主题
-  feedback: ({ subject, content, contentType = "text" } = {}) =>
+  // 问题反馈（POST /api/msg/feedback）：任何登录用户可用，不要求有队伍；subject 为主题。
+  // attachments 同 sendMail（≤3 张图片）。
+  feedback: ({ subject, content, contentType = "text", attachments } = {}) =>
     request("/msg/feedback", {
       method: "POST",
-      body: { subject, content, content_type: contentType },
+      body: {
+        subject,
+        content,
+        content_type: contentType,
+        ...(attachments?.length ? { attachments } : {}),
+      },
       useAuth: true,
     }),
 
   // ---------- 求提示（两步付费：提问 → 看报价 → 确认才扣费） ----------
 
-  // 提问（POST /api/msg/hint）：这一步不扣费、不发消息；每队同时只能有 1 条待报价
-  requestHint: ({ content } = {}) =>
+  // 提问（POST /api/msg/hint）：这一步不扣费、不发消息；每队同时只能有 1 条待报价。
+  // attachments（2026-10-31 起）：提问截图 ≤3 张，staff 在求提示工作台可见（报价依据）。
+  requestHint: ({ content, attachments } = {}) =>
     request("/msg/hint", {
       method: "POST",
-      body: { content },
+      body: {
+        content,
+        ...(attachments?.length ? { attachments } : {}),
+      },
       useAuth: true,
     }),
 
