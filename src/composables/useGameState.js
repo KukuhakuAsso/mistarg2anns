@@ -1,4 +1,4 @@
-// 全局游戏状态：服务端权威数据（账号 / 队伍 / 未读 / tips / 处罚）+ 本地收藏板。
+﻿// 全局游戏状态：服务端权威数据（账号 / 队伍 / 未读 / tips / 处罚）+ 本地收藏板。
 // 单例模块，任意组件直接调用 useGameState() 即可读写同一份状态。
 //
 // 题目与目录全部来自 GET /api/puzzle/map（含解锁、已解状态），本模块不再保留任何 mock 题目 / 线索数据。
@@ -57,9 +57,19 @@ function createDefaultState() {
     sessionBanAcknowledged: false,
     // 强制登出后留给登录页展示的一次性提示（如「账号已被封禁，请重新登录后提交申诉」）。
     sessionNotice: "",
-    unlockedTips: [],
     board: [],
     boardLabels: {},
+    // 线索栏服务端快照（api-13）：clueId → { x, y, removed }，只用于算差量，不持久化 ——
+    // 每次登录都重新 GET，避免把上一个账号的状态当成「已知服务端状态」。
+    serverBoard: {},
+    // 待上传的移除墓碑：只有「从收藏里删掉」才产生（拖出板面只是回到待用区）。
+    removedClues: [],
+    // 本机主动拖出板面的卡片：服务端只有「在板上」一种状态，这类改动不上传，
+    // 但要记住，免得下次 GET 又把它们摆回板上。
+    unplacedClues: [],
+    // 被服务端以 E_VALIDATION 拒过的条目（clueId → 签名）：不重发同一份数据，
+    // 等用户把它改成别的坐标 / 重新收藏才会再次尝试。
+    rejectedClueBoard: {},
     user: {
       currentUser: null,
       users: [],
@@ -137,11 +147,15 @@ function loadState() {
       // 队伍 tips 与处罚状态都是服务端数据，不从本地恢复
       teamTips: { ...fallback.teamTips },
       accountStatus: { ...fallback.accountStatus },
-      unlockedTips: Array.isArray(saved.unlockedTips)
-        ? saved.unlockedTips.filter((tipId) => typeof tipId === "string")
-        : [],
       board: Array.isArray(saved.board)
         ? saved.board.filter((item) => isPlacement(item, boardLabels))
+        : [],
+      // 待上传的墓碑与「拖出板面」标记要跨刷新保留，否则改动会丢
+      removedClues: Array.isArray(saved.removedClues)
+        ? saved.removedClues.filter((id) => typeof id === "string")
+        : [],
+      unplacedClues: Array.isArray(saved.unplacedClues)
+        ? saved.unplacedClues.filter((id) => typeof id === "string")
         : [],
       user: {
         ...fallback.user,
@@ -164,9 +178,10 @@ watch(
       const persistedState = {
         visitedFolders: value.visitedFolders,
         unreadMessages: value.unreadMessages,
-        unlockedTips: value.unlockedTips,
         board: value.board,
         boardLabels: value.boardLabels,
+        removedClues: value.removedClues,
+        unplacedClues: value.unplacedClues,
         ui: value.ui,
       };
 
@@ -180,9 +195,12 @@ watch(
 
 // 当前用户身份变化（登录 / 登出 / 切换账号）时集中清空队伍缓存。
 // 不会在新账号的 /team/me 失败时继续渲染上一个账号的队伍、成员与邀请码。
+// 上一个活跃账号：用来区分「登出」和「换账号」—— 后者必须把线索栏也清掉。
+let lastAccountKey = null;
+
 watch(
   () => state.user.currentUser?.id ?? state.user.currentUser?.username ?? null,
-  () => {
+  (accountKey) => {
     state.user.team = { loaded: false, team: null, myJoinRequest: null };
     // 未读角标是服务端数据，切换账号时一并清零，避免残留上一账号的未读数。
     state.unreadMessages = 0;
@@ -195,23 +213,33 @@ watch(
     };
     // 处罚状态也不能跨账号残留（否则上一个账号的封禁会把新账号也锁住）。
     state.accountStatus = createEmptyAccountStatus();
+    // 线索栏现在是账号级数据（服务端快照）：换成另一个账号时清掉上一个账号的卡片，
+    // 否则会把 A 的卡片带进 B 的会话，下一次上传还会写进 B 的快照。
+    // 单纯登出（→ null）只作废内存里的服务端快照，重新登录同一账号时本地坐标仍能参与合并。
+    if (accountKey && lastAccountKey && accountKey !== lastAccountKey) {
+      resetClueBoardLocal();
+    } else if (!accountKey) {
+      resetClueBoardSync();
+    }
+    lastAccountKey = accountKey;
   },
 );
 
 // ---------- 派生状态 ----------
 
 // 派生：板面上已放置的卡片，附带其坐标（标题来自 boardLabels 快照）。
+// 快照缺失（跨设备同步过来、本机还没拿到 map）时用 clue_id 兜底，
+// 否则卡片会被整条过滤掉 —— 看起来像是同步丢了。
 const boardClues = computed(() =>
   state.board
     .map((placement) => {
       const label = state.boardLabels?.[placement.clueId];
-      if (!label) return null;
       return {
         id: placement.clueId,
         kind: "puzzle",
-        title: label.title,
-        folderName: label.subtitle,
-        cover: label.cover ?? null,
+        title: label?.title ?? placement.clueId,
+        folderName: label?.subtitle ?? "",
+        cover: label?.cover ?? null,
         x: placement.x,
         y: placement.y,
       };
@@ -276,6 +304,13 @@ function toCover(value) {
   return { url, alt: typeof value.alt === "string" ? value.alt : "" };
 }
 
+// 从数组里就地删掉某个 id（这些集合都是 string[]，靠 includes 判断）。
+function dropFrom(list, id) {
+  if (!Array.isArray(list)) return;
+  const index = list.indexOf(id);
+  if (index >= 0) list.splice(index, 1);
+}
+
 // 记录一张「从档案拖进板面的题目」卡片的标题快照。
 // 板面只存 id + 坐标，标题、来源与封面存在这里：题目来自服务端 map，
 // 靠这份快照才能在脱离 map 时（刷新、换页）照常渲染板面卡片。
@@ -291,35 +326,35 @@ function registerBoardCard(
     ...state.boardLabels,
     [id]: { title, subtitle: subtitle || "", cover: toCover(cover) },
   };
+  // 重新收进线索栏的卡不再是墓碑，也不算「拖出板面」
+  dropFrom(state.removedClues, id);
+  dropFrom(state.unplacedClues, id);
 }
 
 // 从收藏里彻底移除一张卡（待用区的删除按钮、或卡片上的移除）：
 // board 与 boardLabels 必须一起删，否则 boardLabels 里会留下再也看不到的孤儿条目。
+// 同时记一条移除墓碑：服务端只有「在板上 / 已移除」两种状态，删卡必须显式上传（api-13）。
 function uncollectCard(cardId) {
   if (!cardId) return;
   state.board = state.board.filter((item) => item.clueId !== cardId);
   const labels = { ...(state.boardLabels ?? {}) };
   delete labels[cardId];
   state.boardLabels = labels;
+  dropFrom(state.unplacedClues, cardId);
+  if (!state.removedClues.includes(cardId)) state.removedClues.push(cardId);
 }
 
-// 查询某条提示是否已解锁。
-function isTipUnlocked(tipId) {
-  return state.unlockedTips.includes(tipId);
-}
-
-// 解锁一条提示：只记录本地已解锁（服务端暂无静态提示的扣点接口，点击不做任何后端交互）。
-// 门槛读队伍余额 state.teamTips.balance（由 /tips/balance 轮询维护），但只读不改：
-// 解锁不会扣减这个数字，真正扣费等后端接口就绪后再接。
-function unlockTip(tipId) {
-  if (isTipUnlocked(tipId) || state.teamTips.balance < 1) return false;
-
-  state.unlockedTips.push(tipId);
-  return true;
+// 预置提示购买成功后，用响应里的 balance 就地更新余额角标（省一次 /tips/balance）。
+function applyTipsBalance(balance) {
+  const value = Number(balance);
+  if (!Number.isFinite(value)) return;
+  state.teamTips = { ...state.teamTips, hasTeam: true, balance: value };
 }
 
 // 在指定坐标放置一条线索；若该线索已在板面则仅更新其坐标。
 function placeClue(clueId, x, y) {
+  dropFrom(state.unplacedClues, clueId);
+  dropFrom(state.removedClues, clueId);
   const existing = state.board.find((item) => item.clueId === clueId);
   if (existing) {
     existing.x = x;
@@ -329,14 +364,178 @@ function placeClue(clueId, x, y) {
   state.board.push({ clueId, x, y });
 }
 
-// 从板面移除一条线索。
+// 从板面移除一条线索（回到待用区）。这不是「删除收藏」，所以不产生移除墓碑；
+// 但要记进 unplacedClues，否则下一次 GET 会按服务端坐标把它摆回板上。
 function removeClueFromBoard(clueId) {
   state.board = state.board.filter((item) => item.clueId !== clueId);
+  if (!state.unplacedClues.includes(clueId)) state.unplacedClues.push(clueId);
 }
 
-// 清空板面上的所有线索。
+// 清空板面上的所有线索（全部回到待用区，理由同上）。
 function clearBoard() {
+  for (const item of state.board) {
+    if (!state.unplacedClues.includes(item.clueId)) {
+      state.unplacedClues.push(item.clueId);
+    }
+  }
   state.board = [];
+}
+
+// ---------- 线索栏快照同步（api-13） ----------
+
+// 把服务端快照校正进本地线索栏。规则（与推荐时序一致）：
+//   · removed:true  → 删掉卡片（board + 标题快照 + 两个标记集合）
+//   · removed:false → 本机有未上传的改动就保留本地坐标；本机没有这张卡就按服务端坐标补上
+// 服务端只有「在板上」一种状态，本机「拖出板面」的卡靠 unplacedClues 挡住，不被摆回去。
+function applyClueBoardSnapshot(items = []) {
+  const previous = state.serverBoard ?? {};
+  const nextServer = {};
+  const nextRemoved = new Set(state.removedClues ?? []);
+  const unplaced = new Set(state.unplacedClues ?? []);
+  const rejected = { ...(state.rejectedClueBoard ?? {}) };
+  const labels = { ...(state.boardLabels ?? {}) };
+  const board = state.board.map((item) => ({ ...item }));
+  const byId = new Map(board.map((item) => [item.clueId, item]));
+
+  for (const item of items) {
+    const clueId = item?.clue_id;
+    if (typeof clueId !== "string" || !clueId) continue;
+
+    const server = {
+      x: Number.isFinite(item.x) ? item.x : null,
+      y: Number.isFinite(item.y) ? item.y : null,
+      removed: Boolean(item.removed),
+    };
+    nextServer[clueId] = server;
+
+    if (server.removed) {
+      // 服务端已确认移除：墓碑完成任务，本地卡片一并消失
+      nextRemoved.delete(clueId);
+      unplaced.delete(clueId);
+      delete rejected[clueId];
+      delete labels[clueId];
+      const local = byId.get(clueId);
+      if (local) {
+        board.splice(board.indexOf(local), 1);
+        byId.delete(clueId);
+      }
+      continue;
+    }
+
+    if (nextRemoved.has(clueId)) continue; // 本机刚删掉，等服务端确认，别复活
+    if (unplaced.has(clueId)) continue; // 本机故意拖出板面
+
+    const local = byId.get(clueId);
+    if (!local) {
+      if (server.x === null || server.y === null) continue;
+      const placed = { clueId, x: server.x, y: server.y };
+      board.push(placed);
+      byId.set(clueId, placed);
+      continue;
+    }
+
+    const known = previous[clueId];
+    // 本地坐标与「上次已知的服务端坐标」不一致 = 本机还没上传的移动，保留本地
+    const localChanged =
+      !known ||
+      known.removed ||
+      known.x !== Math.round(local.x) ||
+      known.y !== Math.round(local.y);
+    if (!localChanged && server.x !== null && server.y !== null) {
+      local.x = server.x;
+      local.y = server.y;
+    }
+    // 服务端坐标与本地一致 = 这条已经被接受，之前 400 的拒绝记录作废
+    if (server.x === Math.round(local.x) && server.y === Math.round(local.y)) {
+      delete rejected[clueId];
+    }
+  }
+
+  state.board = board;
+  state.boardLabels = labels;
+  state.serverBoard = nextServer;
+  state.removedClues = [...nextRemoved];
+  state.unplacedClues = [...unplaced];
+  state.rejectedClueBoard = rejected;
+}
+
+// 本地与「已知服务端状态」的差异，按 api-13 的增量语义拼成 items：
+// 只有本地新增/移动的坐标，以及显式删除的墓碑；没出现的线索不会被删除。
+// 被服务端拒绝过的同一份数据不再重发，否则每次冷却结束都会重复撞同一个 400。
+function pendingClueBoardChanges() {
+  const items = [];
+  const known = state.serverBoard ?? {};
+  const rejected = state.rejectedClueBoard ?? {};
+
+  for (const placement of state.board) {
+    const x = Math.round(placement.x);
+    const y = Math.round(placement.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    const signature = `${x},${y}`;
+    if (rejected[placement.clueId] === signature) continue;
+    const server = known[placement.clueId];
+    if (!server || server.removed || server.x !== x || server.y !== y) {
+      items.push({ clue_id: placement.clueId, x, y });
+    }
+  }
+
+  for (const clueId of state.removedClues ?? []) {
+    if (rejected[clueId] === "removed") continue;
+    // 本地已在板上的不会再进墓碑集合，这里只补服务端还不知道的移除
+    if (!known[clueId] || !known[clueId].removed) {
+      items.push({ clue_id: clueId, removed: true });
+    }
+  }
+
+  return items;
+}
+
+// 服务端判定这批条目非法（400 E_VALIDATION）时记下签名，避免反复重发。
+// 用户再把卡片挪到别的坐标就是新数据，会重新尝试。
+function markClueBoardRejected(items = []) {
+  const rejected = { ...(state.rejectedClueBoard ?? {}) };
+  for (const item of items) {
+    if (typeof item?.clue_id !== "string") continue;
+    rejected[item.clue_id] = item.removed ? "removed" : `${item.x},${item.y}`;
+  }
+  state.rejectedClueBoard = rejected;
+}
+
+// 跨设备同步过来的卡片只有 clue_id（boardLabels 不同步）：用 map 里的题目标题补快照，
+// 否则板面上只能显示 key。只补「已经在板面上」的卡片 —— 否则所有题目都会跑进待用区。
+function hydrateBoardLabels(entries = []) {
+  const onBoard = new Set(state.board.map((item) => item.clueId));
+  const labels = { ...(state.boardLabels ?? {}) };
+  let changed = false;
+
+  for (const entry of entries) {
+    const id = entry?.id;
+    if (!id || !entry.title) continue;
+    if (!onBoard.has(id) || labels[id]) continue;
+    labels[id] = {
+      title: entry.title,
+      subtitle: entry.subtitle || "",
+      cover: toCover(entry.cover),
+    };
+    changed = true;
+  }
+
+  if (changed) state.boardLabels = labels;
+}
+
+// 登出 / 换账号：服务端快照与墓碑都作废（不持久化，重新登录再拉）。
+function resetClueBoardSync() {
+  state.serverBoard = {};
+  state.removedClues = [];
+  state.unplacedClues = [];
+  state.rejectedClueBoard = {};
+}
+
+// 换成另一个账号：上一个账号的卡片不能留在界面里，更不能被上传进新账号的快照。
+function resetClueBoardLocal() {
+  state.board = [];
+  state.boardLabels = {};
+  resetClueBoardSync();
 }
 
 // 按列网格排布，依据板面实际宽度计算第 index 张线索卡应放置的坐标。
@@ -830,13 +1029,19 @@ export function useGameState() {
     markFolderVisited,
     registerBoardCard,
     uncollectCard,
-    isTipUnlocked,
-    unlockTip,
+    applyTipsBalance,
     placeClue,
     removeClueFromBoard,
     clearBoard,
     arrangeBoard,
     addClueToBoard,
+    // 线索栏快照（api-13）
+    applyClueBoardSnapshot,
+    pendingClueBoardChanges,
+    markClueBoardRejected,
+    hydrateBoardLabels,
+    resetClueBoardSync,
+    resetClueBoardLocal,
     toggleCluePanel,
     resetProgress,
     // 队伍接口操作

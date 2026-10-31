@@ -30,6 +30,16 @@ function safeUrl(raw) {
   return "";
 }
 
+// 本站 API 路径（`/api/puzzle/media/18` 等）是受取题门禁保护的素材：
+//   · 原生 <img> 发不出 Authorization 头（刷新 Cookie 只挂在 /api/auth 上）；
+//   · 它也不经过 resolveServerUrl()，部署在 /api-mist 等前缀时会打到错误端点。
+// 所以这里不写 src，只留路径，由渲染方用带鉴权的 blob URL 回填（见 useMarkdownMedia）。
+const PROTECTED_MEDIA_RE = /^\/api\//i;
+
+export function isProtectedMediaUrl(url) {
+  return PROTECTED_MEDIA_RE.test(String(url ?? "").trim());
+}
+
 // 行内元素正则：代码、图片、链接、加粗、斜体。
 const INLINE_RE =
   /`([^`\n]+)`|!\[([^\]\n]*)\]\(([^)\s]*)\)|\[([^\]\n]*)\]\(([^)\s]*)\)|\*\*([^*\n]+)\*\*|__([^_\n]+)__|(?<![\w*])\*([^*\n]+)\*(?![\w*])|(?<![\w_])_([^_\n]+)_(?![\w_])/g;
@@ -63,9 +73,15 @@ function renderInline(raw) {
     }
     if (imageAlt !== undefined) {
       const url = safeUrl(imageUrl);
-      html += url
-        ? `<img src="${escapeHtml(url)}" alt="${escapeHtml(imageAlt)}" loading="lazy" />`
-        : escapeHtml(match[0]);
+      if (!url) {
+        html += escapeHtml(match[0]);
+      } else if (isProtectedMediaUrl(url)) {
+        // 受保护素材：只带路径与 alt，src 由 useMarkdownMedia 用 blob URL 回填
+        html += `<img data-media-path="${escapeHtml(url)}" data-media-state="pending" alt="${escapeHtml(imageAlt)}" loading="lazy" />`;
+      } else {
+        // 外链图片不经过本站门禁，直接交给浏览器
+        html += `<img src="${escapeHtml(url)}" alt="${escapeHtml(imageAlt)}" loading="lazy" />`;
+      }
       continue;
     }
     if (linkText !== undefined) {
