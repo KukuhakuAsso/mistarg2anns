@@ -20,11 +20,16 @@ export const meApi = {
       useAuth: true,
     }),
 
-  // 提交一条申诉：{ content(1..2000), scope? }；种类由服务端判定，前端不传 kind / subject
-  submitAppeal: ({ content, scope = "account" }) =>
+  // 提交一条申诉：{ content(1..2000), scope?, attachments? }；种类由服务端判定，前端不传 kind / subject。
+  // attachments（2026-10-31 起）：[{ objectKey, filename, mime, sizeBytes }]，≤3 张，个人/队伍申诉都支持。
+  submitAppeal: ({ content, scope = "account", attachments }) =>
     request("/me/appeal", {
       method: "POST",
-      body: { content, scope },
+      body: {
+        content,
+        scope,
+        ...(attachments?.length ? { attachments } : {}),
+      },
       useAuth: true,
     }),
 };

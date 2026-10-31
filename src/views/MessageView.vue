@@ -10,6 +10,10 @@ import { extractErrorMessage } from "@/api/errors";
 import StatusMessage from "@/components/StatusMessage.vue";
 import { messageApi } from "@/api/message";
 import { tipsApi } from "@/api/tips";
+import { useAttachments } from "@/composables/useAttachments";
+import { useMsgAttachments } from "@/composables/useMsgAttachments";
+import AttachmentPicker from "@/components/AttachmentPicker.vue";
+import AttachmentGallery from "@/components/AttachmentGallery.vue";
 import UserTabs from "@/components/UserTabs.vue";
 
 const { state, refreshUnreadSummary, refreshTeamTips } = useGameState();
@@ -90,6 +94,47 @@ const {
   set: setNotice,
   clear: clearNotice,
 } = useStatusMessage();
+
+// ---------- 图片附件（api-8-message-mail.md §8.3，2026-10-31 起） ----------
+// 写信 / 回复 / 问题反馈共用一份，求提示提问自己一份（两处不能混：提交是各走各的接口）。
+// 前端不做压缩，选图时即按规格校验（≤3 张、jpg/png/webp、≤5MiB、长边 ≤1600px）；
+// 校验通过后立刻 sign + 直传，提交时只带 objectKey，未传完禁止提交。
+const composeAttachments = useAttachments({
+  onError: (text) => setNotice("error", text),
+});
+const hintAttachments = useAttachments({
+  onError: (text) => setNotice("error", text),
+});
+// 发信侧的附件开关（/api/msg/policy.attachmentsEnabled，严格判值：缺失即关闭）。
+const { attachmentsEnabled, loadPolicy } = useMsgAttachments();
+
+// 模板里用的解构别名（setup 里的顶层 ref 在模板中会自动解包，取 .value 反而读不到）
+const {
+  items: composeFiles,
+  dragging: composeDragging,
+  issue: composeIssue,
+  addFiles: addComposeFiles,
+  remove: removeCompose,
+  retry: retryCompose,
+  onPaste: onComposePaste,
+  onDragenter: onComposeDragenter,
+  onDragover: onComposeDragover,
+  onDragleave: onComposeDragleave,
+  onDrop: onComposeDrop,
+} = composeAttachments;
+const {
+  items: hintFiles,
+  dragging: hintDragging,
+  issue: hintIssue,
+  addFiles: addHintFiles,
+  remove: removeHint,
+  retry: retryHint,
+  onPaste: onHintPaste,
+  onDragenter: onHintDragenter,
+  onDragover: onHintDragover,
+  onDragleave: onHintDragleave,
+  onDrop: onHintDrop,
+} = hintAttachments;
 
 // 求提示：进行中的请求可能有多条 —— 只有 pending 占用「每队 1 条」名额，
 // 一旦官方报价（quoted）就释放名额，所以可以有 1 条 pending + 多条待确认/待议价的请求。
@@ -658,18 +703,33 @@ async function sendCompose() {
     setNotice("error", "正文不能为空。");
     return;
   }
+  // 图片是补充：正文仍必填；但上传没完成时不能提交（提交只带 objectKey）
+  if (composeAttachments.uploading.value) {
+    setNotice("error", "图片还在上传，请等上传完成后再发送。");
+    return;
+  }
+  if (composeAttachments.failed.value) {
+    setNotice("error", "有图片上传失败，请重试或移除后再发送。");
+    return;
+  }
 
+  const attachments = composeAttachments.serialize();
   composing.value = true;
   setNotice("pending", "正在发送...");
   try {
     if (composeReplyTo.value) {
       const mailId = composeReplyTo.value;
-      const response = await messageApi.sendMail({ replyTo: mailId, content });
+      const response = await messageApi.sendMail({
+        replyTo: mailId,
+        content,
+        attachments,
+      });
       // 详情只含「这一封 + 它回复过的链」，回复后要打开新生成的那封才能看到刚发出的内容
       const newMailId = response?.data?.mailId ?? mailId;
 
       composeDraft.value = "";
       composeReplyTo.value = null;
+      composeAttachments.clear();
       activeTab.value = "inbox";
       await loadMails();
       await openMail(newMailId);
@@ -677,7 +737,11 @@ async function sendCompose() {
     } else {
       // 主题可选：留空时服务端取正文首行
       const subject = composeSubject.value.trim();
-      await messageApi.feedback({ subject: subject || undefined, content });
+      await messageApi.feedback({
+        subject: subject || undefined,
+        content,
+        attachments,
+      });
       setNotice(
         "success",
         "已发送给官方 / 工作人员，回复会出现在「与官方的联系」中。",
@@ -685,6 +749,7 @@ async function sendCompose() {
 
       composeDraft.value = "";
       composeSubject.value = "";
+      composeAttachments.clear();
       await loadMails();
     }
   } catch (error) {
@@ -755,13 +820,25 @@ async function submitHintQuestion() {
     setNotice("error", "请先填写问题描述。");
     return;
   }
+  if (hintAttachments.uploading.value) {
+    setNotice("error", "图片还在上传，请等上传完成后再提交。");
+    return;
+  }
+  if (hintAttachments.failed.value) {
+    setNotice("error", "有图片上传失败，请重试或移除后再提交。");
+    return;
+  }
 
   hintSubmitting.value = true;
   setNotice("pending", "正在提交求提示...");
   try {
-    const response = await messageApi.requestHint({ content });
+    const response = await messageApi.requestHint({
+      content,
+      attachments: hintAttachments.serialize(),
+    });
     const data = response?.data ?? {};
     hintQuestion.value = "";
+    hintAttachments.clear();
     hintPendingCount.value = Number(data.pendingCount ?? 1) || 1;
     // 提问响应就是待报价状态，直接插到列表里，省一次 GET
     openHints.value = [
@@ -778,6 +855,8 @@ async function submitHintQuestion() {
         decidedAt: null,
         replyMsgId: null,
         reason: null,
+        // 提问时附的截图（服务端形状：[{ id, fileName, mimeType, size, url }]）
+        attachments: Array.isArray(data.attachments) ? data.attachments : [],
       },
       ...openHints.value,
     ];
@@ -1192,12 +1271,21 @@ onMounted(async () => {
 
   document.addEventListener("visibilitychange", handleVisibilityChange);
   // 未读角标（GET /msg/mails/summary）由 App.vue 的全局轮询统一负责，本页只加载自己的数据。
-  await Promise.all([loadMails(), loadTipsBalance(), restoreOpenHints()]);
+  // 附件开关随页面取一次（策略因用户而异，不进缓存；拿不到就按关闭处理）。
+  await Promise.all([
+    loadMails(),
+    loadTipsBalance(),
+    restoreOpenHints(),
+    loadPolicy(),
+  ]);
 });
 
 onBeforeUnmount(() => {
   stopHintPolling();
   document.removeEventListener("visibilitychange", handleVisibilityChange);
+  // 释放尚未提交的本地预览 URL
+  composeAttachments.dispose();
+  hintAttachments.dispose();
 });
 </script>
 
@@ -1372,6 +1460,7 @@ onBeforeUnmount(() => {
                     </span>
                   </div>
                   <p class="hint-open__question">{{ item.question }}</p>
+                  <AttachmentGallery :items="item.attachments" />
 
                   <p v-if="item.status === 'pending'" class="helper-text">
                     等待官方报价…（报价前不扣费）
@@ -1438,10 +1527,25 @@ onBeforeUnmount(() => {
                     id="hint-question"
                     v-model="hintQuestion"
                     class="mail-editor hint-question"
+                    :class="{ 'is-drop-target': hintDragging }"
                     rows="5"
                     maxlength="2000"
-                    placeholder="描述卡住的地方（1–2000 字），官方会据此报价"
+                    placeholder="描述卡住的地方（1–2000 字），官方会据此报价；可拖拽或粘贴截图"
+                    @paste="onHintPaste"
+                    @dragenter="onHintDragenter"
+                    @dragover="onHintDragover"
+                    @dragleave="onHintDragleave"
+                    @drop="onHintDrop"
                   ></textarea>
+                  <AttachmentPicker
+                    v-if="attachmentsEnabled"
+                    :items="hintFiles"
+                    :issue="hintIssue"
+                    :disabled="hintSubmitting"
+                    @pick="addHintFiles"
+                    @remove="removeHint"
+                    @retry="retryHint"
+                  />
                   <p v-if="!tipsHasTeam" class="helper-text">
                     加入队伍后才能求提示。
                   </p>
@@ -1479,10 +1583,26 @@ onBeforeUnmount(() => {
               id="compose-body"
               v-model="composeDraft"
               class="mail-editor"
+              :class="{ 'is-drop-target': composeDragging }"
               rows="10"
               maxlength="2000"
-              placeholder="请输入正文内容（1–2000 字）"
+              placeholder="请输入正文内容（1–2000 字）；可拖拽或粘贴截图"
+              @paste="onComposePaste"
+              @dragenter="onComposeDragenter"
+              @dragover="onComposeDragover"
+              @dragleave="onComposeDragleave"
+              @drop="onComposeDrop"
             ></textarea>
+
+            <AttachmentPicker
+              v-if="attachmentsEnabled"
+              :items="composeFiles"
+              :issue="composeIssue"
+              :disabled="composing"
+              @pick="addComposeFiles"
+              @remove="removeCompose"
+              @retry="retryCompose"
+            />
 
             <div class="composer__footer">
               <button
@@ -1561,6 +1681,7 @@ onBeforeUnmount(() => {
                     </time>
                   </header>
                   <p class="letter__body">{{ message.content }}</p>
+                  <AttachmentGallery :items="message.attachments" />
                 </article>
               </div>
             </article>
@@ -2037,6 +2158,12 @@ onBeforeUnmount(() => {
   font-size: 15px;
   line-height: 1.8;
   resize: vertical;
+}
+
+/* 拖拽图片到输入框时的落点提示（paste / drop 由 useAttachments 处理） */
+.mail-editor.is-drop-target {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
 .mail-editor:focus,
