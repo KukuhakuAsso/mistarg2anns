@@ -32,6 +32,19 @@ export const puzzleApi = {
       },
     ),
 
+  // 本队该题的提交历史（api-12 § 提交历史）：只返回本队数据，含答错与已解后的重复提交。
+  // 查询参数 cursor（默认 0，取 id < cursor）与 limit（1–100，默认 50）；id 倒序。
+  // 响应 data: { items: [{ id, accountId, username, answer, correct, durationMs, createdAt }], nextCursor, hasMore }
+  getSubmissions: (key, { cursor = 0, limit = 50 } = {}) =>
+    request(
+      `/puzzle/${encodeURIComponent(String(key ?? ""))}/submissions`,
+      {
+        method: "GET",
+        useAuth: true,
+        params: { cursor, limit },
+      },
+    ),
+
   // 提交答案。请求体字段为 snake_case（与后端实测一致），
   // 响应 data: { correct, alreadySolved, puzzleKey, solvedAt?, progress, tips, newMilestones }。
   //   * correct 是「本次」判题结果：本队已解出后再提交同样会真实判题，答错仍记一条记录；
