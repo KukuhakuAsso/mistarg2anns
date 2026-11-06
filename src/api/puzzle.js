@@ -13,6 +13,8 @@ export const puzzleApi = {
     }),
 
   // 单题五元素视图；不含答案。
+  // 另含 teamProgress（始终存在）：{ firstTakenAt, firstSolvedAt, submissionCount }，
+  // 分别是本队首次取题时间、首次完成时间（重复作答不变）与提交次数（含答错与已解后的重复提交）。
   getView: (key) =>
     request(`/puzzle/${encodeURIComponent(String(key ?? ""))}`, {
       method: "GET",
@@ -30,15 +32,32 @@ export const puzzleApi = {
       },
     ),
 
+  // 本队该题的提交历史（api-12 § 提交历史）：只返回本队数据，含答错与已解后的重复提交。
+  // 查询参数 cursor（默认 0，取 id < cursor）与 limit（1–100，默认 50）；id 倒序。
+  // 响应 data: { items: [{ id, accountId, username, answer, correct, durationMs, createdAt }], nextCursor, hasMore }
+  getSubmissions: (key, { cursor = 0, limit = 50 } = {}) =>
+    request(
+      `/puzzle/${encodeURIComponent(String(key ?? ""))}/submissions`,
+      {
+        method: "GET",
+        useAuth: true,
+        params: { cursor, limit },
+      },
+    ),
+
   // 提交答案。请求体字段为 snake_case（与后端实测一致），
-  // 响应 data: { correct, alreadySolved, puzzleKey, progress, tips, newMilestones }。
-  submit: ({ puzzleKey, answer }) =>
+  // 响应 data: { correct, alreadySolved, puzzleKey, solvedAt?, progress, tips, newMilestones }。
+  //   * correct 是「本次」判题结果：本队已解出后再提交同样会真实判题，答错仍记一条记录；
+  //   * alreadySolved 只表示本队此前已解出，此时不重复推进度、不发奖，并附首次完成时间 solvedAt；
+  //   * duration_ms 仅留痕用于统计（0–86400000），可选。
+  submit: ({ puzzleKey, answer, durationMs }) =>
     request("/puzzle/submit", {
       method: "POST",
       useAuth: true,
       body: {
         puzzle_key: puzzleKey,
         answer,
+        ...(Number.isFinite(durationMs) ? { duration_ms: durationMs } : {}),
       },
     }),
 };
