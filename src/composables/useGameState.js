@@ -19,6 +19,8 @@ const STORAGE_KEY = "mistarg2anns:state:v1";
 // 账号处罚状态的空值（未登录 / 尚未拉取 / 切换账号后）。
 // 字段口径见 api-11-moderation-mute.md：banned 是账号封禁；muted 是「账号级或队伍级禁言」的合一布尔。
 // teamAppeal 是队长代表队伍申诉的那一块（队伍级禁言 / 队伍封禁），非队长或队伍无处罚时为 null。
+// 图片附件开关不放这里：统一读 GET /api/msg/policy 的 attachmentsEnabled
+//（2026-10-31 起封禁账号同样可调，见 useMsgAttachments），避免两个数据源互相打架。
 function createEmptyAccountStatus() {
   return {
     loaded: false,

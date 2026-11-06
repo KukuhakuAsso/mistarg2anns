@@ -8,6 +8,10 @@ import { meApi } from "@/api/me";
 import { extractErrorMessage } from "@/api/errors";
 import { useGameState } from "@/composables/useGameState";
 import { useStatusMessage } from "@/composables/useStatusMessage";
+import { useAttachments } from "@/composables/useAttachments";
+import { useMsgAttachments } from "@/composables/useMsgAttachments";
+import AttachmentPicker from "@/components/AttachmentPicker.vue";
+import AttachmentGallery from "@/components/AttachmentGallery.vue";
 import StatusMessage from "@/components/StatusMessage.vue";
 import UserTabs from "@/components/UserTabs.vue";
 
@@ -29,6 +33,30 @@ const {
   set: setMessage,
   clear: clearMessage,
 } = useStatusMessage();
+
+// ---------- 申诉截图（api-11 §三 / api-8 §8.3，2026-10-31 起） ----------
+// 开关统一读 /api/msg/policy 的 attachmentsEnabled（2026-10-31 与后端确认：
+// 封禁账号也能调用 policy，所以申诉页不再依赖 /me/status 的同名字段）。
+// 严格判值：缺失 / 请求失败即视为关闭，不渲染选图入口。sign / media 对封禁与禁言账号放行。
+const { attachmentsEnabled, loadPolicy } = useMsgAttachments();
+const {
+  items: attachments,
+  dragging: attachmentsDragging,
+  issue: attachmentsIssue,
+  uploading: attachmentsUploading,
+  failed: attachmentsFailed,
+  addFiles: addAttachments,
+  remove: removeAttachment,
+  retry: retryAttachment,
+  serialize: serializeAttachments,
+  clear: clearAttachments,
+  dispose: disposeAttachments,
+  onPaste: onAttachmentsPaste,
+  onDragenter: onAttachmentsDragenter,
+  onDragover: onAttachmentsDragover,
+  onDragleave: onAttachmentsDragleave,
+  onDrop: onAttachmentsDrop,
+} = useAttachments({ onError: (text) => setMessage("error", text) });
 
 const isLoggedIn = computed(() => Boolean(state.user.currentUser));
 const banned = computed(() => Boolean(status.value?.banned));
@@ -261,7 +289,8 @@ async function loadChain(target = scope.value) {
 async function refreshAll() {
   loading.value = true;
   try {
-    await loadStatus();
+    // 附件开关与处罚状态一起取：policy 对封禁账号也放行，所以申诉页用同一份口径
+    await Promise.all([loadStatus(), loadPolicy()]);
     await loadChain("account");
     if (teamAppeal.value) await loadChain("team");
     applyDefaultScope();
@@ -290,14 +319,27 @@ async function submitAppeal() {
     setMessage("error", "申诉内容最多 2000 字。");
     return;
   }
+  if (attachmentsUploading.value) {
+    setMessage("error", "图片还在上传，请等上传完成后再提交。");
+    return;
+  }
+  if (attachmentsFailed.value) {
+    setMessage("error", "有图片上传失败，请重试或移除后再提交。");
+    return;
+  }
 
   const target = scope.value;
   submitting.value = true;
   setMessage("pending", "正在提交申诉，请稍候...");
   try {
-    const payload = await meApi.submitAppeal({ content: text, scope: target });
+    const payload = await meApi.submitAppeal({
+      content: text,
+      scope: target,
+      attachments: serializeAttachments(),
+    });
     const data = payload?.data ?? {};
     content.value = "";
+    clearAttachments();
     setMessage(
       "success",
       `申诉已提交（${data.subject || "已收到"}），请等待官方回复。`,
@@ -403,6 +445,8 @@ onBeforeUnmount(() => {
   }
   window.clearTimeout(clearTimer);
   document.removeEventListener("visibilitychange", handleVisibilityChange);
+  // 释放尚未提交的本地预览 URL
+  disposeAttachments();
 });
 </script>
 
@@ -510,6 +554,7 @@ onBeforeUnmount(() => {
               </div>
               <p class="mail-item__subject">{{ item.subject }}</p>
               <p class="mail-item__body">{{ item.content }}</p>
+              <AttachmentGallery :items="item.attachments" />
             </li>
           </ul>
           <p v-else class="helper-text">
@@ -527,14 +572,29 @@ onBeforeUnmount(() => {
             <textarea
               v-model="content"
               class="appeal-editor"
+              :class="{ 'is-drop-target': attachmentsDragging }"
               rows="5"
               maxlength="2000"
               :placeholder="
                 scope === 'team'
-                  ? '请说明队伍情况（1–2000 字）。主题由系统生成，回复全队可见。'
-                  : '请说明情况（1–2000 字）。主题由系统按处罚种类自动生成。'
+                  ? '请说明队伍情况（1–2000 字）。主题由系统生成，回复全队可见；可拖拽或粘贴截图。'
+                  : '请说明情况（1–2000 字）。主题由系统按处罚种类自动生成；可拖拽或粘贴截图。'
               "
+              @paste="onAttachmentsPaste"
+              @dragenter="onAttachmentsDragenter"
+              @dragover="onAttachmentsDragover"
+              @dragleave="onAttachmentsDragleave"
+              @drop="onAttachmentsDrop"
             ></textarea>
+            <AttachmentPicker
+              v-if="attachmentsEnabled"
+              :items="attachments"
+              :issue="attachmentsIssue"
+              :disabled="submitting"
+              @pick="addAttachments"
+              @remove="removeAttachment"
+              @retry="retryAttachment"
+            />
             <p class="helper-text">
               一次只能提交一条，官方回复后才能提交下一条；每类处罚最多 3 条。
             </p>
@@ -784,6 +844,12 @@ onBeforeUnmount(() => {
   font: inherit;
   line-height: 1.8;
   resize: vertical;
+}
+
+/* 拖拽图片到输入框时的落点提示（paste / drop 由 useAttachments 处理） */
+.appeal-editor.is-drop-target {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
 .appeal-editor:focus {
