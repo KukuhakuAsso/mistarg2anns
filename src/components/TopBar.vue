@@ -1,9 +1,11 @@
 <script setup>
 // 设置栏：只放功能性按钮与进度读数，不承载内容展示。
+import { computed } from "vue";
 import AppIcon from "@/components/AppIcon.vue";
 import { useGameState } from "@/composables/useGameState";
+import { usePuzzleMap } from "@/composables/usePuzzleMap";
 import { useTheme } from "@/composables/useTheme";
-import { FOLDERS, MAIN_FOLDERS } from "@/config/folders";
+import { apiConfig, apiEnvironment, setApiEnvironment } from "@/config/api";
 
 defineProps({
   inFolder: { type: Boolean, default: false },
@@ -11,15 +13,47 @@ defineProps({
 
 const emit = defineEmits(["go-desktop"]);
 
-const { state, unlockedCount, completedCount, toggleCluePanel, resetProgress } =
-  useGameState();
+const { state, toggleCluePanel, resetProgress } = useGameState();
+const { progress } = usePuzzleMap();
 const { themeIcon, themeLabel, cycleTheme } = useTheme();
+const isTestEnvironment = computed(() => apiEnvironment.value === "test");
+const testEnvironmentAvailable = Boolean(apiConfig.testTicket);
+
+// 线索栏需要登录后才能使用（内容是账号相关的本地记录），未登录时按钮置灰。
+const isLoggedIn = computed(() => Boolean(state.user.currentUser));
+
+// 右上角的 tips 是本队共享余额（服务端权威数据）：无队伍时提示加入队伍后开始累积，
+// 未加载时先用占位符，避免先显示一个假的 0。
+const teamTipsText = computed(() => {
+  const tips = state.teamTips;
+  if (!tips.loaded) {
+    return "Tips —";
+  }
+  return tips.hasTeam ? `Tips ${tips.balance}` : "Tips 未入队";
+});
+
+const teamTipsTitle = computed(() => {
+  const tips = state.teamTips;
+  if (!tips.loaded) {
+    return "正在读取本队 tips…";
+  }
+  if (!tips.hasTeam) {
+    return "tips 是队伍级的：加入队伍后开始累积";
+  }
+  return tips.today
+    ? `本队共享 tips；今日已累积 ${tips.today.accrued}/${tips.today.cap}`
+    : "本队共享 tips";
+});
 
 function handleReset() {
   const confirmed = window.confirm(
-    "确定要重置进度吗？已解锁的档案与线索板排布都会被清空。",
+    "确定要清空本地记录吗？线索板排布与浏览标记会被清空；解题进度由服务端保存，不受影响。",
   );
   if (confirmed) resetProgress();
+}
+
+function toggleApiEnvironment() {
+  setApiEnvironment(isTestEnvironment.value ? "production" : "test");
 }
 </script>
 
@@ -39,8 +73,9 @@ function handleReset() {
       <button
         class="bar-btn"
         type="button"
-        :class="{ 'is-active': state.ui.cluePanelOpen }"
-        title="显示 / 隐藏线索栏"
+        :class="{ 'is-active': isLoggedIn && state.ui.cluePanelOpen }"
+        :disabled="!isLoggedIn"
+        :title="isLoggedIn ? '显示 / 隐藏线索栏' : '登录后才能打开线索栏'"
         @click="toggleCluePanel()"
       >
         <AppIcon name="board" />
@@ -54,11 +89,28 @@ function handleReset() {
     </div>
 
     <div class="top-bar__group">
-      <span class="top-bar__stat">
-        解锁 {{ unlockedCount }}/{{ FOLDERS.length }} · 完成
-        {{ completedCount }}/{{ MAIN_FOLDERS.length }}
+      <span class="top-bar__stat" title="已解出题数 / 当前可见题数">
+        解出 {{ progress.solvedCount }}/{{ progress.totalPuzzles }}
       </span>
-      <span class="top-bar__stat">Tips 点 {{ state.tipPoints }}</span>
+      <span class="top-bar__stat" :title="teamTipsTitle">
+        {{ teamTipsText }}
+      </span>
+      <button
+        class="bar-btn"
+        :class="{ 'is-active': isTestEnvironment }"
+        type="button"
+        role="switch"
+        :aria-checked="isTestEnvironment"
+        :disabled="!testEnvironmentAvailable"
+        :title="
+          testEnvironmentAvailable
+            ? `切换到${isTestEnvironment ? '正式' : '测试'}环境请求头`
+            : '未配置测试票据，无法启用测试环境'
+        "
+        @click="toggleApiEnvironment"
+      >
+        <span>{{ isTestEnvironment ? "测试环境" : "正式环境" }}</span>
+      </button>
       <button
         class="bar-btn"
         type="button"
@@ -71,7 +123,7 @@ function handleReset() {
       <button
         class="bar-btn bar-btn--danger"
         type="button"
-        title="清空进度与线索板"
+        title="清空本地记录与线索板"
         @click="handleReset()"
       >
         <AppIcon name="reset" />

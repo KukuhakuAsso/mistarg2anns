@@ -20,7 +20,7 @@ if (typeof window !== "undefined" && window.matchMedia) {
 
 export function useTheme() {
     const { state } = useGameState();
-
+    console.log(state);
     const isDark = computed(
         () =>
             state.ui.theme === "dark" ||

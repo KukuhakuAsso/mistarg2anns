@@ -1,16 +1,47 @@
 <script setup>
 // 主界面：桌面式启动页，保留档案柜入口，并提供常用功能快捷方式。
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import DesktopAppItem from "@/components/DesktopAppItem.vue";
 import FolderItem from "@/components/FolderItem.vue";
+import UserPanel from "@/components/UserPanel.vue";
 import { useGameState } from "@/composables/useGameState";
-import { DESKTOP_APPS } from "@/config/desktop";
-import { MAIN_FOLDERS } from "@/config/folders";
+import { usePuzzleMap } from "@/composables/usePuzzleMap";
+import { DESKTOP_APPS, createDesktopMenu } from "@/config/desktop";
 
-const emit = defineEmits(["open"]);
+const emit = defineEmits(["open", "open-page"]);
 
-const { folderStates, unlockedCount, completedCount } = useGameState();
+const { state, markFolderVisited } = useGameState();
+// 档案（stage1 目录）完全由 GET /api/puzzle/map 决定：未解锁项后端不返回，前端不做本地推算。
+const { folders, progress, load, loading, error, loaded } = usePuzzleMap();
+// 未登录时不拉取（否则会得到一串 401）；登录后由 App.vue 统一拉取，
+// 这里只在「回到桌面时还没有数据」的场合补一次（例如刚加入队伍拿到取题资格）。
+//
+// 已经失败过就别再自动补拉：失败时地图为空，App 会把桌面视图挂回来，
+// 而桌面视图一挂载又触发 load() → loading 置真 → 立刻被「正在加载题目结构…」顶掉，
+// 于是形成"挂载 / 卸载"死循环（实测在 #/folder/:id 上每秒上千次请求，
+// 且每次挂载都会清掉 error，用户永远看不到失败提示）。重试交给下方的按钮。
+if (state.user.currentUser && !loaded.value && !error.value) {
+    load();
+}
+const showUserPanel = ref(false);
+const userPanelPosition = ref({ x: 0, y: 0 });
+const activeMenu = ref({
+    appId: null,
+    title: "用户",
+    subtitle: "个人终端",
+    items: [],
+    position: { x: 0, y: 0 },
+});
 
+// 菜单内容按当前进度动态生成：未读条数与完成进度变化时会重新计算。
+const menuMap = computed(() =>
+    createDesktopMenu({
+        unreadMessages: state.unreadMessages ?? 0,
+        completedCount: progress.value.solvedCount,
+        folderTotal: progress.value.totalPuzzles,
+    }),
+);
+// 桌面卡片数据，根据应用和文件夹状态动态生成。
 const desktopCards = computed(() => [
     ...DESKTOP_APPS.map((app) => ({
         id: app.id,
@@ -20,49 +51,97 @@ const desktopCards = computed(() => [
         accent: app.accent,
         description: app.description,
     })),
-    ...folderStates.value.map((folder) => ({
+    ...folders.value.map((folder) => ({
         id: folder.id,
         kind: "folder",
         name: folder.name,
         icon: "folder",
         accent: folder.completed ? "amber" : "slate",
-        description: folder.unlocked ? `${folder.puzzleCount} 题 · ${folder.clueCount} 线索` : hintOf(folder),
+        description: folder.subtitle,
         folder,
     })),
 ]);
+// 处理文件夹打开事件。
+function handleFolderOpen(folderId) {
+    markFolderVisited(folderId);
+    emit("open", folderId);
+}
+// 关闭用户面板。
+function closeUserPanel() {
+    showUserPanel.value = false;
+}
+// 处理桌面快捷方式点击事件。
+function openShortcut(appId, event) {
+    const button = event?.currentTarget;
+    const rect = button?.getBoundingClientRect?.();
+    const panelWidth = 280;
+    // 计算面板位置，确保不超出窗口边界。
+    if (rect) {
+        const x = Math.min(
+            Math.max(rect.left, 12),
+            window.innerWidth - panelWidth - 12,
+        );
+        const y = Math.min(Math.max(rect.bottom + 10, 12), window.innerHeight - 220);
+        userPanelPosition.value = { x, y };
+    }
+    // 打开应用对应的页面，注意这里这两个应用没有设置面板。
+    if (appId === "archive") {
+        emit("open-page", "archive");
+        return;
+    }
+    if (appId === "communication") {
+        emit("open-page", "communication");
+        return;
+    }
+    // 打开自定义菜单面板。
+    const menuConfig = menuMap.value[appId];
+    if (!menuConfig) {
+        return;
+    }
+    // 如果当前已经打开的是同一个菜单，则关闭面板。
+    const isSameMenu = showUserPanel.value && activeMenu.value.appId === appId;
+    if (isSameMenu) {
+        closeUserPanel();
+        return;
+    }
+    // 否则，设置当前活动菜单并显示用户面板。
 
-function hintOf(folder) {
-    if (folder.unlocked) return "";
-    if (folder.hidden) {
-        return `完成全部 ${MAIN_FOLDERS.length} 份档案后解锁`;
+    activeMenu.value = {
+        appId,
+        title: menuConfig.title,
+        subtitle: menuConfig.subtitle,
+        items: menuConfig.items,
+        position: userPanelPosition.value,
+    };
+    showUserPanel.value = true;
+}
+// 处理用户面板菜单项点击事件。
+function handleUserMenuClick(item) {
+    if (!item) {
+        return;
     }
 
-    const index = MAIN_FOLDERS.findIndex((item) => item.id === folder.id);
-    const previous = MAIN_FOLDERS[index - 1];
-    return previous ? `完成「${previous.name}」后解锁` : "可直接进入";
-}
+    closeUserPanel();
 
-function openShortcut(appId) {
-    if (appId !== "archive") return;
-
-    const firstUnlockedFolder = folderStates.value.find((folder) => folder.unlocked);
-    if (firstUnlockedFolder) {
-        emit("open", firstUnlockedFolder.id);
+    if (item.page) {
+        emit("open-page", item.page);
     }
 }
 </script>
 
 <template>
     <section class="desktop">
-        <!-- <header class="desktop__head">
-            <div>
-                <p class="desktop__eyebrow">工作台</p>
-                <h1 class="desktop__title">档案终端</h1>
-            </div>
-            <span class="desktop__status">
-                已解锁 {{ unlockedCount }}/{{ folderStates.length }}
-            </span>
-        </header> -->
+        <p v-if="loading" class="desktop__notice">正在加载题目结构…</p>
+        <p v-else-if="error && state.user.currentUser" class="desktop__notice desktop__notice--error">
+            {{ error }}
+            <button
+                class="bar-btn"
+                type="button"
+                @click="load({ force: true })"
+            >
+                重试
+            </button>
+        </p>
 
         <div class="desktop__launcher">
             <ul class="desktop__grid">
@@ -81,27 +160,23 @@ function openShortcut(appId) {
                     <FolderItem
                         v-else
                         :folder="item.folder"
-                        :hint="hintOf(item.folder)"
                         class="desktop-card"
-                        @open="emit('open', $event)"
+                        @open="handleFolderOpen($event)"
                     />
                 </li>
             </ul>
         </div>
 
-        <!-- <section class="desktop__archive-panel">
-            <header class="desktop__section-head">
-                <h2>档案柜</h2>
-                <span>已完成 {{ completedCount }}/{{ MAIN_FOLDERS.length }}</span>
-            </header>
+        <UserPanel
+            :open="showUserPanel"
+            :title="activeMenu.title"
+            :subtitle="activeMenu.subtitle"
+            :items="activeMenu.items"
+            :position="activeMenu.position"
+            @close="closeUserPanel"
+            @item-click="handleUserMenuClick"
+        />
 
-            <p class="desktop__desc">
-                共 {{ folderStates.length }} 份档案，按进度依次解锁。
-                已解锁 {{ unlockedCount }} 份，已完成 {{ completedCount }} 份。
-            </p>
-
-            
-        </section> -->
     </section>
 </template>
 
@@ -112,6 +187,23 @@ function openShortcut(appId) {
     gap: 22px;
     height: 100%;
     min-height: 0;
+}
+
+.desktop__notice {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-size: 13px;
+    color: var(--text-dim);
+}
+
+.desktop__notice--error {
+    color: var(--text);
+    border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
 }
 
 .desktop__head {
@@ -157,9 +249,8 @@ function openShortcut(appId) {
 }
 
 .desktop__grid {
-    display: flex;
-    flex-direction: column;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(136px, 1fr));
     align-content: flex-start;
     gap: 12px;
     width: 100%;
@@ -171,7 +262,10 @@ function openShortcut(appId) {
 }
 
 .desktop__card-slot {
-    flex: 0 0 110px;
+    display: flex;
+    width: 100%;
+    min-width: 136px;
+    min-height: 96px;
 }
 
 .desktop-card {
@@ -179,7 +273,7 @@ function openShortcut(appId) {
     align-items: center;
     gap: 12px;
     width: 100%;
-    min-height: 72px;
+    min-height: 96px;
     padding: 12px 14px;
     color: var(--text);
     text-align: left;

@@ -1,4 +1,5 @@
 <script setup>
+// 主应用桌面图标组件，玩家进入的第一个页面，点击图标可打开对应应用
 import AppIcon from "@/components/AppIcon.vue";
 
 const props = defineProps({
@@ -10,23 +11,29 @@ const emit = defineEmits(["open"]);
 
 <template>
     <div class="desktop-app-item-wrapper">
-    <button
-        class="desktop-app-item"
-        type="button"
-        @click="emit('open', props.app.id)"
-    >
-        <span class="desktop-app-item__icon">
-            <AppIcon :name="props.app.icon" :size="22" />
-        </span>
+        <button
+            class="desktop-app-item"
+            type="button"
+            @click="emit('open', props.app.id, $event)"
+        >
+            <span class="desktop-app-item__icon">
+                <AppIcon :name="props.app.icon" :size="22" />
+            </span>
 
-        <span class="desktop-app-item__text">
-            <span class="desktop-app-item__name">{{ props.app.name }}</span>
-        </span>
-    </button>
+            <span class="desktop-app-item__text">
+                <span class="desktop-app-item__name">{{ props.app.name }}</span>
+            </span>
+        </button>
     </div>
 </template>
 
 <style scoped>
+.desktop-app-item-wrapper {
+    display: flex;
+    width: 100%;
+    height: 100%;
+}
+
 .desktop-app-item {
     position: relative;
     display: flex;
@@ -36,6 +43,7 @@ const emit = defineEmits(["open"]);
     background: var(--bg);
     gap: 12px;
     width: 100%;
+    height: 100%;
     border: 0;
     border-radius: 10px;
     min-height: 72px;

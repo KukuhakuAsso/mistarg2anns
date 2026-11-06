@@ -2,6 +2,7 @@
 // 线索栏板面上的卡片：可拖动改位置，拖出板面即退回待用区。
 import { computed } from "vue";
 import AppIcon from "@/components/AppIcon.vue";
+import PuzzleCover from "@/components/puzzle/PuzzleCover.vue";
 import { useClueDrag } from "@/composables/useClueDrag";
 
 const props = defineProps({
@@ -30,7 +31,7 @@ const style = computed(() => ({
             <button
                 class="icon-btn icon-btn--sm"
                 type="button"
-                title="移回待用区"
+                :title="clue.kind === 'puzzle' ? '从板面移除' : '移回待用区'"
                 @pointerdown.stop
                 @click="emit('remove')"
             >
@@ -38,7 +39,9 @@ const style = computed(() => ({
             </button>
         </header>
 
-        <p class="clue-card__body">{{ clue.body }}</p>
+        <div class="clue-card__thumb" aria-hidden="true">
+            <PuzzleCover :cover="clue.cover" :alt="clue.title" />
+        </div>
 
         <footer class="clue-card__foot">{{ clue.folderName }}</footer>
     </article>
@@ -51,7 +54,7 @@ const style = computed(() => ({
     left: 0;
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 6px;
     width: var(--card-w);
     height: var(--card-h);
     padding: 8px 10px;
@@ -84,13 +87,19 @@ const style = computed(() => ({
     text-overflow: ellipsis;
 }
 
-.clue-card__body {
+.clue-card__thumb {
     flex: 1;
-    font-size: 11px;
-    line-height: 1.35;
-    color: var(--text-dim);
-    white-space: pre-line;
     overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface-alt);
+}
+
+.clue-card__thumb img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
 }
 
 .clue-card__foot {
