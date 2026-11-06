@@ -47,6 +47,39 @@ watch(
   },
 );
 
+const pad2 = (n) => String(n).padStart(2, "0");
+
+function formatStamp(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return `${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+}
+
+// 本队该题进度（api-12，迁移 0039 起始终下发）：首次取题 / 首次完成 / 提交次数。
+// 只有时间和计数，不含提交内容。旧响应可能没有该字段，按「无进度」处理。
+const progressParts = computed(() => {
+  const progress = props.puzzle.teamProgress;
+  if (!progress) return [];
+  const parts = [];
+  const firstTaken = formatStamp(progress.firstTakenAt);
+  const firstSolved = formatStamp(progress.firstSolvedAt);
+  const count = Number(progress.submissionCount);
+  if (firstTaken) parts.push(`首次取题 ${firstTaken}`);
+  if (firstSolved) parts.push(`首次解出 ${firstSolved}`);
+  if (Number.isFinite(count) && count > 0) parts.push(`已提交 ${count} 次`);
+  return parts;
+});
+
+// duration_ms 只留痕统计：从打开本题开始计时，重新取同一道题（例如买完提示刷新）不重置。
+let openedAt = Date.now();
+watch(
+  () => props.puzzle.key,
+  () => {
+    openedAt = Date.now();
+  },
+);
+
 const answer = ref("");
 const submitting = ref(false);
 const {
@@ -55,6 +88,16 @@ const {
   set: setStatus,
   clear: clearStatus,
 } = useStatusMessage();
+
+// 解出（含队友抢先解出）后，父级必须重拉 map：档案页的「已解出」勾、顶栏进度、
+// 新解锁的题目与完成态封面都来自 map。本组件只能改自己的显示，不通知父级就只能硬刷新才能自愈。
+function notifySolved(data) {
+  emit("solved", {
+    puzzleKey: data.puzzleKey ?? props.puzzle.key,
+    progress: data.progress ?? null,
+    tips: data.tips ?? null,
+  });
+}
 
 async function submitAnswer() {
   const value = answer.value.trim();
@@ -68,32 +111,29 @@ async function submitAnswer() {
   clearStatus();
 
   try {
+    // 耗时只留痕统计，后端上限 24 小时
+    const durationMs = Math.min(Math.max(Date.now() - openedAt, 0), 86400000);
     const payload = await puzzleApi.submit({
       puzzleKey: props.puzzle.key,
       answer: value,
+      durationMs,
     });
     const data = payload?.data ?? {};
+    // alreadySolved 只说明「本队此前已解出」，correct 才是本次判题结果：
+    // 已解出的队仍可能提交错误答案（后端照样入库），不能一律当成「已解过」。
+    const solvedStamp = data.alreadySolved ? formatStamp(data.solvedAt) : "";
+    const solvedNote = solvedStamp ? `（首次完成 ${solvedStamp}）` : "";
 
-    if (data.alreadySolved) {
-      solved.value = true;
-      setStatus("info", "这道题已经解过了");
-      // 队友（或同一账号的另一台设备）已经解出：本组件只能改自己的显示，
-      // 档案页的「已解出」勾、顶栏进度、队友解出后新解锁的题目、完成态封面，
-      // 都要靠父级重拉 map 才会更新；不通知父级就只能硬刷新页面才能自愈。
-      emit("solved", {
-        puzzleKey: data.puzzleKey ?? props.puzzle.key,
-        progress: data.progress ?? null,
-        tips: data.tips ?? null,
-      });
-    } else if (data.correct) {
+    if (data.correct) {
       solved.value = true;
       answer.value = "";
-      setStatus("success", "答案正确");
-      emit("solved", {
-        puzzleKey: data.puzzleKey ?? props.puzzle.key,
-        progress: data.progress ?? null,
-        tips: data.tips ?? null,
-      });
+      setStatus(
+        "success",
+        data.alreadySolved ? `答案正确，本题此前已解出${solvedNote}` : "答案正确",
+      );
+      notifySolved(data);
+    } else if (data.alreadySolved) {
+      setStatus("error", `答案不正确，但本题此前已解出${solvedNote}`);
     } else {
       setStatus("error", "答案不正确");
     }
@@ -114,8 +154,14 @@ async function submitAnswer() {
 <template>
   <article class="puzzle">
     <header class="puzzle__head">
-      <h1 class="puzzle__title">{{ puzzle.title }}</h1>
-      <span v-if="solved" class="puzzle__badge">已解出</span>
+      <div class="puzzle__head-main">
+        <h1 class="puzzle__title">{{ puzzle.title }}</h1>
+        <span v-if="solved" class="puzzle__badge">已解出</span>
+      </div>
+      <!-- 本队该题进度：只有时间与计数，空值整行不渲染 -->
+      <p v-if="progressParts.length" class="puzzle__progress">
+        {{ progressParts.join(" · ") }}
+      </p>
     </header>
 
     <!-- 封面放在标题之后：先看到题名，图不抢走首屏。
@@ -220,8 +266,22 @@ async function submitAnswer() {
 
 .puzzle__head {
   display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.puzzle__head-main {
+  display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.puzzle__progress {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
 }
 
 .puzzle__title {
