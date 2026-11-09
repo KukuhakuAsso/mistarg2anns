@@ -1,10 +1,11 @@
 <script setup>
-// 本队该题的提交历史（api-12 § 提交历史）。
+// 本队某题的提交历史（api-12 § 提交历史）。
 //   * 服务端强制 team_id，只返回本队数据，不接受队伍参数；
 //   * 含答错与「已解出后的重复提交」；
 //   * 游标分页：id 倒序（最新在前），nextCursor 传回即可取下一页。
-// 默认折叠、展开时才请求：题目窗口已经很长，不该为一个次要区块多等一次请求。
-import { computed, ref, watch } from "vue";
+//
+// 只负责「一道题的记录列表」，选题由调用方负责（队伍页的 TeamSubmissions）。
+import { ref, watch } from "vue";
 import { puzzleApi } from "@/api/puzzle";
 import { extractErrorMessage } from "@/api/errors";
 import {
@@ -14,28 +15,19 @@ import {
 
 const props = defineProps({
   puzzleKey: { type: String, required: true },
-  // 来自 teamProgress.submissionCount：只用于折叠时的条数提示，不参与分页
-  count: { type: Number, default: 0 },
 });
 
 const PAGE_SIZE = 20;
 
-const open = ref(false);
 const items = ref([]);
 const loading = ref(false);
 const loadingMore = ref(false);
-const loaded = ref(false);
 const error = ref("");
 const nextCursor = ref(null);
 const hasMore = ref(false);
 
 // 切题后旧请求的响应必须作废，否则会把上一题的记录填进当前题
 let token = 0;
-
-const label = computed(() => {
-  const total = Math.max(props.count, items.value.length);
-  return total > 0 ? `本队提交记录（${total}）` : "本队提交记录";
-});
 
 const pad2 = (n) => String(n).padStart(2, "0");
 
@@ -81,7 +73,6 @@ async function load({ reset = false } = {}) {
     items.value = reset ? list : [...items.value, ...list];
     nextCursor.value = page.nextCursor;
     hasMore.value = page.hasMore;
-    loaded.value = true;
   } catch (err) {
     if (current !== token) return;
     error.value =
@@ -96,141 +87,84 @@ async function load({ reset = false } = {}) {
   }
 }
 
-function toggle() {
-  open.value = !open.value;
-}
-
-// 展开且还没加载过才请求；再次展开直接用已有列表（手动刷新见 refresh）
-watch(open, (isOpen) => {
-  if (isOpen && !loaded.value && !loading.value) load({ reset: true });
-});
-
-// 换题：清空并折叠，避免把上一题的记录留在新题里
+// 换题：清空并重新拉取
 watch(
   () => props.puzzleKey,
   () => {
     token += 1;
-    open.value = false;
     items.value = [];
-    loaded.value = false;
     error.value = "";
     nextCursor.value = null;
     hasMore.value = false;
     loading.value = false;
     loadingMore.value = false;
+    if (props.puzzleKey) load({ reset: true });
   },
+  { immediate: true },
 );
 
-// 提交过答案后调用：已展开则静默重取第一页，折叠状态只让下次展开重新拉
-async function refresh() {
-  if (!open.value) {
-    loaded.value = false;
-    return;
-  }
-  await load({ reset: true });
+// 外部（例如队伍页的「刷新」按钮）主动重取第一页
+function refresh() {
+  if (!props.puzzleKey) return undefined;
+  return load({ reset: true });
 }
 
 defineExpose({ refresh });
 </script>
 
 <template>
-  <section class="history">
-    <button class="history__toggle" type="button" @click="toggle">
-      <span class="history__caret" :class="{ 'is-open': open }">▸</span>
-      <span>{{ label }}</span>
-      <span class="history__hint">队伍内可见</span>
-    </button>
+  <div class="history">
+    <p v-if="loading" class="history__state">正在读取…</p>
+    <p v-else-if="error" class="history__state history__state--error">
+      {{ error }}
+      <button class="history__retry" type="button" @click="load({ reset: true })">
+        重试
+      </button>
+    </p>
+    <p v-else-if="!items.length" class="history__state">还没有提交记录</p>
 
-    <div v-if="open" class="history__body">
-      <p v-if="loading" class="history__state">正在读取…</p>
-      <p v-else-if="error" class="history__state history__state--error">
-        {{ error }}
-        <button class="history__retry" type="button" @click="load({ reset: true })">
-          重试
-        </button>
-      </p>
-      <p v-else-if="!items.length" class="history__state">还没有提交记录</p>
-
-      <template v-else>
-        <ol class="history__list">
-          <li v-for="item in items" :key="item.id" class="history__item">
-            <div class="history__row">
-              <span
-                class="history__verdict"
-                :class="item.correct ? 'is-correct' : 'is-wrong'"
-              >
-                {{ item.correct ? "正确" : "错误" }}
-              </span>
-              <code class="history__answer">{{ item.answer }}</code>
-            </div>
-            <div class="history__meta">
-              <span>{{ item.username || `账号 #${item.accountId}` }}</span>
+    <template v-else>
+      <ol class="history__list">
+        <li v-for="item in items" :key="item.id" class="history__item">
+          <div class="history__row">
+            <span
+              class="history__verdict"
+              :class="item.correct ? 'is-correct' : 'is-wrong'"
+            >
+              {{ item.correct ? "正确" : "错误" }}
+            </span>
+            <code class="history__answer">{{ item.answer }}</code>
+          </div>
+          <div class="history__meta">
+            <span>{{ item.username || `账号 #${item.accountId}` }}</span>
+            <span>·</span>
+            <span>{{ formatStamp(item.createdAt) }}</span>
+            <template v-if="formatDuration(item.durationMs)">
               <span>·</span>
-              <span>{{ formatStamp(item.createdAt) }}</span>
-              <template v-if="formatDuration(item.durationMs)">
-                <span>·</span>
-                <span>用时 {{ formatDuration(item.durationMs) }}</span>
-              </template>
-            </div>
-          </li>
-        </ol>
+              <span>用时 {{ formatDuration(item.durationMs) }}</span>
+            </template>
+          </div>
+        </li>
+      </ol>
 
-        <button
-          v-if="hasMore"
-          class="history__more"
-          type="button"
-          :disabled="loadingMore"
-          @click="load()"
-        >
-          {{ loadingMore ? "加载中…" : "加载更早的提交" }}
-        </button>
-      </template>
-    </div>
-  </section>
+      <button
+        v-if="hasMore"
+        class="history__more"
+        type="button"
+        :disabled="loadingMore"
+        @click="load()"
+      >
+        {{ loadingMore ? "加载中…" : "加载更早的提交" }}
+      </button>
+    </template>
+  </div>
 </template>
 
 <style scoped>
 .history {
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
-}
-
-.history__toggle {
   display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 0;
-  border: 0;
-  background: none;
-  font-size: 12px;
-  color: var(--text-dim);
-  text-align: left;
-  cursor: pointer;
-}
-
-.history__toggle:hover {
-  color: var(--text);
-}
-
-.history__caret {
-  display: inline-block;
-  transition: transform 0.15s ease;
-}
-
-.history__caret.is-open {
-  transform: rotate(90deg);
-}
-
-.history__hint {
-  margin-left: auto;
-  font-size: 11px;
-  color: var(--text-dim);
-  opacity: 0.7;
-}
-
-.history__body {
-  margin-top: 10px;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .history__state {
@@ -315,7 +249,6 @@ defineExpose({ refresh });
 
 .history__more {
   width: 100%;
-  margin-top: 10px;
   padding: 6px;
   border: 1px dashed var(--border-strong);
   border-radius: var(--radius);

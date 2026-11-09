@@ -1,4 +1,4 @@
-﻿<script>
+<script>
 // 本次会话内记住用户拖出来的弹窗高度：切题、关窗再开都沿用，刷新页面才回到 2/3。
 // 放在模块作用域（不在 setup 里），所以离开档案页再回来也还在。
 let rememberedModalHeight = 0;
@@ -9,7 +9,14 @@ let rememberedModalHeight = 0;
 //
 // 未解锁的题目根本不会出现在 map 里，所以这里没有锁定态；
 // 直接请求未解锁题的 view 会得到 404（与不存在同形），按正常提示处理即可。
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+} from "vue";
 import AppIcon from "@/components/AppIcon.vue";
 import StatusMessage from "@/components/StatusMessage.vue";
 import PuzzleArticle from "@/components/puzzle/PuzzleArticle.vue";
@@ -31,12 +38,8 @@ const props = defineProps({
 const emit = defineEmits(["close"]);
 
 const { refresh } = usePuzzleMap();
-const {
-  state,
-  refreshTeamTips,
-  registerBoardCard,
-  applyTipsBalance,
-} = useGameState();
+const { state, refreshTeamTips, registerBoardCard, applyTipsBalance } =
+  useGameState();
 const { startDrag: startClueDrag } = useClueDrag();
 
 // 题目内的预置提示（api-10 §10.11）：列表随题目视图一起下发，unlocked 已按本队购买记录
@@ -120,9 +123,10 @@ function heightBounds() {
 // 初始高度：可用高度的 2/3。用户拖过就沿用它（同一会话内不再重置）。
 function fitModalHeight() {
   const { min, max } = heightBounds();
-  const base = rememberedModalHeight > 0
-    ? rememberedModalHeight
-    : Math.round(max * (2 / 3));
+  const base =
+    rememberedModalHeight > 0
+      ? rememberedModalHeight
+      : Math.round(max * (2 / 3));
   return clamp(base, min, max);
 }
 
@@ -336,7 +340,8 @@ function stopResize() {
 
 // 键盘也能调（把手可获得焦点）
 function nudgeHeight(event) {
-  const step = event.key === "ArrowUp" ? -24 : event.key === "ArrowDown" ? 24 : 0;
+  const step =
+    event.key === "ArrowUp" ? -24 : event.key === "ArrowDown" ? 24 : 0;
   if (!step) return;
   event.preventDefault();
   const { min, max } = heightBounds();
@@ -350,11 +355,20 @@ function nudgeHeight(event) {
 function handleViewportResize() {
   if (!selected.value) return;
   windowPosition.value = {
-    x: clamp(windowPosition.value.x, 0, Math.max(0, window.innerWidth - modalWidth.value - 8)),
-    y: clamp(windowPosition.value.y, 0, Math.max(0, window.innerHeight - MODAL_MIN_HEIGHT - 8)),
+    x: clamp(
+      windowPosition.value.x,
+      0,
+      Math.max(0, window.innerWidth - modalWidth.value - 8),
+    ),
+    y: clamp(
+      windowPosition.value.y,
+      0,
+      Math.max(0, window.innerHeight - MODAL_MIN_HEIGHT - 8),
+    ),
   };
   const { min, max } = heightBounds();
-  const target = rememberedModalHeight > 0 ? rememberedModalHeight : modalHeight.value;
+  const target =
+    rememberedModalHeight > 0 ? rememberedModalHeight : modalHeight.value;
   modalHeight.value = clamp(target, min, max);
 }
 
@@ -380,16 +394,6 @@ onBeforeUnmount(() => {
 <template>
   <section class="folder-view">
     <header class="folder-view__head">
-      <button
-        class="bar-btn"
-        type="button"
-        title="返回主界面"
-        @click="emit('close')"
-      >
-        <AppIcon name="back" />
-        <span>返回</span>
-      </button>
-
       <div class="folder-view__title">
         <h1 class="folder-view__name">{{ folder.name }}</h1>
         <span class="folder-view__sub">{{ folder.subtitle }}</span>
@@ -496,10 +500,7 @@ onBeforeUnmount(() => {
                       <div class="tips-popover__item">
                         <span class="tips-popover__name">{{ hint.name }}</span>
                         <!-- 已解锁：纯文本渲染，保留出题人写的换行 -->
-                        <p
-                          v-if="hint.unlocked"
-                          class="tips-popover__content"
-                        >
+                        <p v-if="hint.unlocked" class="tips-popover__content">
                           {{ hint.content }}
                         </p>
                         <div v-else class="tips-popover__buy-row">
@@ -648,7 +649,7 @@ onBeforeUnmount(() => {
 
 .file-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(136px, 1fr));
+  grid-template-columns: repeat(auto-fill, 136px);
   gap: 16px;
   width: 100%;
   margin: 4px 0 0;
