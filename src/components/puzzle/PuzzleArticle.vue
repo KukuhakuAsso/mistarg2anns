@@ -129,11 +129,16 @@ async function submitAnswer() {
       answer.value = "";
       setStatus(
         "success",
-        data.alreadySolved ? `答案正确，本题此前已解出${solvedNote}` : "答案正确",
+        data.alreadySolved
+          ? `答案正确，本题此前已解出${solvedNote}`
+          : "答案正确",
       );
       notifySolved(data);
     } else if (data.alreadySolved) {
+      solved.value = true;
+      answer.value = "";
       setStatus("error", `答案不正确，但本题此前已解出${solvedNote}`);
+      notifySolved(data);
     } else {
       setStatus("error", "答案不正确");
     }
