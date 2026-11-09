@@ -12,6 +12,7 @@ import { normalizeTeamName, validateTeamName } from "@/config/team";
 import NameStatus from "@/components/NameStatus.vue";
 import StatusMessage from "@/components/StatusMessage.vue";
 import UserTabs from "@/components/UserTabs.vue";
+import TeamSubmissions from "@/components/team/TeamSubmissions.vue";
 
 const {
   state,
@@ -501,6 +502,11 @@ function handleTransfer(member) {
               </div>
             </li>
           </ul>
+        </section>
+
+        <section class="panel-card">
+          <p class="panel-card__label">提交记录</p>
+          <TeamSubmissions />
         </section>
 
         <section v-if="isTeamCaptain" class="panel-card">

@@ -4,7 +4,6 @@
 import { computed, ref, watch } from "vue";
 import MalleableArea from "@/components/puzzle/MalleableArea.vue";
 import MediaAttachment from "@/components/puzzle/MediaAttachment.vue";
-import SubmissionHistory from "@/components/puzzle/SubmissionHistory.vue";
 import StatusMessage from "@/components/StatusMessage.vue";
 import { puzzleApi } from "@/api/puzzle";
 import { extractErrorMessage } from "@/api/errors";
@@ -40,20 +39,11 @@ const { src: coverSrc, status: coverStatus } = useMediaObjectUrl(
   () => cover.value?.url ?? "",
 );
 
-// 提交历史里的条数：teamProgress 只在取题时下发，本窗口内新提交的记在内存里补上
-const historyRef = ref(null);
-const extraSubmissions = ref(0);
-const historyCount = computed(
-  () => Number(props.puzzle.teamProgress?.submissionCount ?? 0) + extraSubmissions.value,
-);
-
 const solved = ref(Boolean(props.puzzle.solved));
 watch(
   () => props.puzzle,
   (value) => {
     solved.value = Boolean(value?.solved);
-    // 父级重取过视图（例如买完提示）后 teamProgress 已含全部提交，本窗口的临时计数要清零
-    extraSubmissions.value = 0;
   },
 );
 
@@ -87,8 +77,6 @@ watch(
   () => props.puzzle.key,
   () => {
     openedAt = Date.now();
-    // 换题：本窗口累计的提交数归零，交给新题的 teamProgress
-    extraSubmissions.value = 0;
   },
 );
 
@@ -131,9 +119,6 @@ async function submitAnswer() {
       durationMs,
     });
     const data = payload?.data ?? {};
-    // 每次提交（含答错、含已解后的重复）都会落一条记录
-    extraSubmissions.value += 1;
-    historyRef.value?.refresh();
     // alreadySolved 只说明「本队此前已解出」，correct 才是本次判题结果：
     // 已解出的队仍可能提交错误答案（后端照样入库），不能一律当成「已解过」。
     const solvedStamp = data.alreadySolved ? formatStamp(data.solvedAt) : "";
@@ -240,12 +225,6 @@ async function submitAnswer() {
         :tone="statusTone"
       />
     </form>
-
-    <SubmissionHistory
-      ref="historyRef"
-      :puzzle-key="puzzle.key"
-      :count="historyCount"
-    />
   </article>
 </template>
 

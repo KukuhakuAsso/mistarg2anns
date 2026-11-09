@@ -15,6 +15,7 @@ import { useMsgAttachments } from "@/composables/useMsgAttachments";
 import AttachmentPicker from "@/components/AttachmentPicker.vue";
 import AttachmentGallery from "@/components/AttachmentGallery.vue";
 import UserTabs from "@/components/UserTabs.vue";
+import { assignEnterIndex } from "@/utils/mailEnterIndex";
 
 const { state, refreshUnreadSummary, refreshTeamTips } = useGameState();
 
@@ -70,6 +71,11 @@ const mailsCursor = ref(null);
 const mailsHasMore = ref(false);
 // 每封邮件的入场序号（按到达批次从 0 起）：追加新批次时只给新邮件编号，旧行保持原有节奏。
 const mailsEnterIndex = ref(new Map());
+// 列表「实例号」：切分类 / 频道 / 来源时 +1，参与 v-for 的 key。
+// Vue 会复用同 key 的 DOM 节点，只有换 key 才会重建节点、让入场动画重头播放。
+const mailsListToken = ref(0);
+// 列表滚动容器：换实例后行全部重建，需要把滚动位置拉回顶部，否则动画从看不见的地方开始播。
+const inboxListRef = ref(null);
 const MAILS_PAGE_SIZE = 20;
 
 // 当前打开的邮件对话：activeMailId 用列表里的 mailId，服务端会归一到所在对话的根。
@@ -266,18 +272,21 @@ const replySubject = computed(() =>
 const mailSender = computed(() => (mail.value ? senderName(mail.value) : "—"));
 
 // 列表筛选：「未读」与频道交给服务端（only_unread / channel）；
-// 「已读」与来源服务端没有对应参数，按已加载的记录过滤。三者叠加生效。
-const filteredMails = computed(() =>
-  mails.value.filter((item) => {
-    if (inboxFilter.value === "read" && Number(item.unread) > 0) {
-      return false;
-    }
-    if (sourceFilter.value && item.source !== sourceFilter.value) {
-      return false;
-    }
-    return true;
-  }),
-);
+// 「已读」与来源服务端没有对应参数，只能在前端分类。三者叠加生效。
+//
+// 这条判定必须只有一份实现：loadMails() 也要用它来给「将要显示的行」编号，
+// 否则入场序号的顺序会和实际渲染顺序对不上（见下方 enterIndex 的注释）。
+function matchesMailFilter(item) {
+  if (inboxFilter.value === "read" && Number(item.unread) > 0) {
+    return false;
+  }
+  if (sourceFilter.value && item.source !== sourceFilter.value) {
+    return false;
+  }
+  return true;
+}
+
+const filteredMails = computed(() => mails.value.filter(matchesMailFilter));
 
 // 空列表提示：来源 / 已读是客户端筛选，可能只是把已加载的记录都滤掉了。
 const emptyHint = computed(() =>
@@ -429,27 +438,37 @@ function switchView(view) {
     return;
   }
 
-  const filterChanged = inboxFilter.value !== view;
+  const changed = inboxFilter.value !== view;
+  const fromCompose = activeTab.value === "compose";
   activeTab.value = "inbox";
   inboxFilter.value = view;
   composeReplyTo.value = null;
 
+  // 切分类重新拉最新一页（append = false）：分页游标归 0，
+  // 「加载更早的邮件」按钮与是否还有更早邮件都以这次响应为准；
+  // 已加载的行不清空，避免切换瞬间列表闪成空白。
+  // replay = true：拿到新数据时重建所有行，入场动画重头播放。
   if (activeMailId.value) {
-    closeMail();
-  } else if (filterChanged) {
-    loadMails();
+    closeMail(); // 内部已经会重取列表（关详情本身就会重建行，无需额外 replay）
+  } else if (changed || fromCompose) {
+    loadMails({ replay: true });
   }
 }
 
-// 切换来源：这一维由前端在已加载的邮件上过滤（接口没有 source 参数），不需要重新请求。
+// 切换来源：这一维由前端在已加载的邮件上过滤（接口没有 source 参数），
+// 但仍要重新拉最新一页，否则会拿着上一维已经翻了好几页的旧列表去过滤。
 function switchSource(source) {
   clearNotice();
+  const changed = sourceFilter.value !== source;
+  const fromCompose = activeTab.value === "compose";
   activeTab.value = "inbox";
   sourceFilter.value = source;
   composeReplyTo.value = null;
 
   if (activeMailId.value) {
     closeMail();
+  } else if (changed || fromCompose) {
+    loadMails({ replay: true });
   }
 }
 
@@ -475,7 +494,7 @@ function switchChannel(channel) {
   if (activeMailId.value) {
     closeMail();
   } else {
-    loadMails();
+    loadMails({ replay: true });
   }
 }
 
@@ -486,13 +505,28 @@ function switchChannel(channel) {
 // 旧的 append 还会把别的频道的数据追加到当前列表后面。
 let mailsRequestGeneration = 0;
 
-async function loadMails({ append = false } = {}) {
+async function loadMails({ append = false, replay = false } = {}) {
   if (!isLoggedIn.value) {
     return;
   }
 
   const requestId = ++mailsRequestGeneration;
   mailsLoading.value = true;
+
+  // 切分类 / 频道 / 来源：先把已加载的邮件整批清空。
+  // 紧接着一定会重新拉最新一页，留着上一个 tab 的数据既没有意义，
+  // 也会让行动画「先拿旧数据播一遍、再被新数据替换」。
+  // 清空后列表只显示「正在加载邮件列表…」，等响应回来再整体挂载一遍。
+  if (!append && replay) {
+    mailsListToken.value += 1;
+    mails.value = [];
+    mailsEnterIndex.value = new Map();
+    mailsCursor.value = null;
+    mailsHasMore.value = false;
+    // 行重建后容器仍保留旧滚动位置，动画会从看不见的顶部开始播
+    if (inboxListRef.value) inboxListRef.value.scrollTop = 0;
+  }
+
   try {
     const response = await messageApi.getMails({
       cursor: append ? (mailsCursor.value ?? 0) : 0,
@@ -510,12 +544,18 @@ async function loadMails({ append = false } = {}) {
     const data = response?.data ?? {};
     const items = Array.isArray(data.items) ? data.items : [];
 
-    // 新邮件按本批到达顺序从 0 编号；旧邮件沿用各自原有编号，不会被翻页改动节奏。
-    const enterIndex = new Map(append ? mailsEnterIndex.value : []);
-    items.forEach((item, index) => enterIndex.set(item.mailId, index));
+    // 入场序号必须按「最终会显示出来的顺序」编号，而不是按接口返回的原始顺序。
+    // 「已读」与「来源」是前端分类：接口一页 20 封里可能只有 3 封符合条件，
+    // 若照原始下标编号，渲染出来的 3 行会拿到被打散的序号（如 0 / 7 / 13），
+    // animation-delay 就会拉出空洞、看起来像「先挂载再筛掉」。
+    // 先筛、再按 0,1,2… 连续编号，挂载出来的错峰才是连贯的。
+    mailsEnterIndex.value = assignEnterIndex(
+      append ? mailsEnterIndex.value : null,
+      items,
+      matchesMailFilter,
+    );
 
     mails.value = append ? [...mails.value, ...items] : items;
-    mailsEnterIndex.value = enterIndex;
     mailsCursor.value = data.nextCursor ?? null;
     mailsHasMore.value = Boolean(data.hasMore);
   } catch (error) {
@@ -1539,6 +1579,7 @@ onBeforeUnmount(() => {
                   ></textarea>
                   <AttachmentPicker
                     v-if="attachmentsEnabled"
+                    class="attach-inset"
                     :items="hintFiles"
                     :issue="hintIssue"
                     :disabled="hintSubmitting"
@@ -1596,6 +1637,7 @@ onBeforeUnmount(() => {
 
             <AttachmentPicker
               v-if="attachmentsEnabled"
+              class="attach-inset"
               :items="composeFiles"
               :issue="composeIssue"
               :disabled="composing"
@@ -1708,7 +1750,7 @@ onBeforeUnmount(() => {
               </div>
             </header>
 
-            <div class="inbox-list">
+            <div ref="inboxListRef" class="inbox-list">
               <div class="inbox-row inbox-row--head">
                 <span>发件人</span>
                 <span>邮件</span>
@@ -1725,7 +1767,7 @@ onBeforeUnmount(() => {
 
               <button
                 v-for="item in filteredMails"
-                :key="item.mailId"
+                :key="`${mailsListToken}-${item.mailId}`"
                 type="button"
                 :class="[
                   'inbox-row',
@@ -2179,6 +2221,14 @@ onBeforeUnmount(() => {
   justify-content: flex-end;
   gap: 10px;
   padding: 0 18px 16px;
+}
+
+/* 附件选择区的根元素（AttachmentPicker 的 class 会落到它的根 div 上）：
+   与上方正文框 .mail-editor 的 margin 14px 18px 18px 保持同一条左右内距。
+   组件本身不带左右 margin，申诉页那边的正文框是 100% 宽，那边不需要这个类。 */
+.attach-inset {
+  margin-right: 18px;
+  margin-left: 18px;
 }
 
 /* 撰写页的求提示面板：占满正文区，操作按钮固定在底部。 */

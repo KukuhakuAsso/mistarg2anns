@@ -81,6 +81,12 @@ body.is-dragging {
     user-select: none;
 }
 
+/* 拖动线索栏宽度：整页保持横向调整光标，指针扫过其他元素时也不会跳变 */
+body.is-resizing-panel {
+    cursor: col-resize;
+    user-select: none;
+}
+
 h1,
 h2,
 h3 {

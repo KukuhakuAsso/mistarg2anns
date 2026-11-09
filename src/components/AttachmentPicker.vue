@@ -4,6 +4,7 @@
 // 见 useAttachments 的 onPaste / onDragenter / onDrop）。
 // 本组件只负责展示与事件上报：上传时序、校验、失败重试都在 useAttachments 里。
 import { ref } from "vue";
+import AppIcon from "@/components/AppIcon.vue";
 import {
   IMAGE_ACCEPT,
   IMAGE_MAX_COUNT,
@@ -38,11 +39,12 @@ function onChange(event) {
   <div class="attach">
     <div class="attach__head">
       <button
-        class="soft-btn attach__btn"
+        class="attach__btn"
         type="button"
         :disabled="disabled || items.length >= maxCount"
         @click="openPicker"
       >
+        <AppIcon name="plus" :size="14" />
         添加图片
       </button>
       <span class="attach__hint">
@@ -65,7 +67,11 @@ function onChange(event) {
     <ul v-if="items.length" class="attach__list">
       <li v-for="item in items" :key="item.uid" class="attach__item">
         <div class="attach__thumb">
-          <img v-if="item.previewUrl" :src="item.previewUrl" :alt="item.filename" />
+          <img
+            v-if="item.previewUrl"
+            :src="item.previewUrl"
+            :alt="item.filename"
+          />
           <span v-else class="attach__placeholder">预览不可用</span>
 
           <div v-if="item.status === 'uploading'" class="attach__progress">
@@ -74,16 +80,23 @@ function onChange(event) {
           </div>
           <div v-else-if="item.status === 'error'" class="attach__error">
             <small>上传失败</small>
-            <button class="attach__mini" type="button" @click="emit('retry', item.uid)">
+            <button
+              class="attach__mini"
+              type="button"
+              @click="emit('retry', item.uid)"
+            >
               重试
             </button>
           </div>
         </div>
 
         <div class="attach__meta">
-          <span class="attach__name" :title="item.filename">{{ item.filename }}</span>
+          <span class="attach__name" :title="item.filename">{{
+            item.filename
+          }}</span>
           <small>
-            {{ item.width }}×{{ item.height }} · {{ formatBytes(item.sizeBytes) }}
+            {{ item.width }}×{{ item.height }} ·
+            {{ formatBytes(item.sizeBytes) }}
           </small>
           <small v-if="item.status === 'error'" class="attach__error-text">
             {{ item.error }}
@@ -109,7 +122,6 @@ function onChange(event) {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin-top: 10px;
 }
 
 .attach__head {
@@ -121,6 +133,65 @@ function onChange(event) {
 
 .attach__input {
   display: none;
+}
+
+/* 这个按钮在两处父视图（站内信 / 申诉）里都是子组件内部元素，
+   父级的 .soft-btn 是 scoped 的、穿不进来，所以样式必须自带。
+   基底沿用站内信的 .soft-btn 语言（实线细边框 + 面底色），
+   「+」用强调色点出可操作性；同一个组件还支持粘贴与拖拽，所以悬停时整块转强调色。 */
+.attach__btn {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.4;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+/* 「+」比文字更早给出可点击的暗示 */
+.attach__btn :deep(.app-icon) {
+  color: var(--accent);
+  transition: color 0.15s ease;
+}
+
+.attach__btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.attach__btn:hover:not(:disabled) :deep(.app-icon) {
+  color: var(--accent);
+}
+
+.attach__btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.attach__btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.attach__btn:disabled :deep(.app-icon) {
+  color: inherit;
+}
+
+.attach__btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .attach__hint {

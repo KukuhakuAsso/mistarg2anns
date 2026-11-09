@@ -1,13 +1,22 @@
 <script setup>
 // 线索栏：上半部分是自由排布的板面，下半部分是待用线索。
 // 拖拽逻辑见 composables/useClueDrag.js。
-import { computed } from "vue";
+//
+// 宽度可由用户拖动左侧把手调整（双击把手恢复默认）：
+// 默认值来自 :root 的 --panel-w（clamp(320px, 32vw, 440px)），
+// 拖过之后用内联的 --panel-w 覆盖，并记在 localStorage 里。
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import AppIcon from "@/components/AppIcon.vue";
 import ClueCard from "@/components/ClueCard.vue";
 import PuzzleCover from "@/components/puzzle/PuzzleCover.vue";
 import { useClueDrag } from "@/composables/useClueDrag";
 import { useGameState } from "@/composables/useGameState";
 import { CARD_GAP, CARD_H } from "@/config/board";
+import {
+    CLUE_PANEL_MAX_W,
+    CLUE_PANEL_MIN_W,
+    clampCluePanelWidth,
+} from "@/utils/panelWidth";
 
 const {
     state,
@@ -20,6 +29,136 @@ const {
     uncollectCard,
 } = useGameState();
 const { boardEl, drag, startDrag } = useClueDrag();
+
+// ---------- 宽度调整 ----------
+
+const WIDTH_STORAGE_KEY = "mistarg2anns:clue-board-width";
+// 键盘每次调整的步长
+const WIDTH_STEP = 24;
+
+// 面板根元素：拖动时用它拿当前实际宽度（可能是 CSS 里 clamp() 算出来的）
+const panelEl = ref(null);
+// null = 沿用 CSS 默认宽度；数字 = 用户拖过的像素宽
+const panelWidth = ref(readStoredWidth());
+const resizing = ref(false);
+let resizeStart = null;
+
+function readStoredWidth() {
+    if (typeof window === "undefined") return null;
+    try {
+        const raw = window.localStorage.getItem(WIDTH_STORAGE_KEY);
+        if (!raw) return null;
+        const parsed = Number(raw);
+        if (!Number.isFinite(parsed)) return null;
+        // 存的是上次的宽度，但视口可能已经变了
+        return clampCluePanelWidth(parsed, window.innerWidth);
+    } catch {
+        return null;
+    }
+}
+
+function persistWidth(value) {
+    if (typeof window === "undefined") return;
+    try {
+        if (value == null) {
+            window.localStorage.removeItem(WIDTH_STORAGE_KEY);
+        } else {
+            window.localStorage.setItem(WIDTH_STORAGE_KEY, String(value));
+        }
+    } catch {
+        // 隐私模式写不进去：本次会话仍然生效，只是不记忆
+    }
+}
+
+function measuredWidth() {
+    if (panelWidth.value != null) return panelWidth.value;
+    const rect = panelEl.value?.getBoundingClientRect();
+    if (rect && rect.width > 0) return Math.round(rect.width);
+    return CLUE_PANEL_MIN_W;
+}
+
+// 只有拖过才写内联变量，否则保持 CSS 的 clamp(320px, 32vw, 440px) 自适应
+const panelStyle = computed(() =>
+    panelWidth.value == null
+        ? undefined
+        : { "--panel-w": `${panelWidth.value}px` },
+);
+
+function startResize(event) {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    event.preventDefault();
+    // 别让它冒泡到板面/卡片的拖拽逻辑上
+    event.stopPropagation();
+
+    resizeStart = { x: event.clientX, width: measuredWidth() };
+    resizing.value = true;
+    document.body.classList.add("is-resizing-panel");
+    document.addEventListener("pointermove", onResizing);
+    document.addEventListener("pointerup", stopResize, { once: true });
+    document.addEventListener("pointercancel", stopResize, { once: true });
+}
+
+function onResizing(event) {
+    if (!resizeStart) return;
+    // 线索栏在右侧：指针往左移 → 变宽
+    const next = resizeStart.width - (event.clientX - resizeStart.x);
+    panelWidth.value = clampCluePanelWidth(next, window.innerWidth);
+}
+
+function stopResize() {
+    if (!resizeStart) return;
+    resizeStart = null;
+    resizing.value = false;
+    document.body.classList.remove("is-resizing-panel");
+    document.removeEventListener("pointermove", onResizing);
+    document.removeEventListener("pointercancel", stopResize);
+    persistWidth(panelWidth.value);
+}
+
+// 键盘也能调（把手可获得焦点）：左方向键 = 往左扩 = 变宽
+function nudgeWidth(event) {
+    const step =
+        event.key === "ArrowLeft"
+            ? WIDTH_STEP
+            : event.key === "ArrowRight"
+              ? -WIDTH_STEP
+              : 0;
+    if (!step) return;
+    event.preventDefault();
+    panelWidth.value = clampCluePanelWidth(
+        measuredWidth() + step,
+        window.innerWidth,
+    );
+    persistWidth(panelWidth.value);
+}
+
+// 双击把手恢复 CSS 默认宽度（并清掉记忆）
+function resetWidth() {
+    panelWidth.value = null;
+    persistWidth(null);
+}
+
+// 窗口变窄时把已经记住的宽度收进合法区间，避免线索栏把内容挤没
+function onViewportResize() {
+    if (panelWidth.value == null) return;
+    const next = clampCluePanelWidth(panelWidth.value, window.innerWidth);
+    if (next !== panelWidth.value) {
+        panelWidth.value = next;
+        persistWidth(next);
+    }
+}
+
+onMounted(() => {
+    window.addEventListener("resize", onViewportResize);
+});
+
+onBeforeUnmount(() => {
+    window.removeEventListener("resize", onViewportResize);
+    // 拖拽过程中组件被卸载：把挂在 document 上的监听器收干净
+    document.removeEventListener("pointermove", onResizing);
+    document.removeEventListener("pointercancel", stopResize);
+    document.body.classList.remove("is-resizing-panel");
+});
 
 // 卡片被拖到下方时垫高画布，保证仍可滚动查看
 const canvasStyle = computed(() => {
@@ -50,8 +189,26 @@ function onPoolPointerDown(event, clue) {
     <!-- 线索栏需要登录：未登录时即使本地记着「展开」也不显示 -->
     <aside
         v-show="state.user.currentUser && state.ui.cluePanelOpen"
+        ref="panelEl"
         class="clue-board"
+        :class="{ 'is-resizing': resizing }"
+        :style="panelStyle"
     >
+        <!-- 左侧靠边把手：拖动或按左右方向键调整宽度，双击恢复默认 -->
+        <span
+            class="clue-board__resizer"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="拖动或按左右方向键调整线索栏宽度，双击恢复默认"
+            :aria-valuenow="panelWidth ?? undefined"
+            :aria-valuemin="CLUE_PANEL_MIN_W"
+            :aria-valuemax="CLUE_PANEL_MAX_W"
+            tabindex="0"
+            @pointerdown="startResize"
+            @keydown="nudgeWidth"
+            @dblclick="resetWidth"
+        />
+
         <header class="clue-board__head">
             <h2 class="clue-board__title">线索栏</h2>
             <span class="clue-board__count">
@@ -140,12 +297,51 @@ function onPoolPointerDown(event, clue) {
 
 <style scoped>
 .clue-board {
+    position: relative;
     display: flex;
     flex-direction: column;
     width: var(--panel-w);
     flex: none;
     border-left: 1px solid var(--border);
     background: var(--surface);
+}
+
+/* 宽度把手：骑在左边框内侧，命中区 6px，视觉上只在悬停/聚焦时露出来 */
+.clue-board__resizer {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 2;
+    width: 6px;
+    cursor: col-resize;
+    touch-action: none;
+}
+
+.clue-board__resizer::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 2px;
+    width: 1px;
+    height: 34px;
+    transform: translateY(-50%);
+    border-radius: 1px;
+    background: var(--border-strong);
+    opacity: 0;
+    transition: opacity 0.15s ease;
+}
+
+.clue-board__resizer:hover::after,
+.clue-board__resizer:focus-visible::after,
+.clue-board.is-resizing .clue-board__resizer::after {
+    width: 2px;
+    background: var(--accent);
+    opacity: 1;
+}
+
+.clue-board__resizer:focus-visible {
+    outline: none;
 }
 
 .clue-board__head {
@@ -291,6 +487,11 @@ function onPoolPointerDown(event, clue) {
         z-index: 10;
         width: 100%;
         border-left: none;
+    }
+
+    /* 窄屏是整屏浮层，宽度由视口决定，把手没有意义 */
+    .clue-board__resizer {
+        display: none;
     }
 }
 </style>
