@@ -10,7 +10,9 @@ import AppIcon from "@/components/AppIcon.vue";
 import ClueCard from "@/components/ClueCard.vue";
 import PuzzleCover from "@/components/puzzle/PuzzleCover.vue";
 import { useClueDrag } from "@/composables/useClueDrag";
+import { useClueBoardSync } from "@/composables/useClueBoardSync";
 import { useGameState } from "@/composables/useGameState";
+import { useStatusMessage } from "@/composables/useStatusMessage";
 import { CARD_GAP, CARD_H } from "@/config/board";
 import {
     CLUE_PANEL_MAX_W,
@@ -27,8 +29,92 @@ const {
     arrangeBoard,
     addClueToBoard,
     uncollectCard,
+    pendingClueBoardChanges,
 } = useGameState();
 const { boardEl, drag, startDrag } = useClueDrag();
+const { flush: flushClueBoard, cooldownRemaining } = useClueBoardSync();
+const {
+    message: syncMessage,
+    tone: syncTone,
+    set: setSyncMessage,
+    clear: clearSyncMessage,
+} = useStatusMessage();
+
+// ---------- 主动上传 ----------
+// 服务端限流是「同账号 5 分钟一次」，改动要等冷却结束才会自动上传；
+// 这里给一个立刻尝试的入口（force 跳过本地冷却，服务端仍可能 429）。
+const uploading = ref(false);
+
+const pendingCount = computed(() => pendingClueBoardChanges().length);
+
+// 冷却剩余时间的可读文案（0 → 空串）
+function cooldownText() {
+    const ms = cooldownRemaining();
+    if (ms <= 0) return "";
+    const totalSec = Math.ceil(ms / 1000);
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    return m > 0 ? `${m} 分 ${s} 秒` : `${s} 秒`;
+}
+
+const uploadTitle = computed(() => {
+    if (uploading.value) return "正在上传…";
+    if (!pendingCount.value) return "没有待上传的改动";
+    const cd = cooldownText();
+    return cd
+        ? `立即上传（服务端限流：约 ${cd} 后自动重试）`
+        : "立即上传线索栏改动";
+});
+
+async function uploadNow() {
+    if (uploading.value) return;
+    if (!pendingCount.value) {
+        setSyncMessage("info", "没有待上传的改动。");
+        return;
+    }
+
+    uploading.value = true;
+    setSyncMessage("pending", "正在上传线索栏…");
+    try {
+        const result = await flushClueBoard({ force: true });
+        if (result?.ok) {
+            const n = Number(result.uploaded ?? 0);
+            setSyncMessage(
+                "success",
+                n > 0 ? `已上传 ${n} 项改动。` : "已是最新，无需上传。",
+            );
+            return;
+        }
+        if (result?.stale) {
+            // 期间换了账号：静默，别给新会话弹上一个账号的结果
+            clearSyncMessage();
+            return;
+        }
+        if (result?.throttled) {
+            const ms = Number(result.retryAfterMs ?? 0);
+            const wait = ms > 0 ? `${Math.ceil(ms / 1000)} 秒` : "稍后";
+            setSyncMessage("info", `服务端限流：约 ${wait} 后会自动重试。`);
+            return;
+        }
+        if (result?.retryAfter) {
+            setSyncMessage(
+                "error",
+                `上传过于频繁，请 ${result.retryAfter} 秒后再试（已按服务端要求顺延）。`,
+            );
+            return;
+        }
+        if (result?.rejected) {
+            setSyncMessage(
+                "error",
+                "这批改动被服务端拒绝，请挪动一下卡片再试。",
+            );
+            return;
+        }
+        setSyncMessage("error", "上传失败，请稍后重试。");
+    } finally {
+        uploading.value = false;
+    }
+}
 
 // ---------- 宽度调整 ----------
 
@@ -218,6 +304,15 @@ function onPoolPointerDown(event, clue) {
                 <button
                     class="icon-btn"
                     type="button"
+                    :title="uploadTitle"
+                    :disabled="uploading || pendingCount === 0"
+                    @click="uploadNow"
+                >
+                    <AppIcon name="upload" />
+                </button>
+                <button
+                    class="icon-btn"
+                    type="button"
                     title="自动排列"
                     :disabled="boardClues.length === 0"
                     @click="arrangeBoard(currentBoardWidth())"
@@ -235,6 +330,15 @@ function onPoolPointerDown(event, clue) {
                 </button>
             </div>
         </header>
+
+        <!-- 上传结果 / 冷却提示：只在有话说时占位，避免面板高度跳动 -->
+        <p
+            v-if="syncMessage"
+            class="clue-board__sync"
+            :class="`is-${syncTone}`"
+        >
+            {{ syncMessage }}
+        </p>
 
         <div class="board" :class="{ 'board--over': drag.active && drag.overBoard }">
             <div ref="boardEl" class="board__canvas" :style="canvasStyle">
@@ -351,6 +455,25 @@ function onPoolPointerDown(event, clue) {
     height: 40px;
     padding: 0 12px;
     border-bottom: 1px solid var(--border);
+}
+
+/* 上传结果 / 冷却提示：一行小字，颜色沿用全局语义色变量 */
+.clue-board__sync {
+    margin: 0;
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--text-dim);
+    overflow-wrap: anywhere;
+}
+
+.clue-board__sync.is-success {
+    color: var(--accent);
+}
+
+.clue-board__sync.is-error {
+    color: #d9534f;
 }
 
 .clue-board__title {

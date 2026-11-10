@@ -6,6 +6,14 @@ const ACCESS_TOKEN_KEY = "mistarg_access_token";
 
 let refreshRequestPromise = null;
 
+// 会话代次：登录、注册、改名 / 改密换令牌、登出、强制登出都会 +1。
+//
+// 刷新令牌是异步的（一次带 Cookie 的网络往返）。若 A 的刷新还没回来，用户已经登出、
+// B 又登录进来，那么这次响应属于**旧会话**：既不能拿它的 access_token 覆盖 B 的令牌，
+// 也不能拿它重试原请求（否则之后所有请求都会以 A 的身份发出）。
+// 所以刷新在发起时记下代次，写回前比对，不一致就整份丢弃。
+let sessionGeneration = 0;
+
 // 读取 localStorage；环境不可用（无 window / 隐私模式）时返回 null。
 function readStorage(key) {
   if (typeof window === "undefined") {
@@ -51,7 +59,11 @@ function getAccessToken() {
 }
 
 // 保存 access token；传入空值时改为清除。
+// 这是「身份变更」入口（登录 / 注册 / 改名 / 改密拿到新令牌），必须推进会话代次：
+// 还在飞的旧会话刷新从此作废。刷新自身的写回不走这里，见 applyRefreshedToken()。
 export function setAccessToken(token) {
+  sessionGeneration += 1;
+
   if (!token) {
     removeStorage(ACCESS_TOKEN_KEY);
     return;
@@ -60,9 +72,19 @@ export function setAccessToken(token) {
   writeStorage(ACCESS_TOKEN_KEY, token);
 }
 
-// 清除本地 access token。
+// 清除本地 access token（登出 / 强制登出 / 令牌彻底失效）。
+// 同样推进代次：在飞的刷新回来后会被判定为旧会话，不会再写回令牌。
 export function clearAccessToken() {
+  sessionGeneration += 1;
   removeStorage(ACCESS_TOKEN_KEY);
+}
+
+// 刷新专用写回：只有代次没变（仍是同一个会话）时才落盘，自己不推进代次。
+// 返回是否写回成功。
+function applyRefreshedToken(token, generation) {
+  if (!token || generation !== sessionGeneration) return false;
+  writeStorage(ACCESS_TOKEN_KEY, token);
+  return true;
 }
 
 // 把查询参数拼接到 URL 上；跳过 undefined / null / 空字符串，数组值按重复键展开。
@@ -101,38 +123,68 @@ async function readResponse(response, raw = false) {
   }
 }
 
-// 用 cookie 刷新 access token 并写回本地；并发调用共享同一个请求，失败时清除本地 token 并抛出。
-async function refreshAccessToken() {
+// 用 cookie 刷新 access token 并写回本地；并发调用共享同一个请求。
+//
+// generation 是发起方的会话代次。返回 { ok, stale, error? }：
+//   · ok     —— 刷新成功且令牌已写回（仍是同一个会话）
+//   · stale  —— 期间登出 / 换了账号，这次刷新属于旧会话：不写回、不清令牌，调用方应放弃重试
+//   · error  —— 真的过期了：本地令牌已清除，调用方负责通知会话失效
+async function refreshAccessToken(generation = sessionGeneration) {
   if (refreshRequestPromise) {
-    return refreshRequestPromise;
+    const shared = await refreshRequestPromise;
+    // 共享的那次刷新属于另一个会话：它的结果不能当成自己的
+    if (shared.generation !== generation) return { ok: false, stale: true, generation };
+    return shared;
   }
 
-  refreshRequestPromise = (async () => {
-    const response = await fetch(buildApiUrl("/auth/refresh"), {
-      method: "POST",
-      credentials: "include",
-      headers: getApiHeaders(),
-    });
+  const task = (async () => {
+    let response;
+    try {
+      response = await fetch(buildApiUrl("/auth/refresh"), {
+        method: "POST",
+        credentials: "include",
+        headers: getApiHeaders(),
+      });
+    } catch (error) {
+      // 网络层失败（离线 / 被中断）：不代表会话失效，但这次刷新用不了
+      return {
+        ok: false,
+        stale: generation !== sessionGeneration,
+        generation,
+        error,
+        network: true,
+      };
+    }
 
     const payload = await readResponse(response);
 
+    // 响应回来时已经换过会话：不管成功还是失败都不能动当前会话的令牌
+    if (generation !== sessionGeneration) {
+      return { ok: false, stale: true, generation };
+    }
+
     if (!response.ok) {
       clearAccessToken();
-      throw new Error(extractErrorMessage(payload) || "Refresh token expired or invalid.");
+      return {
+        ok: false,
+        stale: false,
+        generation,
+        error: new Error(extractErrorMessage(payload) || "Refresh token expired or invalid."),
+      };
     }
 
     const nextToken = payload?.data?.access_token || payload?.access_token || payload?.token;
-    if (nextToken) {
-      setAccessToken(nextToken);
-    }
-
-    return payload;
+    // 写回前再比一次代次（readResponse 也是异步的）
+    applyRefreshedToken(nextToken, generation);
+    return { ok: true, stale: generation !== sessionGeneration, generation, payload };
   })();
 
+  refreshRequestPromise = task;
+
   try {
-    return await refreshRequestPromise;
+    return await task;
   } finally {
-    refreshRequestPromise = null;
+    if (refreshRequestPromise === task) refreshRequestPromise = null;
   }
 }
 
@@ -181,22 +233,25 @@ export async function request(path, options = {}) {
     !skipRefresh &&
     !String(path).includes("/auth/refresh")
   ) {
-    try {
-      await refreshAccessToken();
-      const retryHeaders = {
-        ...requestHeaders,
-        Authorization: `Bearer ${getAccessToken()}`,
-      };
+    // 记下发起这次刷新时的会话代次：刷新回来若已登出 / 换账号，这个 401 属于旧会话
+    const generation = sessionGeneration;
+    const refreshed = await refreshAccessToken(generation);
 
+    if (refreshed.stale) {
+      // 期间登出或换了账号：既不重试（会用旧身份发出去），也不动新会话的令牌。
+      // 直接落到下面的错误处理，把这个 401 原样抛给调用方。
+    } else if (refreshed.ok) {
+      // 重试必须重新读一次令牌：刷新刚写回来的就是它
       response = await fetch(url, {
         ...fetchOptions,
-        headers: retryHeaders,
+        headers: { ...requestHeaders, ...getAuthHeaders() },
       });
-    } catch (error) {
-      clearAccessToken();
-      // 刷新也救不回来：会话已彻底失效，通知 App 强制登出（否则界面看似登录但什么都调不动）
-      notifySessionLost();
-      throw error;
+    } else {
+      // 刷新确实失败：网络层失败不代表会话失效，只有后端明确拒绝才强制登出
+      if (!refreshed.network) {
+        notifySessionLost();
+      }
+      throw refreshed.error;
     }
   }
 
@@ -255,6 +310,13 @@ function getAuthHeaders(extra = {}) {
 // 信任边界：只对指向本 API 部署的地址带凭证。素材 / 组件的 url 来自服务端下发的
 // 描述符，resolveServerUrl() 对绝对地址是原样透传的 —— 一旦后端改了约定（CDN 直链、
 // 脏数据、被篡改的记录），无条件加 Authorization 就会把访问令牌与测试票据送给第三方。
+//
+// 已知未覆盖的情况（PR #101 review，2026-11-10 决定不修）：本函数只校验**初始** URL，
+// 而 fetch 默认跟随重定向；若后端把某个素材 / 组件端点改成 302 到 CDN，浏览器会剥掉
+// Authorization，但**不会**剥掉 X-Mistarg-Test-Ticket。生产构建没有配置测试票据
+// （.env.production 无 VITE_X_MISTARG_TEST_TICKET，getApiHeaders 不会加这个头），
+// 所以泄露面仅限 dev / test 构建；玩家侧 media / asset 两个端点按 api-12 是 200 直出，
+// 目前不会发生重定向。若将来后端改成 302，需要改为后端同源直传或在此处做 manual 探测。
 export async function fetchWithAuth(url, options = {}, { retried = false } = {}) {
   const { headers = {}, ...init } = options;
   const trusted = isApiUrl(url);
@@ -271,11 +333,21 @@ export async function fetchWithAuth(url, options = {}, { retried = false } = {})
     return response;
   }
 
-  try {
-    await refreshAccessToken();
-  } catch {
-    // 刷新也救不回来：保持原有 401 响应，由调用方提示；同时通知会话失效
-    notifySessionLost();
+  // 与 request() 同一套口径：记下发起刷新时的会话代次，回来发现已换会话就放弃
+  const generation = sessionGeneration;
+  const refreshed = await refreshAccessToken(generation);
+
+  // 旧会话的 401：原样返回，不重试、不动新会话的令牌
+  if (refreshed.stale) {
+    return response;
+  }
+
+  if (!refreshed.ok) {
+    // 刷新也救不回来：保持原有 401 响应，由调用方提示；
+    // 只有后端明确拒绝（而不是网络层失败）才通知会话失效
+    if (!refreshed.network) {
+      notifySessionLost();
+    }
     return response;
   }
 

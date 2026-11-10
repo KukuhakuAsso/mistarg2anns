@@ -43,17 +43,35 @@ function sanitizeItems(items) {
   return out;
 }
 
-// 下一次允许 POST 的时刻（模块级：整页共享一个冷却窗口）
-let nextUploadAt = 0;
+// 下一次允许 POST 的时刻（**按账号**记录：服务端限流是「同账号 5 分钟一次」，
+// A 传完不该把 B 也冷却掉）
+const cooldownUntil = new Map();
 let pullTask = null;
 let flushTask = null;
 let flushTimer = null;
+
+// 会话代次：reset()（登出 / 换账号）时 +1。
+// 在飞的 pull / flush 每个 await 之后都要比对：代次变了说明结果属于上一个账号，
+// 不能再写 state、markClueBoardRejected 或改冷却窗口。
+let sessionEpoch = 0;
 
 // 读取账号标识，用来判断异步响应回来时是否已经换了账号
 function accountKeyOf(state) {
   const user = state.user.currentUser;
   if (!user) return null;
   return user.id ?? user.username ?? null;
+}
+
+// 冷却窗口按账号取；没有记录 = 可以立即上传
+function cooldownAt(accountKey) {
+  if (accountKey === null || accountKey === undefined) return 0;
+  return cooldownUntil.get(String(accountKey)) ?? 0;
+}
+
+function setCooldown(accountKey, at) {
+  if (accountKey === null || accountKey === undefined) return;
+  if (!at) cooldownUntil.delete(String(accountKey));
+  else cooldownUntil.set(String(accountKey), at);
 }
 
 export function useClueBoardSync() {
@@ -89,16 +107,19 @@ export function useClueBoardSync() {
     if (pullTask) return pullTask;
 
     const accountKey = accountKeyOf(state);
+    const epoch = sessionEpoch;
     const task = (async () => {
       try {
         const payload = await clueBoardApi.getSnapshot();
         // 期间登出 / 换账号：这份快照属于上一个账号，直接丢弃
+        if (epoch !== sessionEpoch) return { ok: false, stale: true };
         if (accountKey !== accountKeyOf(state)) return { ok: false, stale: true };
         applyClueBoardSnapshot(payload?.data?.items ?? []);
         hydrateFromMap();
         return { ok: true };
       } catch (error) {
         // 失败时本地状态照常可用，下次可见 / 登录再试
+        if (epoch !== sessionEpoch) return { ok: false, stale: true };
         return { ok: false, error };
       }
     })();
@@ -107,24 +128,33 @@ export function useClueBoardSync() {
     try {
       return await task;
     } finally {
+      // 只清自己这一次：reset() 已经把引用置空时，这里不会再误清新会话的任务
       if (pullTask === task) pullTask = null;
     }
   }
 
-  // 上传本机差异。force 只用于需要立刻尝试的场合；
+  // 上传本机差异。force 用于「用户主动点上传」：跳过本地冷却窗口，
   // 服务端 5 分钟限流仍然生效（429 时按 Retry-After 顺延）。
   async function flush({ force = false } = {}) {
     if (!state.user.currentUser) return { ok: false };
-    if (flushTask) return flushTask;
-    if (!force && Date.now() < nextUploadAt) {
-      return { ok: false, throttled: true };
-    }
 
     const accountKey = accountKeyOf(state);
+    if (flushTask) return flushTask;
+    if (!force && Date.now() < cooldownAt(accountKey)) {
+      return {
+        ok: false,
+        throttled: true,
+        retryAfterMs: cooldownAt(accountKey) - Date.now(),
+      };
+    }
+
+    const epoch = sessionEpoch;
     const task = (async () => {
       // 先 GET 合并：只上传「本地与最近一次已知服务端快照的差异」（api-13 §四）
       const pulled = await pull();
       if (!pulled.ok) return pulled;
+      // 这个 await 期间可能已经登出 / 换账号：后续一律不能落到新会话上
+      if (epoch !== sessionEpoch) return { ok: false, stale: true };
       if (accountKey !== accountKeyOf(state)) return { ok: false, stale: true };
 
       const items = sanitizeItems(pendingClueBoardChanges());
@@ -135,17 +165,21 @@ export function useClueBoardSync() {
           device: describeDevice(),
           items,
         });
+        // 写回前再比一次代次与账号：响应属于旧会话就整份丢弃
+        if (epoch !== sessionEpoch) return { ok: false, stale: true };
         if (accountKey !== accountKeyOf(state)) return { ok: false, stale: true };
         // 响应是合并后的全量快照，直接当作新的「已知服务端状态」
         applyClueBoardSnapshot(payload?.data?.items ?? []);
         hydrateFromMap();
-        nextUploadAt = Date.now() + UPLOAD_COOLDOWN_MS;
+        setCooldown(accountKey, Date.now() + UPLOAD_COOLDOWN_MS);
         return { ok: true, uploaded: items.length };
       } catch (error) {
+        // 旧会话的失败不能影响新会话：不写冷却、不标拒绝
+        if (epoch !== sessionEpoch) return { ok: false, stale: true };
         if (error?.status === 429) {
           const retry = Number(error.payload?.error?.detail?.retry_after_sec);
           const seconds = Number.isFinite(retry) && retry > 0 ? retry : 300;
-          nextUploadAt = Date.now() + seconds * 1000;
+          setCooldown(accountKey, Date.now() + seconds * 1000);
           return { ok: false, retryAfter: seconds };
         }
         if (error?.status === 400) {
@@ -156,7 +190,7 @@ export function useClueBoardSync() {
             error?.message,
           );
           markClueBoardRejected(items);
-          nextUploadAt = Date.now() + UPLOAD_COOLDOWN_MS;
+          setCooldown(accountKey, Date.now() + UPLOAD_COOLDOWN_MS);
           return { ok: false, rejected: true };
         }
         return { ok: false, error };
@@ -184,17 +218,34 @@ export function useClueBoardSync() {
     }, FLUSH_DEBOUNCE_MS);
   }
 
-  // 登出 / 换账号：作废排队的上传与内存快照
+  // 登出 / 换账号：作废排队的上传、共享任务与内存快照。
+  // 代次 +1 是关键：在飞的 pull / flush 回来后会发现自己是旧会话，
+  // 不再写 state、不再改冷却窗口，也不会被新会话复用（否则 B 拿到 A 的任务、
+  // 结果被账号检查丢掉，B 的板面要等下一次切标签页才恢复）。
   function reset() {
     if (flushTimer !== null) {
       window.clearTimeout(flushTimer);
       flushTimer = null;
     }
-    nextUploadAt = 0;
+    sessionEpoch += 1;
+    pullTask = null;
+    flushTask = null;
     resetClueBoardSync();
   }
 
-  return { pull, flush, scheduleFlush, reset, hydrateFromMap };
+  // 距下一次可上传还有多少毫秒（0 = 现在就能传）。给界面显示冷却状态用。
+  function cooldownRemaining() {
+    return Math.max(0, cooldownAt(accountKeyOf(state)) - Date.now());
+  }
+
+  return {
+    pull,
+    flush,
+    scheduleFlush,
+    reset,
+    hydrateFromMap,
+    cooldownRemaining,
+  };
 }
 
 export default useClueBoardSync;

@@ -22,8 +22,11 @@ export function useNameAvailability({
   let timer = null;
   // 请求代号：每次输入变化都递增，只有最新一次请求的结果生效。
   let generation = 0;
-  // 已得出结论的名字：写回归一化值会再次触发 watch，用它避免重复查重。
-  let settledName = "";
+  // 已得出结论的名字 + 当时的结论。
+  // 只记名字是不够的：用户退格回到这个名字时，如果只有名字命中就直接 return，
+  // 状态会停留在上一次的「检查中」（退格前正在查别的名字）或错误提示上。
+  // 所以把结论一起缓存，命中时原样恢复。
+  let settled = { name: "", status: "idle", message: "" };
 
   function setStatus(next, text = "") {
     status.value = next;
@@ -41,7 +44,7 @@ export function useNameAvailability({
   // 清空状态并作废在途请求：切换模式、提交成功、提交失败落位前调用。
   function reset() {
     cancelPending();
-    settledName = "";
+    settled = { name: "", status: "idle", message: "" };
     setStatus("idle");
   }
 
@@ -67,7 +70,10 @@ export function useNameAvailability({
       return;
     }
 
-    if (checkedName === settledName) {
+    // 回到已经查过、且已有结论的名字：恢复当时的结论。
+    // 这里不能直接 return —— 那样会把「检查中」或上一条名字的错误提示留在界面上。
+    if (checkedName === settled.name) {
+      setStatus(settled.status || "idle", settled.message);
       return;
     }
 
@@ -84,26 +90,29 @@ export function useNameAvailability({
 
         const data = response?.data ?? {};
 
-        // 后端返回的是归一化后的名字，与输入不同则回写输入框。
-        if (writeBack && data.name && data.name !== value.value) {
-          settledName = data.name;
-          value.value = data.name;
-        } else {
-          settledName = checkedName;
-        }
-
         const isAvailable =
           data.available === true || data.status === "available";
         const isTaken = data.available === false || data.status === "taken";
 
-        if (isTaken) {
-          setStatus("taken", messages.taken ?? "");
-        } else if (isAvailable) {
-          setStatus("available", messages.available ?? "");
-        } else {
-          // 未知状态不表态，避免把「没听说被占用」当成「可以使用」。
-          setStatus("idle");
+        // 结论先算好，再决定写回 —— 写回会同步改 value、并在下一 tick 再次触发 watch，
+        // 那次触发会命中 settled，所以必须在这之前把结论存好。
+        const next = isTaken
+          ? { status: "taken", message: messages.taken ?? "" }
+          : isAvailable
+            ? { status: "available", message: messages.available ?? "" }
+            : // 未知状态不表态，避免把「没听说被占用」当成「可以使用」
+              { status: "idle", message: "" };
+
+        // 后端可能返回归一化后的名字（如大小写、全角转换）：以它为准
+        const settledName = writeBack && data.name ? data.name : checkedName;
+        settled = { name: settledName, ...next };
+
+        // 写回到输入框：与后端归一化结果不同才写，避免无意义的 watch
+        if (writeBack && data.name && data.name !== value.value) {
+          value.value = data.name;
         }
+
+        setStatus(next.status, next.message);
       } catch (error) {
         if (requestId !== generation) {
           return;

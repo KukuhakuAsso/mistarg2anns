@@ -119,6 +119,7 @@ const {
   items: composeFiles,
   dragging: composeDragging,
   issue: composeIssue,
+  busy: composeAttachBusy,
   addFiles: addComposeFiles,
   remove: removeCompose,
   retry: retryCompose,
@@ -132,6 +133,7 @@ const {
   items: hintFiles,
   dragging: hintDragging,
   issue: hintIssue,
+  busy: hintAttachBusy,
   addFiles: addHintFiles,
   remove: removeHint,
   retry: retryHint,
@@ -141,6 +143,43 @@ const {
   onDragleave: onHintDragleave,
   onDrop: onHintDrop,
 } = hintAttachments;
+
+// 附件开关关闭时（后端 attachmentsEnabled=false，此时 sign 会回 403 MSG_IMAGE_DISABLED）
+// 连事件都不绑：否则粘贴一张图就会造出一条「上传失败」的附件，
+// failed 卡住提交，而选图入口是隐藏的 —— 用户没有「移除」可点，只能刷新页面。
+// 用 v-on 对象而不是逐个加条件，新增入口时不会漏掉。
+const composeAttachEvents = computed(() =>
+  attachmentsEnabled.value
+    ? {
+        paste: onComposePaste,
+        dragenter: onComposeDragenter,
+        dragover: onComposeDragover,
+        dragleave: onComposeDragleave,
+        drop: onComposeDrop,
+      }
+    : {},
+);
+const hintAttachEvents = computed(() =>
+  attachmentsEnabled.value
+    ? {
+        paste: onHintPaste,
+        dragenter: onHintDragenter,
+        dragover: onHintDragover,
+        dragleave: onHintDragleave,
+        drop: onHintDrop,
+      }
+    : {},
+);
+// 开关关闭时不再提「可拖拽或粘贴截图」
+const composePlaceholder = computed(() =>
+  attachmentsEnabled.value
+    ? "请输入正文内容（1–2000 字）；可拖拽或粘贴截图"
+    : "请输入正文内容（1–2000 字）",
+);
+const hintQuestionPlaceholder = computed(() => {
+  const base = "描述卡住的地方（1–2000 字），官方会据此报价";
+  return attachmentsEnabled.value ? `${base}；可拖拽或粘贴截图` : base;
+});
 
 // 求提示：进行中的请求可能有多条 —— 只有 pending 占用「每队 1 条」名额，
 // 一旦官方报价（quoted）就释放名额，所以可以有 1 条 pending + 多条待确认/待议价的请求。
@@ -1570,12 +1609,8 @@ onBeforeUnmount(() => {
                     :class="{ 'is-drop-target': hintDragging }"
                     rows="5"
                     maxlength="2000"
-                    placeholder="描述卡住的地方（1–2000 字），官方会据此报价；可拖拽或粘贴截图"
-                    @paste="onHintPaste"
-                    @dragenter="onHintDragenter"
-                    @dragover="onHintDragover"
-                    @dragleave="onHintDragleave"
-                    @drop="onHintDrop"
+                    :placeholder="hintQuestionPlaceholder"
+                    v-on="hintAttachEvents"
                   ></textarea>
                   <AttachmentPicker
                     v-if="attachmentsEnabled"
@@ -1594,7 +1629,10 @@ onBeforeUnmount(() => {
                     class="primary-btn"
                     type="button"
                     :disabled="
-                      hintSubmitting || !tipsHasTeam || !hintQuestion.trim()
+                      hintSubmitting ||
+                      hintAttachBusy ||
+                      !tipsHasTeam ||
+                      !hintQuestion.trim()
                     "
                     @click="submitHintQuestion"
                   >
@@ -1627,12 +1665,8 @@ onBeforeUnmount(() => {
               :class="{ 'is-drop-target': composeDragging }"
               rows="10"
               maxlength="2000"
-              placeholder="请输入正文内容（1–2000 字）；可拖拽或粘贴截图"
-              @paste="onComposePaste"
-              @dragenter="onComposeDragenter"
-              @dragover="onComposeDragover"
-              @dragleave="onComposeDragleave"
-              @drop="onComposeDrop"
+              :placeholder="composePlaceholder"
+              v-on="composeAttachEvents"
             ></textarea>
 
             <AttachmentPicker
@@ -1650,7 +1684,7 @@ onBeforeUnmount(() => {
               <button
                 class="primary-btn"
                 type="button"
-                :disabled="composing"
+                :disabled="composing || composeAttachBusy"
                 @click="sendCompose"
               >
                 {{
