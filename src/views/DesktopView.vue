@@ -58,7 +58,13 @@ const desktopCards = computed(() => [
         icon: "folder",
         accent: folder.completed ? "amber" : "slate",
         description: folder.subtitle,
-        folder,
+        // 「新文件」角标靠这个字段：usePuzzleMap 只关心服务端结构，
+        // 本地浏览记录在 state.visitedFolders 里，必须在这里补上，
+        // 否则 FolderItem 读到的 visited 永远是 undefined，未完成目录一直显示「新」。
+        folder: {
+            ...folder,
+            visited: state.visitedFolders.includes(folder.id),
+        },
     })),
 ]);
 // 处理文件夹打开事件。
