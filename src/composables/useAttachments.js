@@ -28,6 +28,13 @@ export function useAttachments({ maxCount = IMAGE_MAX_COUNT, onError } = {}) {
   const issue = ref("");
   let dragDepth = 0;
 
+  // 正在校验（或排队等着校验）的文件数。inspectImageFile 是异步的（要解码图片），
+  // 这段时间 items 里还没有任何一项，所以单看 uploading 会漏掉「正在校验」这个状态：
+  // 选完图立刻点提交就能把不带附件的正文发出去。
+  const validating = ref(0);
+  // addFiles 串行化用的链：同一时刻只允许一批在跑。
+  let addChain = Promise.resolve();
+
   function setIssue(text) {
     issue.value = text || "";
     if (issue.value) onError?.(issue.value);
@@ -39,6 +46,9 @@ export function useAttachments({ maxCount = IMAGE_MAX_COUNT, onError } = {}) {
   const uploading = computed(() =>
     items.value.some((item) => item.status === "uploading"),
   );
+  // 「附件还在处理」：正在校验 + 正在上传。提交入口据此禁用，
+  // 否则校验窗口内的点击会发出不带附件的正文。
+  const busy = computed(() => validating.value > 0 || uploading.value);
   const failed = computed(() =>
     items.value.some((item) => item.status === "error"),
   );
@@ -88,10 +98,29 @@ export function useAttachments({ maxCount = IMAGE_MAX_COUNT, onError } = {}) {
   }
 
   // 统一的入口：选择按钮、Ctrl+V、拖拽都调这里。
-  async function addFiles(fileList) {
+  //
+  // 串行化：两批文件同时进来（连按两次粘贴、粘贴 + 拖拽）时，各自算出的剩余名额都是旧值，
+  // 都能通过检查，实际插入后就会突破 maxCount，提交时被服务端整条拒绝。
+  // 排成一条链后，第二批复用第一批发完后的真实数量。
+  function addFiles(fileList) {
     const files = Array.from(fileList || []).filter(Boolean);
-    if (!files.length) return;
+    if (!files.length) return addChain;
 
+    validating.value += files.length;
+
+    const run = async () => {
+      try {
+        await addFilesNow(files);
+      } finally {
+        validating.value = Math.max(0, validating.value - files.length);
+      }
+    };
+    // 前一批失败也要继续跑下一批
+    addChain = addChain.then(run, run);
+    return addChain;
+  }
+
+  async function addFilesNow(files) {
     const slots = maxCount - items.value.length;
     if (slots <= 0) {
       setIssue(`最多只能附带 ${maxCount} 张图片。`);
@@ -111,7 +140,13 @@ export function useAttachments({ maxCount = IMAGE_MAX_COUNT, onError } = {}) {
       else failures.push(result.reason);
     }
 
+    let skipped = 0;
     for (const { file, result } of checked) {
+      // 插入前复查：校验是异步的，期间可能已被别的入口（重试、另一批排队中的文件）占满
+      if (items.value.length >= maxCount) {
+        skipped += 1;
+        continue;
+      }
       items.value.push({
         uid: nextUid(),
         file,
@@ -133,6 +168,7 @@ export function useAttachments({ maxCount = IMAGE_MAX_COUNT, onError } = {}) {
     }
 
     if (failures.length) message = failures[0];
+    else if (skipped > 0) message = `最多只能附带 ${maxCount} 张图片，多余的已忽略。`;
     setIssue(message);
   }
 
@@ -235,6 +271,8 @@ export function useAttachments({ maxCount = IMAGE_MAX_COUNT, onError } = {}) {
     hasItems,
     canAdd,
     uploading,
+    validating,
+    busy,
     failed,
     ready,
     maxCount,

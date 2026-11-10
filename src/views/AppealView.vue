@@ -44,6 +44,7 @@ const {
   dragging: attachmentsDragging,
   issue: attachmentsIssue,
   uploading: attachmentsUploading,
+  busy: attachmentsBusy,
   failed: attachmentsFailed,
   addFiles: addAttachments,
   remove: removeAttachment,
@@ -57,6 +58,29 @@ const {
   onDragleave: onAttachmentsDragleave,
   onDrop: onAttachmentsDrop,
 } = useAttachments({ onError: (text) => setMessage("error", text) });
+
+// 附件开关关闭时（sign 会 403 MSG_IMAGE_DISABLED）连事件都不绑：
+// 否则粘贴一张图就会造出一条「上传失败」的附件，failed 卡住提交，
+// 而选图入口是隐藏的 —— 用户没有「移除」可点，只能刷新页面。
+const attachmentEvents = computed(() =>
+  attachmentsEnabled.value
+    ? {
+        paste: onAttachmentsPaste,
+        dragenter: onAttachmentsDragenter,
+        dragover: onAttachmentsDragover,
+        dragleave: onAttachmentsDragleave,
+        drop: onAttachmentsDrop,
+      }
+    : {},
+);
+
+// 开关关闭时不再提「可拖拽或粘贴截图」
+const appealPlaceholder = computed(() => {
+  const withShot = attachmentsEnabled.value ? "；可拖拽或粘贴截图。" : "。";
+  return scope.value === "team"
+    ? `请说明队伍情况（1–2000 字）。主题由系统生成，回复全队可见${withShot}`
+    : `请说明情况（1–2000 字）。主题由系统按处罚种类自动生成${withShot}`;
+});
 
 const isLoggedIn = computed(() => Boolean(state.user.currentUser));
 const banned = computed(() => Boolean(status.value?.banned));
@@ -575,16 +599,8 @@ onBeforeUnmount(() => {
               :class="{ 'is-drop-target': attachmentsDragging }"
               rows="5"
               maxlength="2000"
-              :placeholder="
-                scope === 'team'
-                  ? '请说明队伍情况（1–2000 字）。主题由系统生成，回复全队可见；可拖拽或粘贴截图。'
-                  : '请说明情况（1–2000 字）。主题由系统按处罚种类自动生成；可拖拽或粘贴截图。'
-              "
-              @paste="onAttachmentsPaste"
-              @dragenter="onAttachmentsDragenter"
-              @dragover="onAttachmentsDragover"
-              @dragleave="onAttachmentsDragleave"
-              @drop="onAttachmentsDrop"
+              :placeholder="appealPlaceholder"
+              v-on="attachmentEvents"
             ></textarea>
             <AttachmentPicker
               v-if="attachmentsEnabled"
@@ -606,7 +622,7 @@ onBeforeUnmount(() => {
             v-if="canSubmit"
             class="primary-button"
             type="button"
-            :disabled="submitting"
+            :disabled="submitting || attachmentsBusy"
             @click="submitAppeal"
           >
             {{ submitting ? "提交中..." : "提交申诉" }}
