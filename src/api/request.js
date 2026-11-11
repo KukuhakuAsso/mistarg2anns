@@ -225,6 +225,11 @@ export async function request(path, options = {}) {
     fetchOptions.body = typeof body === "string" ? body : JSON.stringify(body);
   }
 
+  // 发起前记下会话代次：这次请求属于哪个会话，由「发出时」决定，而不是响应回来时。
+  // 否则 A 会话发出的请求在 B 登录之后才 401，会被当成 B 的请求、用 B 的凭证重放一次，
+  // A 的 method/body 就落到了 B 的账号上。
+  const generation = sessionGeneration;
+
   let response = await fetch(url, fetchOptions);
   
   if (
@@ -233,13 +238,17 @@ export async function request(path, options = {}) {
     !skipRefresh &&
     !String(path).includes("/auth/refresh")
   ) {
-    // 记下发起这次刷新时的会话代次：刷新回来若已登出 / 换账号，这个 401 属于旧会话
-    const generation = sessionGeneration;
+    // 旧会话的请求：既不能拿新会话刷新出来的令牌重试（会用新身份重放旧请求），
+    // 也不能继续往下走到 notifySessionLost —— 那会把刚登录的新会话踢下线。
+    if (generation !== sessionGeneration) {
+      throw await responseError(response);
+    }
+
     const refreshed = await refreshAccessToken(generation);
 
     if (refreshed.stale) {
-      // 期间登出或换了账号：既不重试（会用旧身份发出去），也不动新会话的令牌。
-      // 直接落到下面的错误处理，把这个 401 原样抛给调用方。
+      // 刷新期间登出或换了账号：同样只把这个 401 抛给调用方，不重试、不广播会话失效。
+      throw await responseError(response);
     } else if (refreshed.ok) {
       // 重试必须重新读一次令牌：刷新刚写回来的就是它
       response = await fetch(url, {
@@ -286,6 +295,17 @@ function notifySessionLost() {
   window.dispatchEvent(new CustomEvent("mistarg:session-lost"));
 }
 
+// 把一次失败的响应收成错误对象（与下面非 2xx 的出口同形，但不广播会话失效）。
+// 用于「旧会话的 401」：当前会话本身是好的，不能因为上一个会话的请求把新会话踢下线。
+async function responseError(response) {
+  const payload = await readResponse(response);
+  const error = new Error(extractErrorMessage(payload));
+  error.status = response.status;
+  error.payload = payload;
+  error.code = payload?.error?.code || payload?.code;
+  return error;
+}
+
 export default request;
 
 // 非 JSON 通道（素材 blob、可塑区组件 ESM）也要带同一份鉴权头：
@@ -321,6 +341,10 @@ export async function fetchWithAuth(url, options = {}, { retried = false } = {})
   const { headers = {}, ...init } = options;
   const trusted = isApiUrl(url);
 
+  // 与 request() 同一套口径：代次要在**发出前**记下。
+  // 否则 A 会话发出的素材请求在 B 登录后才 401，会被当成 B 的请求拿 B 的令牌重取。
+  const generation = sessionGeneration;
+
   const response = await fetch(url, {
     ...init,
     // 外部地址连 Cookie 也不带：那里的会话与本应用的登录态无关
@@ -333,11 +357,14 @@ export async function fetchWithAuth(url, options = {}, { retried = false } = {})
     return response;
   }
 
-  // 与 request() 同一套口径：记下发起刷新时的会话代次，回来发现已换会话就放弃
-  const generation = sessionGeneration;
+  // 旧会话的 401：同样说明不了当前会话，原样返回给调用方
+  if (generation !== sessionGeneration) {
+    return response;
+  }
+
   const refreshed = await refreshAccessToken(generation);
 
-  // 旧会话的 401：原样返回，不重试、不动新会话的令牌
+  // 刷新期间登出 / 换了账号：同样原样返回，不重试、不动新会话的令牌
   if (refreshed.stale) {
     return response;
   }

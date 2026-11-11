@@ -63,7 +63,17 @@ async function refresh() {
 
 <template>
   <div class="submission-panel">
-    <p v-if="error" class="submission-panel__state">{{ error }}</p>
+    <p v-if="error" class="submission-panel__state">
+      {{ error }}
+      <button
+        class="submission-panel__retry"
+        type="button"
+        :disabled="loading"
+        @click="refresh"
+      >
+        {{ loading ? "正在重试…" : "重试" }}
+      </button>
+    </p>
     <p v-else-if="loading && !flatEntries.length" class="submission-panel__state">
       正在加载题目…
     </p>
@@ -130,6 +140,23 @@ async function refresh() {
   margin: 0;
   font-size: 12px;
   color: var(--text-dim);
+}
+
+/* 题目清单加载失败时，页面上没有别的入口能把列表拉回来（顶部条要等清单加载成功才渲染） */
+.submission-panel__retry {
+  margin-left: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 12px;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.submission-panel__retry:disabled {
+  cursor: default;
+  opacity: 0.6;
 }
 
 .submission-panel__bar {
