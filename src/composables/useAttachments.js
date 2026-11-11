@@ -32,6 +32,10 @@ export function useAttachments({ maxCount = IMAGE_MAX_COUNT, onError } = {}) {
   // 这段时间 items 里还没有任何一项，所以单看 uploading 会漏掉「正在校验」这个状态：
   // 选完图立刻点提交就能把不带附件的正文发出去。
   const validating = ref(0);
+  // 取消代次：clear() / dispose() 时 +1。排队的批次与正在校验的批次都靠它作废 ——
+  // 组件卸载后不该再解码图片、申请预览地址，更不该继续 sign + 上传。
+  let epoch = 0;
+
   // addFiles 串行化用的链：同一时刻只允许一批在跑。
   let addChain = Promise.resolve();
 
@@ -107,10 +111,13 @@ export function useAttachments({ maxCount = IMAGE_MAX_COUNT, onError } = {}) {
     if (!files.length) return addChain;
 
     validating.value += files.length;
+    // 入队时记下代次：排到自己时若已经被清理（离开页面），这一批整份丢弃
+    const my = epoch;
 
     const run = async () => {
       try {
-        await addFilesNow(files);
+        if (my !== epoch) return;
+        await addFilesNow(files, my);
       } finally {
         validating.value = Math.max(0, validating.value - files.length);
       }
@@ -120,7 +127,8 @@ export function useAttachments({ maxCount = IMAGE_MAX_COUNT, onError } = {}) {
     return addChain;
   }
 
-  async function addFilesNow(files) {
+  async function addFilesNow(files, my) {
+    if (my !== epoch) return;
     const slots = maxCount - items.value.length;
     if (slots <= 0) {
       setIssue(`最多只能附带 ${maxCount} 张图片。`);
@@ -136,12 +144,15 @@ export function useAttachments({ maxCount = IMAGE_MAX_COUNT, onError } = {}) {
     const failures = [];
     for (const file of files.slice(0, slots)) {
       const result = await inspectImageFile(file);
+      // 校验期间被清理（离开页面）：剩下的不校验、不插入
+      if (my !== epoch) return;
       if (result.ok) checked.push({ file, result });
       else failures.push(result.reason);
     }
 
     let skipped = 0;
     for (const { file, result } of checked) {
+      if (my !== epoch) return;
       // 插入前复查：校验是异步的，期间可能已被别的入口（重试、另一批排队中的文件）占满
       if (items.value.length >= maxCount) {
         skipped += 1;
@@ -188,6 +199,8 @@ export function useAttachments({ maxCount = IMAGE_MAX_COUNT, onError } = {}) {
   }
 
   function clear() {
+    // 代次 +1：排队中的批次、正在校验的批次都作废（否则卸载后还会建预览地址、继续上传）
+    epoch += 1;
     for (const item of items.value) releasePreview(item);
     items.value = [];
     setIssue("");
