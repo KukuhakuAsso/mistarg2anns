@@ -1,7 +1,7 @@
 <script setup>
 // 站内信中心：对接 /api/msg/mails（邮件式，mistarg.2.0.0 起为「站内邮箱」）。
-// 列表支持 收件箱 / 已发送 / 归档 / 全部，可平铺或按线程（threaded）展示；
-// 详情按整线程拉取（GET /msg/threads/:rootId）；能否回复由服务端的 canReply（0/1）决定。
+// 列表按「每封邮件一行」展示（不使用 threaded 线程视图），支持 收件箱 / 已发送 / 归档 / 全部；
+// 详情按「单封」拉取（GET /msg/mails/:id → 这一封 + 祖先链）；能否回复由服务端的 canReply（0/1）决定。
 // 队伍会话（channel=team）是共享邮箱：本队成员可读可回（受发信开关约束）。
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useGameState } from "@/composables/useGameState";
@@ -65,9 +65,7 @@ const channelFilter = ref("");
 const sourceFilter = ref("");
 // 回复状态筛选（api-8 answered）："" = 不限，0 = 只看未回复，1 = 只看已回复。
 const answeredFilter = ref("");
-// 列表视图（api-8 threaded）：true = 一行一条线程（默认，官方建议），false = 每封一行。
-const threadedView = ref(false);
-// 批量操作选中的行（值 = 该行的 mailId；线程视图下就是线程根 id）。
+// 批量操作选中的行（值 = 该行的 mailId）。
 const selectedIds = ref([]);
 
 // 写信的收件人标识：写给官方走问题反馈接口，请求提示走提示接口。
@@ -88,17 +86,14 @@ const mailsListToken = ref(0);
 const inboxListRef = ref(null);
 const MAILS_PAGE_SIZE = 20;
 
-// 当前打开的邮件对话：activeMailId 是「要看的那一封」，线程按 threadRootId 拉整条。
+// 当前打开的邮件：activeMailId 是点开的那一封；
+// messages = 这一封 + 它回复过的链（replyChain，祖先，时间倒序）。
 const activeMailId = ref(null);
 const mail = ref(null);
-// 整线程的汇总（GET /msg/threads/:rootId 的 thread）+ 线程内邮件（时间升序）
-const thread = ref(null);
-const threadRootId = ref(null);
 const messages = ref([]);
 const messagesLoading = ref(false);
-// 线程内更早的邮件：hasMore 时用 nextBeforeId 继续取
-const threadHasMore = ref(false);
-const threadNextBeforeId = ref(null);
+// 祖先链超过 200 层时服务端只返回最近 200 层（GET /msg/mails/:id 的 truncated）
+const chainTruncated = ref(false);
 // 归档操作进行中（同一时刻只允许一个）
 const archiveBusy = ref(false);
 
@@ -259,22 +254,38 @@ let hintTimer = null;
 
 const isLoggedIn = computed(() => Boolean(state.user.currentUser));
 // 详情里的根邮件摘要（服务端归一后的 mail）
-// 玩家可回复的邮件：服务端的 canReply（0/1，官方公告类为 0）；
+// 可回复的来源白名单：只有「普通邮件」与「问题反馈」能回。
+// 公告 / 系统消息 / 官方通知 / 警告 / 申诉链 / 求提示答复一律只读（前端直接拦，不等后端 403）。
+const REPLYABLE_SOURCES = new Set(["mail", "feedback"]);
+const isReplyableSource = (item) =>
+  REPLYABLE_SOURCES.has(item?.source ?? "");
+
+// 玩家可回复的邮件：来源在白名单里 + 服务端 canReply（0/1）+ 未被禁言。
 // 2026-11-11 起队伍会话是可回复的共享邮箱（回复发送给全队），不再按频道禁用。
 // 禁言期间发信接口一律 E_MUTED，所以直接禁掉回复入口。
 const canReply = computed(
-  () => Number(mail.value?.canReply) === 1 && !isMuted.value,
+  () =>
+    isReplyableSource(mail.value) &&
+    Number(mail.value?.canReply) === 1 &&
+    !isMuted.value,
 );
 // 不可回复时的按钮提示与说明文案
 const replyDisabledReason = computed(() => {
   if (isMuted.value) return "禁言期间不能发信";
+  if (!mail.value) return "邮件未加载";
+  if (!isReplyableSource(mail.value)) {
+    return `「${sourceLabel(mail.value.source)}」只读，不能回复`;
+  }
   return "这封邮件不可回复";
 });
 const readOnlyHint = computed(() => {
   if (isMuted.value) {
     return "禁言期间不能发信（含问题反馈与求提示提问），可在「我的申诉」查看与提交申诉。";
   }
-  return "这封邮件不可回复（如官方公告）；如需联系工作人员，请使用「写信」。";
+  if (!isReplyableSource(mail.value)) {
+    return `这类邮件只读（${sourceLabel(mail.value?.source)}）；如需联系工作人员，请使用「写信」。`;
+  }
+  return "这封邮件不可回复；如需联系工作人员，请使用「写信」。";
 });
 // 写信收件人选择「请求提示」时，撰写页显示求提示面板。
 // 必须同时满足：当前就在写信页、不是回复、收件人选的是「请求提示」。
@@ -327,21 +338,10 @@ const replySubjectPlaceholder = computed(() =>
 // 详情抬头发件人 = 当前打开这封的发送者（from）。
 const mailSender = computed(() => (mail.value ? senderName(mail.value) : "—"));
 
-// 线程视图下行代表整条线程：未读/封数取线程汇总；平铺视图取这一封自己的值。
-// （放在 matchesMailFilter 之前：筛选也要用同一个未读口径。）
-const rowUnread = (item) =>
-  Number(
-    (threadedView.value ? item?.thread?.unreadCount : null) ??
-      item?.unread ??
-      0,
-  ) || 0;
-const rowMessageCount = (item) => Number(item?.thread?.messageCount ?? 0) || 0;
-
-// 线程行的发件人来自 thread.from（线程最新一封），平铺行就是这一封自己的 from。
-const rowSenderSource = (item) =>
-  threadedView.value && item?.thread?.from ? { from: item.thread.from } : item;
-const rowSender = (item) => senderName(rowSenderSource(item));
-const rowSenderTitle = (item) => senderRoleLabel(rowSenderSource(item));
+// 列表固定「每封一行」（不再使用 threaded 线程视图）：未读 / 发件人 / 回复数都取这一封自己的值。
+const rowUnread = (item) => Number(item?.unread ?? 0) || 0;
+const rowSender = (item) => senderName(item);
+const rowSenderTitle = (item) => senderRoleLabel(item);
 
 // 列表筛选：「未读」交给服务端（only_unread），「已读」只能在前端分类；
 // 来源 / 频道已经是服务端参数，不再在这里筛。
@@ -392,7 +392,6 @@ function selectedRows() {
 }
 
 // 批量已读 / 归档：一次请求传全部 id（`ids` 上限 100，§8.6 / §8.7）。
-// 线程视图下勾选行的 mailId 就是线程根 id，服务端按 id 处理归属，不需要逐条发。
 async function runBatch(action) {
   const rows = selectedRows();
   if (!rows.length || batchBusy.value) {
@@ -574,12 +573,6 @@ const ANSWERED_VIEWS = [
   { value: "1", label: "已回复" },
 ];
 
-// 列表视图（GET /msg/mails 的 threaded 参数）
-const THREADED_VIEWS = [
-  { value: "1", label: "按线程" },
-  { value: "0", label: "按邮件" },
-];
-
 // 左侧功能列的频道项：与服务端 channel 参数一一对应（channelName 由服务端下发，
 // 列表里显示的是带队名的完整名称，这里只用于筛选）。
 const CHANNEL_VIEWS = [
@@ -684,24 +677,6 @@ function switchAnswered(value) {
   }
 }
 
-// 切换列表视图（按线程 / 按邮件）：游标形状不同，必须整批重拉。
-function switchThreaded(value) {
-  const next = String(value) === "1";
-  if (next === threadedView.value) {
-    return;
-  }
-  clearNotice();
-  threadedView.value = next;
-  activeTab.value = "inbox";
-  composeReplyTo.value = null;
-
-  if (activeMailId.value) {
-    closeMail();
-  } else {
-    loadMails({ replay: true });
-  }
-}
-
 // 左侧「写信」：清掉回复上下文，写一封新邮件。
 // 禁言期间发信接口一律 403 E_MUTED，入口已在界面上隐藏，这里再兜一层。
 function startNewMail() {
@@ -770,7 +745,6 @@ async function loadMails({ append = false, replay = false } = {}) {
       source: sourceFilter.value || undefined,
       answered:
         answeredFilter.value === "" ? undefined : Number(answeredFilter.value),
-      threaded: threadedView.value ? 1 : undefined,
       // 「未读」交给服务端过滤
       onlyUnread: inboxFilter.value === "unread",
     });
@@ -823,14 +797,12 @@ function newestLoadedMailId() {
 }
 
 // 拉取比已知最新 id 更大的邮件（服务端按 id 正序返回、忽略 cursor），反转后插到列表最前面。
-// 约束：since_id 不能与 threaded=1 同用（会 400 E_VALIDATION）——线程视图交给整页刷新。
 // 返回 true 表示这次增量请求成功发出（即使没有新邮件），false 表示本次跳过、需要整页刷新。
 async function loadNewMails() {
   const sinceId = newestLoadedMailId();
   if (
     !isLoggedIn.value ||
     activeTab.value === "compose" ||
-    threadedView.value ||
     !sinceId ||
     mailsLoading.value
   ) {
@@ -884,9 +856,7 @@ async function loadNewMails() {
   }
 }
 
-// 列表页轮询：页面可见、在列表（不是详情 / 写信）时才做增量拉新。
-// 线程视图下 loadNewMails 直接跳过（since_id 与 threaded 互斥），
-// 也不做整页重拉——每分钟重建整个列表会打断阅读，切回页面时再对齐即可。
+// 列表页轮询：页面可见、在列表（不是详情 / 写信）时做增量拉新（since_id）。
 const MAIL_POLL_MS = 60000;
 let mailTimer = null;
 
@@ -909,53 +879,53 @@ function stopMailPolling() {
   }
 }
 
-// ---------- 邮件详情（整线程） ----------
+// ---------- 邮件详情（单封 + 祖先链，GET /api/msg/mails/:id） ----------
 
 // 详情请求代号：打开 A 还没回来就切到 B（或直接关闭）时，A 的响应不能再写内容 / 报错 / 关 loading。
 let detailRequestGeneration = 0;
 
-// 列表行 → 线程根 id：平铺行的 rootMsgId（根邮件为 null）、线程行的 rootMailId、兜底自身。
-function rootIdOf(row) {
-  return row?.rootMsgId ?? row?.rootMailId ?? row?.mailId ?? null;
+function isCurrentDetail(mailId, requestId) {
+  return requestId === detailRequestGeneration && mailId === activeMailId.value;
 }
 
-function isCurrentThread(rootId, requestId) {
-  return requestId === detailRequestGeneration && rootId === threadRootId.value;
-}
+// 这封所在线程的根 id：归档（root_id）用。mails/:id 会带 rootMsgId，根邮件为 null。
+const threadRootId = computed(() => {
+  const item = mail.value;
+  if (!item) {
+    return null;
+  }
+  return item.rootMsgId ?? item.mailId ?? null;
+});
 
-// 打开一封邮件：先定位它所在的线程根，再按「整线程」拉内容（含后续回复与分支）。
-// rootId 能由列表行给出时就省掉一次 getMail。
-async function openMail(mailId, rootId = null) {
+// 详情页的「会话汇总」展示信息：mails/:id 只给这一封 + 祖先链，这里按已取到的封数现算。
+const detailSummary = computed(() => {
+  const item = mail.value;
+  if (!item) {
+    return null;
+  }
+  return {
+    channelName: item.channelName,
+    source: item.source,
+    shared: Number(item.shared) === 1 ? 1 : 0,
+    messageCount: messages.value.length,
+    unreadCount: messages.value.filter((row) => Number(row.unread) === 1).length,
+  };
+});
+
+// 打开一封邮件：这一封 + 它回复过的链（祖先，时间倒序）。
+async function openMail(mailId) {
   activeMailId.value = mailId;
   mail.value = null;
   messages.value = [];
-  thread.value = null;
-  threadHasMore.value = false;
-  threadNextBeforeId.value = null;
+  chainTruncated.value = false;
   clearNotice();
 
-  const root = rootId ?? (await resolveRootId(mailId));
-  if (!root) {
-    return;
-  }
-  // 只有这次选择仍然有效时才继续标记已读（见下方 markThreadRead 的守卫）
-  const loaded = await loadThread(root, mailId);
+  // 只有这次选择仍然有效时才继续标记已读（见下方 markActiveThreadRead 的守卫）
+  const loaded = await fetchMail(mailId);
   if (!loaded) {
     return;
   }
-  await markThreadRead(root);
-}
-
-// 手里没有线程根时：取这一封的详情，用 rootMsgId（根邮件为空）换算成根 id。
-async function resolveRootId(mailId) {
-  try {
-    const response = await messageApi.getMail(mailId);
-    const data = response?.data ?? {};
-    return data?.mail?.rootMsgId ?? data?.mail?.mailId ?? mailId;
-  } catch {
-    // 详情失败就让线程接口去报错（404/403 的文案更准确）
-    return mailId;
-  }
+  await markActiveThreadRead();
 }
 
 // 关闭邮件详情，回到收信列表；顺带刷新未读角标。
@@ -965,61 +935,43 @@ function closeMail() {
   messagesLoading.value = false;
   activeMailId.value = null;
   mail.value = null;
-  thread.value = null;
-  threadRootId.value = null;
   messages.value = [];
-  threadHasMore.value = false;
-  threadNextBeforeId.value = null;
+  chainTruncated.value = false;
   // 回到列表相当于重新开始一轮浏览：旧的勾选不再有意义
   selectedIds.value = [];
   refreshUnreadSummary();
   loadMails();
 }
 
-// 整线程：GET /msg/threads/:rootId（messages 时间升序）。
-// focusMailId 是「用户点开的那一封」，用来定位详情抬头；找不到就退回线程最新一封。
-// beforeId > 0 时取更早一页并插到前面。
-async function loadThread(
-  rootId,
-  focusMailId = null,
-  { beforeId = 0, append = false } = {},
-) {
-  if (!rootId) {
+// 单封详情：mailId 默认取当前打开的那封；返回 true 表示这份结果仍是当前选择（已写入状态）。
+// 渲染顺序：这一封（时间最新）在前，replyChain 按服务端顺序（时间倒序，链尾是根）跟在后面。
+async function fetchMail(mailId = activeMailId.value) {
+  if (!mailId) {
     return false;
   }
 
   const requestId = ++detailRequestGeneration;
-  threadRootId.value = rootId;
   messagesLoading.value = true;
   try {
-    const response = await messageApi.getThread(rootId, {
-      beforeId: beforeId || undefined,
-    });
-    // 期间已经切到别的线程（或关掉了详情）：本次响应整体作废
-    if (!isCurrentThread(rootId, requestId)) {
+    const response = await messageApi.getMail(mailId);
+    // 期间已经打开了别的邮件（或关掉了详情）：本次响应整体作废
+    if (!isCurrentDetail(mailId, requestId)) {
       return false;
     }
 
     const data = response?.data ?? {};
-    thread.value = data.thread ?? null;
-    const items = Array.isArray(data.messages) ? data.messages : [];
-    messages.value = append ? [...items, ...messages.value] : items;
-    threadHasMore.value = Boolean(data.hasMore);
-    threadNextBeforeId.value = data.nextBeforeId ?? null;
-
-    const focused =
-      (focusMailId &&
-        messages.value.find((item) => item.mailId === focusMailId)) ||
-      messages.value[messages.value.length - 1] ||
-      null;
-    mail.value = focused;
-    if (focused) {
-      activeMailId.value = focused.mailId;
+    mail.value = data.mail ?? null;
+    const chain = Array.isArray(data.replyChain) ? data.replyChain : [];
+    messages.value = [];
+    if (mail.value) {
+      messages.value.push(mail.value);
     }
+    messages.value.push(...chain);
+    chainTruncated.value = Boolean(data.truncated);
     return true;
   } catch (error) {
     // 过期请求的错误同样不提示：那是上一封邮件的事
-    if (!isCurrentThread(rootId, requestId)) {
+    if (!isCurrentDetail(mailId, requestId)) {
       return false;
     }
     setNotice("error", errorText(error, "加载邮件内容失败。"));
@@ -1032,47 +984,29 @@ async function loadThread(
   }
 }
 
-// 加载线程里更早的邮件（before_id 分页）。
-async function loadEarlierMessages() {
-  const rootId = threadRootId.value;
-  const beforeId = threadNextBeforeId.value;
-  if (!rootId || !beforeId || messagesLoading.value) {
-    return;
-  }
-  await loadThread(rootId, mail.value?.mailId ?? null, {
-    beforeId,
-    append: true,
-  });
-}
-
-// 线程级已读（POST /msg/mails/read { root_id }）：打开即清掉整条线程未读，
-// 比逐封标记省请求，也与「整线程视图」的口径一致。
-async function markThreadRead(rootId) {
-  if (!rootId || Number(thread.value?.unreadCount ?? 0) <= 0) {
+// 打开即已读：一次批量请求标掉这条链上已取到的未读封（ids），
+// 不用 root_id —— 详情只显示这一封 + 祖先，没理由把没显示的后续回复也标掉。
+async function markActiveThreadRead() {
+  const ids = messages.value
+    .filter((message) => Number(message.unread) === 1)
+    .map((message) => message.mailId);
+  const openedId = mail.value?.mailId;
+  if (!ids.length || !openedId) {
     return;
   }
 
   try {
-    await messageApi.markReadBatch({ rootId });
-    // 标记期间可能已切走：只清这条线程自己的标记
-    if (threadRootId.value !== rootId) {
+    await messageApi.markReadBatch({ ids });
+    // 标记期间可能已切到别的邮件：只清这一封自己的状态
+    if (mail.value?.mailId !== openedId) {
       return;
     }
-    thread.value = { ...(thread.value ?? {}), unreadCount: 0 };
     for (const message of messages.value) {
       message.unread = 0;
     }
-    for (const item of mails.value) {
-      if (rootIdOf(item) === rootId) {
-        item.unread = 0;
-        if (item.thread) {
-          item.thread = { ...item.thread, unreadCount: 0 };
-        }
-      }
-    }
     refreshUnreadSummary();
   } catch (error) {
-    if (threadRootId.value !== rootId) {
+    if (mail.value?.mailId !== openedId) {
       return;
     }
     setNotice("error", errorText(error, "标记已读失败。"));
@@ -1087,7 +1021,8 @@ const threadArchived = computed(
 
 async function toggleThreadArchive() {
   const rootId = threadRootId.value;
-  if (!rootId || archiveBusy.value) {
+  const openedId = mail.value?.mailId;
+  if (!rootId || !openedId || archiveBusy.value) {
     return;
   }
 
@@ -1105,7 +1040,7 @@ async function toggleThreadArchive() {
       "success",
       next ? "已归档，可在「归档」文件夹找回。" : "已取消归档，邮件回到原文件夹。",
     );
-    await loadThread(rootId, mail.value?.mailId ?? null);
+    await fetchMail(openedId);
     await Promise.all([loadMails(), refreshUnreadSummary()]);
   } catch (error) {
     setNotice("error", errorText(error, next ? "归档失败。" : "取消归档失败。"));
@@ -1124,20 +1059,17 @@ async function handleVisibilityChange() {
   }
 
   if (activeMailId.value) {
-    // 抓住发起时的线程根与目标邮件：await 期间用户可能已经切走。
+    // 抓住发起时的 id：await 期间用户可能已经切到别的邮件。
     // 这次刷新会顶掉「点开邮件」那次加载，因此「标记已读」的责任要由这里接过来，
     // 否则打开未读邮件时刚好回到前台，邮件显示了却一直停在未读。
-    const rootId = threadRootId.value;
     const mailId = activeMailId.value;
-    if (rootId) {
-      const loaded = await loadThread(rootId, mailId);
-      // loaded=false 表示又被更新的请求接管了，标记权继续往后传，不能在这里擅自标
-      if (loaded) {
-        await markThreadRead(rootId);
-      }
+    const loaded = await fetchMail(mailId);
+    // loaded=false 表示又被更新的请求接管了，标记权继续往后传，不能在这里擅自标
+    if (loaded) {
+      await markActiveThreadRead();
     }
   } else if (!(await loadNewMails())) {
-    // 线程视图 / 没有已知 id / 增量失败：退回整页刷新
+    // 没有已知 id / 增量失败：退回整页刷新
     loadMails();
   }
 
@@ -1148,15 +1080,14 @@ async function handleVisibilityChange() {
 
 // ---------- 回复邮件：跳转到写信页 ----------
 
-// 邮件详情页不直接输入：点「回复」切到写信页，回复线程里最新的一封（保持单链，不出分支）；
+// 邮件详情页不直接输入：点「回复」切到写信页，回复「当前打开的这一封」；
 // 主题留空 = 服务端按层级生成「回复：…」，填了就是中途改题。canReply=false（公告类）时按钮已禁用。
 function replyToActiveMail() {
   if (!mail.value || !canReply.value) {
     return;
   }
 
-  const latest = messages.value[messages.value.length - 1] ?? mail.value;
-  composeReplyTo.value = latest.mailId;
+  composeReplyTo.value = mail.value.mailId;
   composeReplySubject.value = "";
   switchView("compose");
 }
@@ -1172,6 +1103,14 @@ async function sendCompose() {
 
   if (isMuted.value) {
     setNotice("error", "禁言期间不能发信，可在「我的申诉」查看与提交申诉。");
+    return;
+  }
+  // 防御：来源白名单在「回复」入口已经拦过，这里再兜一层
+  if (composeReplyTo.value && mail.value && !isReplyableSource(mail.value)) {
+    setNotice(
+      "error",
+      `「${sourceLabel(mail.value.source)}」只读，不能回复；如需联系工作人员，请使用「写信」。`,
+    );
     return;
   }
 
@@ -1206,8 +1145,6 @@ async function sendCompose() {
       });
       const data = response?.data ?? {};
       const newMailId = data.mailId ?? replyTo;
-      // 整线程视图：回复后按线程根重新拉，直接定位到刚发出的那封
-      const rootId = data.rootMsgId ?? threadRootId.value ?? replyTo;
 
       composeDraft.value = "";
       composeReplyTo.value = null;
@@ -1215,7 +1152,8 @@ async function sendCompose() {
       composeAttachments.clear();
       activeTab.value = "inbox";
       await loadMails();
-      await openMail(newMailId, rootId);
+      // 详情是「这一封 + 它的祖先链」：打开刚发出的那封，往上看得到整段往来
+      await openMail(newMailId);
       setNotice("success", "回复已发出。");
     } else {
       // 主题可选：留空时服务端取正文首行
@@ -2125,28 +2063,28 @@ onBeforeUnmount(() => {
                   {{ threadArchived ? "取消归档" : "归档" }}
                 </button>
               </div>
-              <span v-if="thread" class="detail-thread-meta">
-                {{ thread.messageCount }} 封<template
-                  v-if="Number(thread.unreadCount) > 0"
+              <span v-if="detailSummary" class="detail-thread-meta">
+                {{ detailSummary.messageCount }} 封<template
+                  v-if="Number(detailSummary.unreadCount) > 0"
                 >
-                  · 未读 {{ thread.unreadCount }}</template
+                  · 未读 {{ detailSummary.unreadCount }}</template
                 >
-                <template v-if="thread.shared"> · 全队可见</template>
+                <template v-if="detailSummary.shared"> · 全队可见</template>
               </span>
             </header>
 
             <article class="message-detail">
               <h2 class="letter-subject">
-                {{ thread?.latestSubject || mail?.subject || "（无主题）" }}
+                {{ mail?.subject || "（无主题）" }}
               </h2>
 
               <div class="message-detail__meta-group">
                 <span class="detail-label">发件人</span>
                 <span>{{ mailSender }}</span>
                 <span class="detail-label">频道</span>
-                <span>{{ mail?.channelName || thread?.channelName || "—" }}</span>
+                <span>{{ mail?.channelName || detailSummary?.channelName || "—" }}</span>
                 <span class="detail-label">来源</span>
-                <span>{{ sourceLabel(mail?.source || thread?.source) }}</span>
+                <span>{{ sourceLabel(mail?.source || detailSummary?.source) }}</span>
               </div>
 
               <div v-if="messagesLoading && !messages.length" class="list-hint">
@@ -2157,15 +2095,9 @@ onBeforeUnmount(() => {
               </div>
 
               <template v-else>
-                <button
-                  v-if="threadHasMore"
-                  class="soft-btn"
-                  type="button"
-                  :disabled="messagesLoading"
-                  @click="loadEarlierMessages"
-                >
-                  {{ messagesLoading ? "加载中..." : "加载更早的邮件" }}
-                </button>
+                <p v-if="chainTruncated" class="list-hint">
+                  这封邮件往上的回复超过 200 层，只显示了最近 200 层。
+                </p>
                 <div class="letter-list">
                 <article
                   v-for="(message, index) in messages"
@@ -2255,21 +2187,6 @@ onBeforeUnmount(() => {
                   <option
                     v-for="item in ANSWERED_VIEWS"
                     :key="item.value || 'any'"
-                    :value="item.value"
-                  >
-                    {{ item.label }}
-                  </option>
-                </select>
-                <select
-                  id="mail-view-threaded"
-                  class="select select--compact"
-                  aria-label="列表视图"
-                  :value="threadedView ? '1' : '0'"
-                  @change="switchThreaded($event.target.value)"
-                >
-                  <option
-                    v-for="item in THREADED_VIEWS"
-                    :key="item.value"
                     :value="item.value"
                   >
                     {{ item.label }}
@@ -2375,15 +2292,15 @@ onBeforeUnmount(() => {
                 :style="{ '--row-index': String(rowEnterIndex(item)) }"
                 role="button"
                 tabindex="0"
-                @click="openMail(item.mailId, rootIdOf(item))"
-                @keydown.enter.prevent="openMail(item.mailId, rootIdOf(item))"
+                @click="openMail(item.mailId)"
+                @keydown.enter.prevent="openMail(item.mailId)"
               >
                 <span class="inbox-check" @click.stop>
                   <input
                     type="checkbox"
                     :value="item.mailId"
                     :checked="isSelected(item)"
-                    :aria-label="`选择 ${item.latestSubject || item.subject || '邮件'}`"
+                    :aria-label="`选择 ${item.subject || '邮件'}`"
                     @change="toggleSelect(item.mailId)"
                   />
                 </span>
@@ -2391,15 +2308,10 @@ onBeforeUnmount(() => {
                   rowSender(item)
                 }}</span>
                 <span class="inbox-subject">
-                  <strong>
-                    {{ item.latestSubject || item.subject || "（无主题）" }}
-                  </strong>
+                  <strong>{{ item.subject || "（无主题）" }}</strong>
                   <small>
                     {{ sourceLabel(item.source) }} · {{ item.channelName }}
-                    <template v-if="threadedView && rowMessageCount(item) > 1">
-                      · 共 {{ rowMessageCount(item) }} 封
-                    </template>
-                    <template v-else-if="!threadedView && item.replyCount">
+                    <template v-if="item.replyCount">
                       · {{ item.replyCount }} 条回复
                     </template>
                     <template v-if="Number(item.hasAttachments)">

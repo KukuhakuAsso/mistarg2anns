@@ -4,13 +4,12 @@ import request from "@/api/request";
 // 成功响应为 { ok: true, data, req_id }；失败为 { ok: false, error: { code, message, detail }, req_id }。
 // 失败时 request 抛出的 Error 带 status / code / payload，调用方读取 error.payload.error.message。
 export const messageApi = {
-  // 邮件列表（GET /api/msg/mails）：每条发信一行，倒序分页；
-  // sinceId > 0 时切换为「取更新」（按 id 正序，轮询用），此时忽略 cursor，且不能与 threaded 同用。
-  // 2026-11-11（mistarg.2.0.0）起新增 box/source/answered/threaded：
+  // 邮件列表（GET /api/msg/mails）：每次发信一行，倒序分页（前端固定按「邮件」粒度，不用 threaded）；
+  // sinceId > 0 时切换为「取更新」（按 id 正序，忽略 cursor 与 threaded —— 我们不传 threaded）。
+  // 2026-11-11（mistarg.2.0.0）起新增 box/source/answered：
   //   · box: inbox（默认）/ sent / archive / all —— 默认只给收件箱，自己发的邮件在 sent
   //   · source: 见 api-8 的 source 枚举，服务端过滤（不再由前端筛）
   //   · answered: 0 = 只看未回复、1 = 只看已回复
-  //   · threaded: 1 = 一行一条线程（行带 latestSubject / thread 汇总）
   getMails: ({
     cursor = 0,
     sinceId = 0,
@@ -20,7 +19,6 @@ export const messageApi = {
     source,
     answered,
     onlyUnread,
-    threaded,
   } = {}) =>
     request("/msg/mails", {
       method: "GET",
@@ -33,7 +31,6 @@ export const messageApi = {
         ...(source ? { source } : {}),
         ...(answered === 0 || answered === 1 ? { answered } : {}),
         ...(onlyUnread ? { only_unread: true } : {}),
-        ...(threaded ? { threaded: 1 } : {}),
       },
       useAuth: true,
     }),
@@ -46,25 +43,12 @@ export const messageApi = {
       useAuth: true,
     }),
 
-  // 邮件详情（GET /api/msg/mails/:id）：返回 mail（这一封自身）+ replyChain（它回复过的链，
-  // 时间倒序、只上溯、不含自身与后续回复）；id 传根或任意一条回复都行。
-  // 要看整条线程（含后续回复与分支）用下面的 getThread。
+  // 邮件详情（GET /api/msg/mails/:id）：返回 mail（这一封自身，带 content / attachments）+
+  // replyChain（它回复过的链，时间倒序、只上溯、不含自身与后续回复）+ truncated（祖先超 200 层）。
+  // 正文只在详情里给（列表只有 snippet）；前端的详情页用的就是这个接口。
   getMail: (mailId) =>
     request(`/msg/mails/${mailId}`, {
       method: "GET",
-      useAuth: true,
-    }),
-
-  // 整线程（GET /api/msg/threads/:rootId，2026-11-11 新增）：thread 汇总 + messages（时间升序）；
-  // hasMore 时传 nextBeforeId 作为 beforeId 取更早一页；markRead=true 会清掉整线程未读（不受本页 limit 影响）。
-  getThread: (rootId, { limit = 100, beforeId = 0, markRead = false } = {}) =>
-    request(`/msg/threads/${rootId}`, {
-      method: "GET",
-      params: {
-        limit,
-        ...(beforeId ? { before_id: beforeId } : {}),
-        ...(markRead ? { mark_read: 1 } : {}),
-      },
       useAuth: true,
     }),
 
