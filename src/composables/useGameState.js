@@ -54,6 +54,8 @@ function createDefaultState() {
   return {
     visitedFolders: [],
     unreadMessages: 0,
+    // 归档文件夹的未读封数（GET /msg/mails/summary 的 archive.unread）
+    unreadArchive: 0,
     // 队伍级 tips（服务端权威数据，不持久化）：余额与今日累积，供顶栏与求提示面板共用
     teamTips: {
       loaded: false,
@@ -265,6 +267,7 @@ watch(
     state.user.team = { loaded: false, team: null, myJoinRequest: null };
     // 未读角标是服务端数据，切换账号时一并清零，避免残留上一账号的未读数。
     state.unreadMessages = 0;
+    state.unreadArchive = 0;
     // 队伍 tips 同理：切换账号后先清空，等新的 /tips/balance 回来再填。
     state.teamTips = {
       loaded: false,
@@ -920,11 +923,14 @@ async function dissolveTeam() {
 // 未读汇总请求代号：轮询、页面切换、标记已读后都会触发，只接受最新一次的结果。
 let unreadRequestGeneration = 0;
 
-// 刷新未读角标（GET /api/msg/mails/summary），把「有未读的对话数」写入全局状态供顶栏与桌面展示。
+// 刷新未读角标（GET /api/msg/mails/summary），把「收件箱 / 归档的未读封数」写入全局状态。
+// 2026-11-11（mistarg.2.0.0）起响应是嵌套形状 { inbox: { unread }, archive: { unread } }，
+// 只按「封」统计、不含自己发的；旧版的 threads / total 字段已不存在。
 // 失败时静默处理，不影响页面主流程。
 async function refreshUnreadSummary() {
   if (!state.user.currentUser) {
     state.unreadMessages = 0;
+    state.unreadArchive = 0;
     return { ok: false };
   }
 
@@ -941,8 +947,14 @@ async function refreshUnreadSummary() {
     ) {
       return { ok: false, stale: true };
     }
-    state.unreadMessages = Number(response?.data?.total ?? 0) || 0;
-    return { ok: true, total: state.unreadMessages };
+    const summary = response?.data ?? {};
+    state.unreadMessages = Number(summary?.inbox?.unread ?? 0) || 0;
+    state.unreadArchive = Number(summary?.archive?.unread ?? 0) || 0;
+    return {
+      ok: true,
+      total: state.unreadMessages,
+      archive: state.unreadArchive,
+    };
   } catch {
     return { ok: false };
   }
