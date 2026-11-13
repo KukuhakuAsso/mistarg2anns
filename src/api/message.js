@@ -150,11 +150,18 @@ export const messageApi = {
       useAuth: true,
     }),
 
-  // 申请更便宜（POST /api/msg/hint/:id/cheaper）：整个提问只允许 1 次，不扣费、不改价
-  requestCheaperHint: (id) =>
+  // 申请更便宜（POST /api/msg/hint/:id/cheaper）：整个提问只允许 1 次，不扣费、不改价。
+  // 2026-11-13（2.2.0）起可带 content（1..2000 可选）与 attachments（≤3 图）：
+  // 它们成为「申请更便宜」邮件的正文 / 图片，staff 在求提示工作台可见；
+  // 响应新增 cheaperMailId（那封邮件）。
+  // 注意：带 content / attachments 时会按禁言口径拦截（403 E_MUTED），都不带则沿用默认文案、不拦。
+  requestCheaperHint: (id, { content, attachments } = {}) =>
     request(`/msg/hint/${id}/cheaper`, {
       method: "POST",
-      body: {},
+      body: {
+        ...(content ? { content } : {}),
+        ...(attachments?.length ? { attachments } : {}),
+      },
       useAuth: true,
     }),
 
