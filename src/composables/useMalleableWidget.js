@@ -90,8 +90,13 @@ export function useMalleableWidget() {
   let token = 0;
 
   async function ensure(asset) {
-    // 没有 asset（组件已停用等异常）：交给调用方显示区内 fallback
+    // 没有 asset（组件已停用 / 切到没有可塑区的题）：交给调用方显示区内 fallback。
+    // 必须先作废在飞的加载（cancel() 内部推进 token 并清空 tag）：
+    // 否则上一次 loadAsset 回来时 current === token 仍成立，会把**旧组件**挂到
+    // 这个已经没有可用描述符的可塑区上，覆盖掉这里的 error。
     if (!asset?.tag || !asset?.url) {
+      cancel();
+      tag.value = "";
       status.value = "error";
       error.value = "该题暂无可用的交互组件";
       return;

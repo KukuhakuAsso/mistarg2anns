@@ -1,9 +1,16 @@
 <script setup>
-// 站内信中心：对接 /api/msg/mails（邮件式）。
-// 列表按「每次发信一行」平铺，只给主题与来源；正文与附件要点进详情，
-// 详情一次返回整段对话（根 + 全部回复）。能否回复由服务端的 canReply 决定（官方公告为 false），
-// 队伍会话（channel=team）在玩家侧只读：只用于接收官方消息，不再支持队伍内通讯。
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+// 站内信中心：对接 /api/msg/mails（邮件式，mistarg.2.0.0 起为「站内邮箱」）。
+// 列表按「每封邮件一行」展示（不使用 threaded 线程视图），支持 收件箱 / 已发送 / 归档 / 全部；
+// 详情按「单封」拉取（GET /msg/mails/:id → 这一封 + 祖先链）；能否回复由服务端的 canReply（0/1）决定。
+// 队伍会话（channel=team）是共享邮箱：本队成员可读可回（受发信开关约束）。
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+} from "vue";
 import { useGameState } from "@/composables/useGameState";
 import { useStatusMessage } from "@/composables/useStatusMessage";
 import { extractErrorMessage } from "@/api/errors";
@@ -15,6 +22,7 @@ import { useMsgAttachments } from "@/composables/useMsgAttachments";
 import AttachmentPicker from "@/components/AttachmentPicker.vue";
 import AttachmentGallery from "@/components/AttachmentGallery.vue";
 import UserTabs from "@/components/UserTabs.vue";
+import { assignEnterIndex } from "@/utils/mailEnterIndex";
 
 const { state, refreshUnreadSummary, refreshTeamTips } = useGameState();
 
@@ -22,18 +30,16 @@ const { state, refreshUnreadSummary, refreshTeamTips } = useGameState();
 // 确认 / 议价 / 关闭都不变；队伍封禁时求提示「提问」也会被拦。
 // 这里只做体验层隐藏，服务端仍会校验（403 E_MUTED / E_FORBIDDEN）。
 const isMuted = computed(() => Boolean(state.accountStatus?.muted));
-const isTeamBanned = computed(
-  () => state.accountStatus?.team?.status === 4,
-);
+const isTeamBanned = computed(() => state.accountStatus?.team?.status === 4);
 // 禁言原因/到期，用于提示条文案
 const muteNotice = computed(() => {
   const status = state.accountStatus;
   if (!status?.muted) return "";
   if (status.status !== 3 && !status.team?.muted) return "";
   const reason =
-    status.status === 3 ? status.muteReason : status.team?.reason ?? null;
+    status.status === 3 ? status.muteReason : (status.team?.reason ?? null);
   const until =
-    status.status === 3 ? status.muteUntil : status.team?.until ?? null;
+    status.status === 3 ? status.muteUntil : (status.team?.until ?? null);
   const parts = [];
   if (status.status === 3) {
     parts.push("账号已被禁言");
@@ -51,13 +57,21 @@ const muteNotice = computed(() => {
 
 // 当前页签：inbox = 收信，compose = 写信。
 const activeTab = ref("inbox");
-// 收信列表筛选：all = 全部，unread = 未读，read = 已读。
+// 邮箱文件夹（api-8 §8.1 box，2026-11-11 起）：inbox 收件箱 / sent 已发送 / archive 归档 / all 全部。
+// 默认 inbox —— 自己发出的邮件在 sent，不在 inbox。
+const mailboxFilter = ref("inbox");
+// 列表筛选：all = 全部，unread = 未读（走 only_unread），read = 已读（前端筛）。
 const inboxFilter = ref("all");
 // 列表筛选的频道口径："" = 全部频道，否则为 system / account / team。
 const channelFilter = ref("");
 // 列表筛选的来源口径："" = 全部来源，否则为 source 枚举
-//（mail / feedback / hint / announce / warn / system）。
+//（mail / feedback / hint / announce / warn / system / notice / appeal_*）。
+// 2026-11-11 起这是服务端参数，不再由前端过滤已加载的行。
 const sourceFilter = ref("");
+// 回复状态筛选（api-8 answered）："" = 不限，0 = 只看未回复，1 = 只看已回复。
+const answeredFilter = ref("");
+// 批量操作选中的行（值 = 该行的 mailId）。
+const selectedIds = ref([]);
 
 // 写信的收件人标识：写给官方走问题反馈接口，请求提示走提示接口。
 const OFFICIAL_TARGET = "official";
@@ -70,22 +84,33 @@ const mailsCursor = ref(null);
 const mailsHasMore = ref(false);
 // 每封邮件的入场序号（按到达批次从 0 起）：追加新批次时只给新邮件编号，旧行保持原有节奏。
 const mailsEnterIndex = ref(new Map());
+// 列表「实例号」：切分类 / 频道 / 来源时 +1，参与 v-for 的 key。
+// Vue 会复用同 key 的 DOM 节点，只有换 key 才会重建节点、让入场动画重头播放。
+const mailsListToken = ref(0);
+// 列表滚动容器：换实例后行全部重建，需要把滚动位置拉回顶部，否则动画从看不见的地方开始播。
+const inboxListRef = ref(null);
 const MAILS_PAGE_SIZE = 20;
 
-// 当前打开的邮件对话：activeMailId 用列表里的 mailId，服务端会归一到所在对话的根。
+// 当前打开的邮件：activeMailId 是点开的那一封；
+// messages = 这一封 + 它回复过的链（replyChain，祖先，时间倒序）。
 const activeMailId = ref(null);
 const mail = ref(null);
-// 详情渲染链 = replyChain（祖先，正序）+ mail（自身）；每条字段同形。
 const messages = ref([]);
 const messagesLoading = ref(false);
+// 祖先链超过 200 层时服务端只返回最近 200 层（GET /msg/mails/:id 的 truncated）
+const chainTruncated = ref(false);
+// 归档操作进行中（同一时刻只允许一个）
+const archiveBusy = ref(false);
 
 // 写信页的收件人、主题、草稿与提交状态。
 const composeTarget = ref(OFFICIAL_TARGET);
 const composeSubject = ref("");
 const composeDraft = ref("");
 const composing = ref(false);
-// 回复模式：非空表示这是对某封邮件的回复（主题由服务端按根主题生成）
+// 回复模式：非空表示这是对某封邮件的回复（主题留空时由服务端按层级生成）
 const composeReplyTo = ref(null);
+// 回复时的可选主题：非空 = 中途改题（服务端原样使用，并开启新的主题基准）
+const composeReplySubject = ref("");
 
 // 操作提示的文案与语义色统一交给 useStatusMessage 管理。
 const {
@@ -113,6 +138,7 @@ const {
   items: composeFiles,
   dragging: composeDragging,
   issue: composeIssue,
+  busy: composeAttachBusy,
   addFiles: addComposeFiles,
   remove: removeCompose,
   retry: retryCompose,
@@ -126,6 +152,7 @@ const {
   items: hintFiles,
   dragging: hintDragging,
   issue: hintIssue,
+  busy: hintAttachBusy,
   addFiles: addHintFiles,
   remove: removeHint,
   retry: retryHint,
@@ -136,11 +163,56 @@ const {
   onDrop: onHintDrop,
 } = hintAttachments;
 
+// 附件开关关闭时（后端 attachmentsEnabled=false，此时 sign 会回 403 MSG_IMAGE_DISABLED）
+// 连事件都不绑：否则粘贴一张图就会造出一条「上传失败」的附件，
+// failed 卡住提交，而选图入口是隐藏的 —— 用户没有「移除」可点，只能刷新页面。
+// 用 v-on 对象而不是逐个加条件，新增入口时不会漏掉。
+const composeAttachEvents = computed(() =>
+  attachmentsEnabled.value
+    ? {
+        paste: onComposePaste,
+        dragenter: onComposeDragenter,
+        dragover: onComposeDragover,
+        dragleave: onComposeDragleave,
+        drop: onComposeDrop,
+      }
+    : {},
+);
+const hintAttachEvents = computed(() =>
+  attachmentsEnabled.value
+    ? {
+        paste: onHintPaste,
+        dragenter: onHintDragenter,
+        dragover: onHintDragover,
+        dragleave: onHintDragleave,
+        drop: onHintDrop,
+      }
+    : {},
+);
+// 开关关闭时不再提「可拖拽或粘贴截图」
+const composePlaceholder = computed(() =>
+  attachmentsEnabled.value
+    ? "请输入正文内容（1–2000 字）；可拖拽或粘贴截图"
+    : "请输入正文内容（1–2000 字）",
+);
+const hintQuestionPlaceholder = computed(() => {
+  const base = "描述卡住的地方（1–2000 字），官方会据此报价";
+  return attachmentsEnabled.value ? `${base}；可拖拽或粘贴截图` : base;
+});
+// 同一个输入框两种用途：申请更便宜时换成对应文案
+const hintComposePlaceholder = computed(() => {
+  if (!cheaperTarget.value) return hintQuestionPlaceholder.value;
+  const base = "说明想怎么便宜（可选，1–2000 字）：比如只想要方向提示，不需要完整答案";
+  return attachmentsEnabled.value ? `${base}；也可以附图` : base;
+});
+
 // 求提示：进行中的请求可能有多条 —— 只有 pending 占用「每队 1 条」名额，
 // 一旦官方报价（quoted）就释放名额，所以可以有 1 条 pending + 多条待确认/待议价的请求。
 // 每条请求各自带 quotedCost，确认时按各自的价格扣费。
 const hintQuestion = ref("");
 const hintSubmitting = ref(false);
+// 正在申请「更便宜」的那条请求：非空时下方的输入框改用来写说明 + 附图（同一个 textarea / 附件队列）
+const cheaperTarget = ref(null);
 // 正在执行的动作用途（`${id}:confirm|cheaper|close`），逐条禁用按钮防重复提交
 const hintActing = ref("");
 // 进行中的请求（pending / quoted），按 id 倒序
@@ -195,27 +267,37 @@ let hintTimer = null;
 
 const isLoggedIn = computed(() => Boolean(state.user.currentUser));
 // 详情里的根邮件摘要（服务端归一后的 mail）
-// 玩家可回复的邮件：服务端的 canReply（官方公告为 false）；
-// 队伍会话只用于接收官方消息（后端已不再支持队伍内通讯），玩家侧一律只读。
+// 可回复的来源白名单：只有「普通邮件」与「问题反馈」能回。
+// 公告 / 系统消息 / 官方通知 / 警告 / 申诉链 / 求提示答复一律只读（前端直接拦，不等后端 403）。
+const REPLYABLE_SOURCES = new Set(["mail", "feedback"]);
+const isReplyableSource = (item) => REPLYABLE_SOURCES.has(item?.source ?? "");
+
+// 玩家可回复的邮件：来源在白名单里 + 服务端 canReply（0/1）+ 未被禁言。
+// 2026-11-11 起队伍会话是可回复的共享邮箱（回复发送给全队），不再按频道禁用。
 // 禁言期间发信接口一律 E_MUTED，所以直接禁掉回复入口。
 const canReply = computed(
   () =>
-    Boolean(mail.value?.canReply) &&
-    mail.value?.channel !== "team" &&
+    isReplyableSource(mail.value) &&
+    Number(mail.value?.canReply) === 1 &&
     !isMuted.value,
 );
 // 不可回复时的按钮提示与说明文案
 const replyDisabledReason = computed(() => {
   if (isMuted.value) return "禁言期间不能发信";
-  return mail.value?.channel === "team" ? "队伍警告无需回复" : "这封邮件不可回复";
+  if (!mail.value) return "邮件未加载";
+  if (!isReplyableSource(mail.value)) {
+    return `「${sourceLabel(mail.value.source)}」只读，不能回复`;
+  }
+  return "这封邮件不可回复";
 });
 const readOnlyHint = computed(() => {
   if (isMuted.value) {
     return "禁言期间不能发信（含问题反馈与求提示提问），可在「我的申诉」查看与提交申诉。";
   }
-  return mail.value?.channel === "team"
-    ? "队伍会话只用于接收官方消息（如官方警告），无法在此发言。"
-    : "这封邮件不可回复（如官方公告）；如需联系工作人员，请使用「写信」。";
+  if (!isReplyableSource(mail.value)) {
+    return `这类邮件只读（${sourceLabel(mail.value?.source)}）；如需联系工作人员，请使用「写信」。`;
+  }
+  return "这封邮件不可回复；如需联系工作人员，请使用「写信」。";
 });
 // 写信收件人选择「请求提示」时，撰写页显示求提示面板。
 // 必须同时满足：当前就在写信页、不是回复、收件人选的是「请求提示」。
@@ -240,9 +322,7 @@ const isOpenHint = (item) =>
 
 // 可申请更便宜：已报价、没申请过、官方也没表示过是最低价（逐条判断）
 const canRequestCheaperOf = (item) =>
-  item?.status === "quoted" &&
-  !item.cheaperRequestedAt &&
-  !item.isLowestPrice;
+  item?.status === "quoted" && !item.cheaperRequestedAt && !item.isLowestPrice;
 
 // 已申请更便宜、官方还没回应（逐条判断）
 const cheaperPendingOf = (item) =>
@@ -257,31 +337,146 @@ const hintBusyOf = (item, action) =>
 const hintPollingWanted = computed(
   () => isHintCompose.value || hintHistoryOpen.value,
 );
-// 回复模式下的主题预览：服务端会生成「回复：<根主题>」
-const replySubject = computed(() =>
-  mail.value?.subject ? `回复：${mail.value.subject}` : "回复",
+// 回复模式下的主题预览：留空由服务端按层级生成（层级 ≥5 会收缩成「回复*N：」），
+// 填了就是中途改题（服务端原样使用并开启新的主题基准）。
+const replySubjectPlaceholder = computed(() =>
+  mail.value?.subject
+    ? `留空自动生成：回复：${mail.value.subject}`
+    : "留空自动生成回复主题",
 );
 
 // 详情抬头发件人 = 当前打开这封的发送者（from）。
 const mailSender = computed(() => (mail.value ? senderName(mail.value) : "—"));
 
-// 列表筛选：「未读」与频道交给服务端（only_unread / channel）；
-// 「已读」与来源服务端没有对应参数，按已加载的记录过滤。三者叠加生效。
-const filteredMails = computed(() =>
-  mails.value.filter((item) => {
-    if (inboxFilter.value === "read" && Number(item.unread) > 0) {
-      return false;
-    }
-    if (sourceFilter.value && item.source !== sourceFilter.value) {
-      return false;
-    }
-    return true;
-  }),
+// 列表固定「每封一行」（不再使用 threaded 线程视图）：未读 / 发件人 / 回复数都取这一封自己的值。
+const rowUnread = (item) => Number(item?.unread ?? 0) || 0;
+const rowSender = (item) => senderName(item);
+const rowSenderTitle = (item) => senderRoleLabel(item);
+
+// 列表筛选：「未读」交给服务端（only_unread），「已读」只能在前端分类；
+// 来源 / 频道已经是服务端参数，不再在这里筛。
+//
+// 这条判定必须只有一份实现：loadMails() 也要用它来给「将要显示的行」编号，
+// 否则入场序号的顺序会和实际渲染顺序对不上（见下方 enterIndex 的注释）。
+function matchesMailFilter(item) {
+  if (inboxFilter.value === "read" && rowUnread(item) > 0) {
+    return false;
+  }
+  return true;
+}
+
+const filteredMails = computed(() => mails.value.filter(matchesMailFilter));
+
+// ---------- 批量选择（api-8 §8.6 / §8.7） ----------
+const BATCH_LIMIT = 100;
+const batchBusy = ref("");
+const isSelected = (item) => selectedIds.value.includes(item.mailId);
+const selectedCount = computed(() => selectedIds.value.length);
+const allFilteredSelected = computed(
+  () =>
+    filteredMails.value.length > 0 &&
+    filteredMails.value.every((item) =>
+      selectedIds.value.includes(item.mailId),
+    ),
 );
 
-// 空列表提示：来源 / 已读是客户端筛选，可能只是把已加载的记录都滤掉了。
+function toggleSelect(mailId) {
+  selectedIds.value = selectedIds.value.includes(mailId)
+    ? selectedIds.value.filter((id) => id !== mailId)
+    : [...selectedIds.value, mailId];
+}
+
+function toggleSelectAll() {
+  selectedIds.value = allFilteredSelected.value
+    ? []
+    : filteredMails.value.slice(0, BATCH_LIMIT).map((item) => item.mailId);
+}
+
+function clearSelection() {
+  selectedIds.value = [];
+}
+
+function selectedRows() {
+  const ids = new Set(selectedIds.value);
+  return filteredMails.value
+    .filter((item) => ids.has(item.mailId))
+    .slice(0, BATCH_LIMIT);
+}
+
+// 批量已读 / 归档：一次请求传全部 id（`ids` 上限 100，§8.6 / §8.7）。
+async function runBatch(action) {
+  const rows = selectedRows();
+  if (!rows.length || batchBusy.value) {
+    return;
+  }
+
+  const ids = rows.map((row) => row.mailId);
+  batchBusy.value = action;
+  try {
+    if (action === "read") {
+      await messageApi.markReadBatch({ ids });
+    } else {
+      await messageApi.archiveMails({
+        ids,
+        archived: action === "archive",
+      });
+    }
+
+    const selected = new Set(ids);
+    for (const item of mails.value) {
+      if (!selected.has(item.mailId)) continue;
+      if (action === "read") {
+        item.unread = 0;
+        if (item.thread) {
+          item.thread = { ...item.thread, unreadCount: 0 };
+        }
+      } else {
+        item.archived = action === "archive" ? 1 : 0;
+      }
+    }
+
+    setNotice(
+      "success",
+      action === "read"
+        ? "已标记为已读。"
+        : action === "archive"
+          ? "已归档，可在「归档」文件夹找回。"
+          : "已取消归档。",
+    );
+    selectedIds.value = [];
+    await Promise.all([loadMails(), refreshUnreadSummary()]);
+  } catch (error) {
+    setNotice("error", errorText(error, "批量操作失败。"));
+  } finally {
+    batchBusy.value = "";
+  }
+}
+
+// 「全部已读」：{ all: true } 标记当前可见的全部未读（服务端只动非本人发送的邮件）。
+async function markAllRead() {
+  if (batchBusy.value) {
+    return;
+  }
+
+  batchBusy.value = "all-read";
+  try {
+    const response = await messageApi.markReadBatch({ all: true });
+    const marked = Number(response?.data?.marked ?? 0) || 0;
+    setNotice(
+      "success",
+      marked ? `已把 ${marked} 封标记为已读。` : "没有需要标记的未读。",
+    );
+    await Promise.all([loadMails(), refreshUnreadSummary()]);
+  } catch (error) {
+    setNotice("error", errorText(error, "全部已读失败。"));
+  } finally {
+    batchBusy.value = "";
+  }
+}
+
+// 空列表提示：已读是客户端筛选，可能只是把已加载的记录都滤掉了。
 const emptyHint = computed(() =>
-  sourceFilter.value || inboxFilter.value === "read"
+  inboxFilter.value === "read"
     ? "已加载的邮件中没有符合条件的记录；可点「加载更早的邮件」继续查找。"
     : "暂无邮件记录。",
 );
@@ -368,11 +563,26 @@ function formatTime(value, { withYear = false } = {}) {
 
 // ---------- 左侧功能列与收信筛选 ----------
 
-// 左侧功能列的收信项：收件箱 = 全部邮件，另可按未读 / 已读筛选。
+// 邮箱文件夹（api-8 §8.1 box）：收件箱 / 已发送 / 归档 / 全部。
+const MAILBOX_VIEWS = [
+  { value: "inbox", label: "收件箱" },
+  { value: "sent", label: "已发送" },
+  { value: "archive", label: "归档" },
+  { value: "all", label: "全部邮件" },
+];
+
+// 当前文件夹内的筛选：全部 / 未读（only_unread）/ 已读（前端筛）。
 const INBOX_VIEWS = [
-  { value: "all", label: "收件箱" },
+  { value: "all", label: "全部" },
   { value: "unread", label: "未读" },
   { value: "read", label: "已读" },
+];
+
+// 回复状态（GET /msg/mails 的 answered 参数）
+const ANSWERED_VIEWS = [
+  { value: "", label: "全部" },
+  { value: "0", label: "未回复" },
+  { value: "1", label: "已回复" },
 ];
 
 // 左侧功能列的频道项：与服务端 channel 参数一一对应（channelName 由服务端下发，
@@ -385,7 +595,7 @@ const CHANNEL_VIEWS = [
 ];
 
 // 左侧功能列的来源项：取值即服务端的 source 枚举（顺序也照本章契约表）。
-// 列表接口没有 source 参数，这一维由前端在已加载的邮件上过滤。
+// 2026-11-11 起列表接口支持 source 参数，选它就是换一次请求。
 const SOURCE_VIEWS = [
   { value: "", label: "全部来源" },
   ...Object.keys(SOURCE_LABEL).map((value) => ({
@@ -394,33 +604,19 @@ const SOURCE_VIEWS = [
   })),
 ];
 
-// 左侧功能列当前选中项：写信，或收信分类。
+// 左侧功能列当前选中项：写信，或当前邮箱文件夹。
 const activeView = computed(() =>
-  activeTab.value === "compose" ? "compose" : inboxFilter.value,
+  activeTab.value === "compose" ? "compose" : mailboxFilter.value,
 );
 
-// 频道 / 来源项的选中态；撰写页不选中任何项。
-const activeChannel = computed(() =>
-  activeTab.value === "compose" ? null : channelFilter.value,
+// 右侧列表工具栏上的当前位置：只显示文件夹名，筛选 / 频道 / 来源已经在工具栏的下拉里。
+const currentFolderLabel = computed(
+  () =>
+    MAILBOX_VIEWS.find((item) => item.value === mailboxFilter.value)?.label ??
+    "收件箱",
 );
-const activeSource = computed(() =>
-  activeTab.value === "compose" ? null : sourceFilter.value,
-);
 
-// 右侧列表工具栏上的当前分类名：收信分类 + 频道 + 来源（「全部」的段位省略）。
-const currentFolderLabel = computed(() => {
-  const inboxLabel =
-    INBOX_VIEWS.find((item) => item.value === inboxFilter.value)?.label ??
-    "收件箱";
-  const channelLabel =
-    CHANNEL_VIEWS.find((item) => item.value === channelFilter.value)?.label ?? "";
-  const sourceLabel2 =
-    SOURCE_VIEWS.find((item) => item.value === sourceFilter.value)?.label ?? "";
-
-  return [inboxLabel, channelLabel, sourceLabel2].filter(Boolean).join(" · ");
-});
-
-// 切换左侧功能列：选写信直接换成撰写页；选收信分类则回到列表（已打开的邮件先关闭）。
+// 切换左侧功能列：选写信直接换成撰写页；选文件夹则回到列表（已打开的邮件先关闭）。
 function switchView(view) {
   clearNotice();
 
@@ -429,27 +625,67 @@ function switchView(view) {
     return;
   }
 
-  const filterChanged = inboxFilter.value !== view;
+  const changed = mailboxFilter.value !== view;
+  const fromCompose = activeTab.value === "compose";
+  activeTab.value = "inbox";
+  mailboxFilter.value = view;
+  composeReplyTo.value = null;
+
+  // 换文件夹重新拉最新一页（append = false）：分页游标归 0，
+  // 「加载更早的邮件」按钮与是否还有更早邮件都以这次响应为准；
+  // 已加载的行不清空，避免切换瞬间列表闪成空白。
+  // replay = true：拿到新数据时重建所有行，入场动画重头播放。
+  if (activeMailId.value) {
+    closeMail(); // 内部已经会重取列表（关详情本身就会重建行，无需额外 replay）
+  } else if (changed || fromCompose) {
+    loadMails({ replay: true });
+  }
+}
+
+// 切换「全部 / 未读 / 已读」：只动筛选，不动文件夹。
+function switchInboxFilter(view) {
+  clearNotice();
+  const changed = inboxFilter.value !== view;
+  const fromCompose = activeTab.value === "compose";
   activeTab.value = "inbox";
   inboxFilter.value = view;
   composeReplyTo.value = null;
 
   if (activeMailId.value) {
     closeMail();
-  } else if (filterChanged) {
-    loadMails();
+  } else if (changed || fromCompose) {
+    loadMails({ replay: true });
   }
 }
 
-// 切换来源：这一维由前端在已加载的邮件上过滤（接口没有 source 参数），不需要重新请求。
+// 切换来源：服务端参数，重新拉最新一页（已加载的其它来源的行不能留着）。
 function switchSource(source) {
   clearNotice();
+  const changed = sourceFilter.value !== source;
+  const fromCompose = activeTab.value === "compose";
   activeTab.value = "inbox";
   sourceFilter.value = source;
   composeReplyTo.value = null;
 
   if (activeMailId.value) {
     closeMail();
+  } else if (changed || fromCompose) {
+    loadMails({ replay: true });
+  }
+}
+
+// 切换回复状态筛选（answered=0/1）。
+function switchAnswered(value) {
+  clearNotice();
+  const changed = answeredFilter.value !== value;
+  activeTab.value = "inbox";
+  answeredFilter.value = value;
+  composeReplyTo.value = null;
+
+  if (activeMailId.value) {
+    closeMail();
+  } else if (changed) {
+    loadMails({ replay: true });
   }
 }
 
@@ -461,6 +697,7 @@ function startNewMail() {
     return;
   }
   composeReplyTo.value = null;
+  composeReplySubject.value = "";
   composeTarget.value = OFFICIAL_TARGET;
   switchView("compose");
 }
@@ -475,7 +712,7 @@ function switchChannel(channel) {
   if (activeMailId.value) {
     closeMail();
   } else {
-    loadMails();
+    loadMails({ replay: true });
   }
 }
 
@@ -486,21 +723,42 @@ function switchChannel(channel) {
 // 旧的 append 还会把别的频道的数据追加到当前列表后面。
 let mailsRequestGeneration = 0;
 
-async function loadMails({ append = false } = {}) {
+async function loadMails({ append = false, replay = false } = {}) {
   if (!isLoggedIn.value) {
     return;
   }
 
   const requestId = ++mailsRequestGeneration;
   mailsLoading.value = true;
+
+  // 切分类 / 频道 / 来源：先把已加载的邮件整批清空。
+  // 紧接着一定会重新拉最新一页，留着上一个 tab 的数据既没有意义，
+  // 也会让行动画「先拿旧数据播一遍、再被新数据替换」。
+  // 清空后列表只显示「正在加载邮件列表…」，等响应回来再整体挂载一遍。
+  if (!append && replay) {
+    mailsListToken.value += 1;
+    mails.value = [];
+    mailsEnterIndex.value = new Map();
+    mailsCursor.value = null;
+    mailsHasMore.value = false;
+    // 换视图 / 换筛选后旧的勾选没有意义
+    selectedIds.value = [];
+    // 行重建后容器仍保留旧滚动位置，动画会从看不见的顶部开始播
+    if (inboxListRef.value) inboxListRef.value.scrollTop = 0;
+  }
+
   try {
     const response = await messageApi.getMails({
       cursor: append ? (mailsCursor.value ?? 0) : 0,
       limit: MAILS_PAGE_SIZE,
-      // 「未读」按对话判定，交给服务端过滤
-      onlyUnread: inboxFilter.value === "unread",
-      // 频道筛选也交给服务端（空值 = 不限频道）
+      // 文件夹（默认收件箱）、频道、来源、回复状态都交给服务端过滤
+      box: mailboxFilter.value || undefined,
       channel: channelFilter.value || undefined,
+      source: sourceFilter.value || undefined,
+      answered:
+        answeredFilter.value === "" ? undefined : Number(answeredFilter.value),
+      // 「未读」交给服务端过滤
+      onlyUnread: inboxFilter.value === "unread",
     });
     // 期间又发起了新请求（换了筛选 / 又点了一次加载更多）：本次结果整体作废
     if (requestId !== mailsRequestGeneration) {
@@ -510,12 +768,18 @@ async function loadMails({ append = false } = {}) {
     const data = response?.data ?? {};
     const items = Array.isArray(data.items) ? data.items : [];
 
-    // 新邮件按本批到达顺序从 0 编号；旧邮件沿用各自原有编号，不会被翻页改动节奏。
-    const enterIndex = new Map(append ? mailsEnterIndex.value : []);
-    items.forEach((item, index) => enterIndex.set(item.mailId, index));
+    // 入场序号必须按「最终会显示出来的顺序」编号，而不是按接口返回的原始顺序。
+    // 「已读」与「来源」是前端分类：接口一页 20 封里可能只有 3 封符合条件，
+    // 若照原始下标编号，渲染出来的 3 行会拿到被打散的序号（如 0 / 7 / 13），
+    // animation-delay 就会拉出空洞、看起来像「先挂载再筛掉」。
+    // 先筛、再按 0,1,2… 连续编号，挂载出来的错峰才是连贯的。
+    mailsEnterIndex.value = assignEnterIndex(
+      append ? mailsEnterIndex.value : null,
+      items,
+      matchesMailFilter,
+    );
 
     mails.value = append ? [...mails.value, ...items] : items;
-    mailsEnterIndex.value = enterIndex;
     mailsCursor.value = data.nextCursor ?? null;
     mailsHasMore.value = Boolean(data.hasMore);
   } catch (error) {
@@ -532,7 +796,102 @@ async function loadMails({ append = false } = {}) {
   }
 }
 
-// ---------- 邮件详情 ----------
+// ---------- 增量拉新（since_id，api-8 §8.1） ----------
+
+// 列表里已知的最新 mailId（since_id 的基准）。
+function newestLoadedMailId() {
+  let newest = 0;
+  for (const item of mails.value) {
+    const id = Number(item.mailId) || 0;
+    if (id > newest) newest = id;
+  }
+  return newest;
+}
+
+// 拉取比已知最新 id 更大的邮件（服务端按 id 正序返回、忽略 cursor），反转后插到列表最前面。
+// 返回 true 表示这次增量请求成功发出（即使没有新邮件），false 表示本次跳过、需要整页刷新。
+async function loadNewMails() {
+  const sinceId = newestLoadedMailId();
+  if (
+    !isLoggedIn.value ||
+    activeTab.value === "compose" ||
+    !sinceId ||
+    mailsLoading.value
+  ) {
+    return false;
+  }
+
+  const requestId = ++mailsRequestGeneration;
+  try {
+    const response = await messageApi.getMails({
+      sinceId,
+      limit: MAILS_PAGE_SIZE,
+      // 与整页加载用同一套服务端筛选，不然新邮件会越过当前筛选条件冒出来
+      box: mailboxFilter.value || undefined,
+      channel: channelFilter.value || undefined,
+      source: sourceFilter.value || undefined,
+      answered:
+        answeredFilter.value === "" ? undefined : Number(answeredFilter.value),
+      onlyUnread: inboxFilter.value === "unread",
+    });
+    if (requestId !== mailsRequestGeneration) {
+      return true;
+    }
+
+    const data = response?.data ?? {};
+    const items = Array.isArray(data.items) ? data.items : [];
+    if (!items.length) {
+      return true;
+    }
+
+    // since_id 模式是「旧 → 新」，列表是倒序：反转后去掉已有行，再放到最前面
+    const known = new Set(mails.value.map((item) => Number(item.mailId)));
+    const fresh = [...items]
+      .reverse()
+      .filter((item) => !known.has(Number(item.mailId)));
+    if (!fresh.length) {
+      return true;
+    }
+
+    mailsEnterIndex.value = assignEnterIndex(
+      mailsEnterIndex.value,
+      fresh,
+      matchesMailFilter,
+    );
+    mails.value = [...fresh, ...mails.value];
+    setNotice("success", `收到 ${fresh.length} 封新邮件。`);
+    void refreshUnreadSummary();
+    return true;
+  } catch {
+    // 增量失败静默：列表还在，手动「刷新」可用
+    return false;
+  }
+}
+
+// 列表页轮询：页面可见、在列表（不是详情 / 写信）时做增量拉新（since_id）。
+const MAIL_POLL_MS = 60000;
+let mailTimer = null;
+
+function startMailPolling() {
+  if (mailTimer !== null) {
+    return;
+  }
+  mailTimer = window.setInterval(() => {
+    if (document.hidden || activeMailId.value) {
+      return;
+    }
+    void loadNewMails();
+  }, MAIL_POLL_MS);
+}
+
+function stopMailPolling() {
+  if (mailTimer !== null) {
+    window.clearInterval(mailTimer);
+    mailTimer = null;
+  }
+}
+
+// ---------- 邮件详情（单封 + 祖先链，GET /api/msg/mails/:id） ----------
 
 // 详情请求代号：打开 A 还没回来就切到 B（或直接关闭）时，A 的响应不能再写内容 / 报错 / 关 loading。
 let detailRequestGeneration = 0;
@@ -541,20 +900,45 @@ function isCurrentDetail(mailId, requestId) {
   return requestId === detailRequestGeneration && mailId === activeMailId.value;
 }
 
-// 打开一封邮件：id 传列表里的 mailId，详情返回这一封 + 它回复过的链。
+// 这封所在线程的根 id：归档（root_id）用。mails/:id 会带 rootMsgId，根邮件为 null。
+const threadRootId = computed(() => {
+  const item = mail.value;
+  if (!item) {
+    return null;
+  }
+  return item.rootMsgId ?? item.mailId ?? null;
+});
+
+// 详情页的「会话汇总」展示信息：mails/:id 只给这一封 + 祖先链，这里按已取到的封数现算。
+const detailSummary = computed(() => {
+  const item = mail.value;
+  if (!item) {
+    return null;
+  }
+  return {
+    channelName: item.channelName,
+    source: item.source,
+    shared: Number(item.shared) === 1 ? 1 : 0,
+    messageCount: messages.value.length,
+    unreadCount: messages.value.filter((row) => Number(row.unread) === 1)
+      .length,
+  };
+});
+
+// 打开一封邮件：这一封 + 它回复过的链（祖先，时间倒序）。
 async function openMail(mailId) {
   activeMailId.value = mailId;
   mail.value = null;
   messages.value = [];
+  chainTruncated.value = false;
   clearNotice();
 
-  // 只有这次选择仍然有效时才继续标记已读：
-  // 否则 A 的迟到响应会拿 B 的 activeMailId 去调 markRead，把 B 标成已读。
+  // 只有这次选择仍然有效时才继续标记已读（见下方 markActiveThreadRead 的守卫）
   const loaded = await fetchMail(mailId);
   if (!loaded) {
     return;
   }
-  await markActiveRead(mailId);
+  await markActiveThreadRead();
 }
 
 // 关闭邮件详情，回到收信列表；顺带刷新未读角标。
@@ -565,12 +949,15 @@ function closeMail() {
   activeMailId.value = null;
   mail.value = null;
   messages.value = [];
+  chainTruncated.value = false;
+  // 回到列表相当于重新开始一轮浏览：旧的勾选不再有意义
+  selectedIds.value = [];
   refreshUnreadSummary();
   loadMails();
 }
 
-// 详情 = 打开的那封 + 它回复过的链（mail + replyChain），无增量；拉一次即可。
-// mailId 默认取当前打开的那封；返回 true 表示这份结果仍是当前选择（已写入状态）。
+// 单封详情：mailId 默认取当前打开的那封；返回 true 表示这份结果仍是当前选择（已写入状态）。
+// 渲染顺序：这一封（时间最新）在前，replyChain 按服务端顺序（时间倒序，链尾是根）跟在后面。
 async function fetchMail(mailId = activeMailId.value) {
   if (!mailId) {
     return false;
@@ -587,15 +974,13 @@ async function fetchMail(mailId = activeMailId.value) {
 
     const data = response?.data ?? {};
     mail.value = data.mail ?? null;
-
-    // 渲染顺序：mail（当前打开这封，时间最新）在前，replyChain 直接按服务端顺序（时间倒序，
-    // 最新祖先在前、链尾是根）跟在后面——旧信息排在时间新的正文之后。
     const chain = Array.isArray(data.replyChain) ? data.replyChain : [];
     messages.value = [];
     if (mail.value) {
       messages.value.push(mail.value);
     }
     messages.value.push(...chain);
+    chainTruncated.value = Boolean(data.truncated);
     return true;
   } catch (error) {
     // 过期请求的错误同样不提示：那是上一封邮件的事
@@ -612,34 +997,73 @@ async function fetchMail(mailId = activeMailId.value) {
   }
 }
 
-// 逐封已读：只标记本次打开的这一封（unread=1 时）；幂等，清掉自己即可，不影响同链其它记录。
-// mailId 由调用方显式传入，不在 await 之后读 activeMailId —— 那时它可能已经指向别的邮件了。
-async function markActiveRead(mailId) {
-  if (!mailId || mail.value?.mailId !== mailId) {
-    return;
-  }
-  if (Number(mail.value?.unread) !== 1) {
+// 打开即已读：一次批量请求标掉这条链上已取到的未读封（ids），
+// 不用 root_id —— 详情只显示这一封 + 祖先，没理由把没显示的后续回复也标掉。
+async function markActiveThreadRead() {
+  const ids = messages.value
+    .filter((message) => Number(message.unread) === 1)
+    .map((message) => message.mailId);
+  const openedId = mail.value?.mailId;
+  if (!ids.length || !openedId) {
     return;
   }
 
   try {
-    await messageApi.markRead(mailId);
-    // 标记期间可能已切到别的邮件：只清这一封自己的标记，别去动当前显示那封的 unread
-    if (mail.value?.mailId === mailId) {
-      mail.value.unread = 0;
+    await messageApi.markReadBatch({ ids });
+    // 标记期间可能已切到别的邮件：只清这一封自己的状态
+    if (mail.value?.mailId !== openedId) {
+      return;
     }
-    for (const item of mails.value) {
-      if (item.mailId === mailId) {
-        item.unread = 0;
-      }
+    for (const message of messages.value) {
+      message.unread = 0;
     }
     refreshUnreadSummary();
   } catch (error) {
-    // 已经切走就不再提示上一封的错误
-    if (mail.value?.mailId !== mailId) {
+    if (mail.value?.mailId !== openedId) {
       return;
     }
     setNotice("error", errorText(error, "标记已读失败。"));
+  }
+}
+
+// 归档 / 取消归档：整条线程（root_id）。归档不改变已读状态，只是移出收件箱。
+// 归档文件夹里的邮件一律视为「已归档」（按钮就是取消归档），收件箱 / 已发送反之。
+const threadArchived = computed(
+  () => Number(mail.value?.archived) === 1 || mailboxFilter.value === "archive",
+);
+
+async function toggleThreadArchive() {
+  const rootId = threadRootId.value;
+  const openedId = mail.value?.mailId;
+  if (!rootId || !openedId || archiveBusy.value) {
+    return;
+  }
+
+  const next = !threadArchived.value;
+  archiveBusy.value = true;
+  try {
+    await messageApi.archiveMails({ rootId, archived: next });
+    for (const message of messages.value) {
+      message.archived = next ? 1 : 0;
+    }
+    if (mail.value) {
+      mail.value = { ...mail.value, archived: next ? 1 : 0 };
+    }
+    setNotice(
+      "success",
+      next
+        ? "已归档，可在「归档」文件夹找回。"
+        : "已取消归档，邮件回到原文件夹。",
+    );
+    await fetchMail(openedId);
+    await Promise.all([loadMails(), refreshUnreadSummary()]);
+  } catch (error) {
+    setNotice(
+      "error",
+      errorText(error, next ? "归档失败。" : "取消归档失败。"),
+    );
+  } finally {
+    archiveBusy.value = false;
   }
 }
 
@@ -654,15 +1078,16 @@ async function handleVisibilityChange() {
 
   if (activeMailId.value) {
     // 抓住发起时的 id：await 期间用户可能已经切到别的邮件。
-    // 这次刷新会顶掉「点开邮件」那次 fetchMail，因此「标记已读」的责任要由这里接过来，
+    // 这次刷新会顶掉「点开邮件」那次加载，因此「标记已读」的责任要由这里接过来，
     // 否则打开未读邮件时刚好回到前台，邮件显示了却一直停在未读。
     const mailId = activeMailId.value;
     const loaded = await fetchMail(mailId);
     // loaded=false 表示又被更新的请求接管了，标记权继续往后传，不能在这里擅自标
     if (loaded) {
-      await markActiveRead(mailId);
+      await markActiveThreadRead();
     }
-  } else {
+  } else if (!(await loadNewMails())) {
+    // 没有已知 id / 增量失败：退回整页刷新
     loadMails();
   }
 
@@ -673,14 +1098,15 @@ async function handleVisibilityChange() {
 
 // ---------- 回复邮件：跳转到写信页 ----------
 
-// 邮件详情页不直接输入：点「回复」切到写信页，目标预置为当前打开的这封；
-// 主题由服务端按层级生成（回复：<根主题>）。canReply=false（官方公告）时按钮已禁用。
+// 邮件详情页不直接输入：点「回复」切到写信页，回复「当前打开的这一封」；
+// 主题留空 = 服务端按层级生成「回复：…」，填了就是中途改题。canReply=false（公告类）时按钮已禁用。
 function replyToActiveMail() {
   if (!mail.value || !canReply.value) {
     return;
   }
 
   composeReplyTo.value = mail.value.mailId;
+  composeReplySubject.value = "";
   switchView("compose");
 }
 
@@ -695,6 +1121,14 @@ async function sendCompose() {
 
   if (isMuted.value) {
     setNotice("error", "禁言期间不能发信，可在「我的申诉」查看与提交申诉。");
+    return;
+  }
+  // 防御：来源白名单在「回复」入口已经拦过，这里再兜一层
+  if (composeReplyTo.value && mail.value && !isReplyableSource(mail.value)) {
+    setNotice(
+      "error",
+      `「${sourceLabel(mail.value.source)}」只读，不能回复；如需联系工作人员，请使用「写信」。`,
+    );
     return;
   }
 
@@ -718,20 +1152,25 @@ async function sendCompose() {
   setNotice("pending", "正在发送...");
   try {
     if (composeReplyTo.value) {
-      const mailId = composeReplyTo.value;
+      const replyTo = composeReplyTo.value;
+      const subject = composeReplySubject.value.trim();
       const response = await messageApi.sendMail({
-        replyTo: mailId,
+        replyTo,
+        // 非空 = 中途改题；留空时服务端按父主题生成「回复：…」
+        ...(subject ? { subject } : {}),
         content,
         attachments,
       });
-      // 详情只含「这一封 + 它回复过的链」，回复后要打开新生成的那封才能看到刚发出的内容
-      const newMailId = response?.data?.mailId ?? mailId;
+      const data = response?.data ?? {};
+      const newMailId = data.mailId ?? replyTo;
 
       composeDraft.value = "";
       composeReplyTo.value = null;
+      composeReplySubject.value = "";
       composeAttachments.clear();
       activeTab.value = "inbox";
       await loadMails();
+      // 详情是「这一封 + 它的祖先链」：打开刚发出的那封，往上看得到整段往来
       await openMail(newMailId);
       setNotice("success", "回复已发出。");
     } else {
@@ -807,7 +1246,10 @@ async function submitHintQuestion() {
   }
 
   if (isMuted.value) {
-    setNotice("error", "禁言期间不能请求提示，可在「我的申诉」查看与提交申诉。");
+    setNotice(
+      "error",
+      "禁言期间不能请求提示，可在「我的申诉」查看与提交申诉。",
+    );
     return;
   }
   if (isTeamBanned.value) {
@@ -861,6 +1303,11 @@ async function submitHintQuestion() {
       ...openHints.value,
     ];
     setNotice("success", "已提交，等待官方报价（报价前不扣点数）。");
+    // 2026-11-12 起提问会在队伍会话生成一封来信（自己发的，进「已发送」）：
+    // 正在看这两个文件夹时静默刷新一下，不打断撰写面板。
+    if (mailboxFilter.value === "sent" || mailboxFilter.value === "all") {
+      void loadMails();
+    }
   } catch (error) {
     setNotice("error", errorText(error, "提交求提示失败。"));
   } finally {
@@ -894,6 +1341,15 @@ async function confirmHint(item) {
       refreshHintPendingCount(),
       refreshUnreadSummary(),
     ]);
+    // 2026-11-12 起答复是对「提问邮件」的回复：确认后直接打开那条线程，省得自己去翻收件箱
+    const answerMailId = Number(data.msgId) || 0;
+    if (answerMailId) {
+      activeTab.value = "inbox";
+      mailboxFilter.value = "inbox";
+      inboxFilter.value = "all";
+      await loadMails();
+      await openMail(answerMailId);
+    }
   } catch (error) {
     // 余额不足不是死路：报价保留，补点数后重试同一条即可
     if (error?.code === "E_TIPS_SHORT") {
@@ -914,33 +1370,82 @@ async function confirmHint(item) {
 
 // 申请更便宜：整个提问只允许一次，不加价、不扣费；
 // 「可能答不全」这句提醒必须由前端在发请求之前给出（后端不提供）。
+// 2026-11-13（2.2.0）起可以带说明（content，可选 1..2000）与附件：
+// 它们写成「申请更便宜」邮件的正文 / 图片，staff 在求提示工作台能看到。
+// 这里**复用下面同一个输入框与附件队列**（和「提交求提示」是同一套 UI），
+// 只是把提交目标切成这条请求；不带正文时后端沿用默认文案「申请更便宜」。
+// 注意：带正文 / 附件会被禁言判定拦住（403 E_MUTED），所以禁言期间不给这个入口。
 function requestCheaper(item) {
   if (hintActing.value || !canRequestCheaperOf(item)) {
     return;
   }
-
-  hintConfirm.value = {
-    title: "申请更便宜",
-    text: "更便宜的提示可能无法回答所有问题，确定要申请吗？",
-    confirmText: "申请",
-    run: () => submitCheaper(item),
-  };
-}
-
-async function submitCheaper(item) {
-  const id = item?.id;
-  hintConfirm.value = null;
-  if (!id) {
+  if (isMuted.value) {
+    setNotice("error", "禁言期间不能附带说明与图片，暂时不能申请更便宜。");
     return;
   }
 
+  cheaperTarget.value = item;
+  hintQuestion.value = "";
+  hintAttachments.clear();
+  // 输入框在卡片下方，滚过去并聚焦，避免以为点了没反应
+  nextTick(() => document.getElementById("hint-question")?.focus());
+}
+
+// 取消「申请更便宜」的填写：回到「提交求提示」模式
+function cancelCheaper() {
+  cheaperTarget.value = null;
+  hintQuestion.value = "";
+  hintAttachments.clear();
+}
+
+async function submitCheaper() {
+  const item = cheaperTarget.value;
+  const id = item?.id;
+  if (!id || hintSubmitting.value) {
+    return;
+  }
+
+  if (hintAttachments.uploading.value) {
+    setNotice("error", "图片还在上传，请等上传完成后再提交。");
+    return;
+  }
+  if (hintAttachments.failed.value) {
+    setNotice("error", "有图片上传失败，请重试或移除后再提交。");
+    return;
+  }
+  const content = hintQuestion.value.trim();
+  const attachments = hintAttachments.serialize();
+  // 正文可以不写（后端给默认文案），但只发图片不说一句就没意义
+  if (!content && attachments.length) {
+    setNotice("error", "附了图片请再写一句说明。");
+    return;
+  }
+
+  hintSubmitting.value = true;
   hintActing.value = `${id}:cheaper`;
   try {
-    await messageApi.requestCheaperHint(id);
-    setNotice("success", `已申请 #${id} 更便宜，等待官方回应；期间也可以直接按当前价确认。`);
+    await messageApi.requestCheaperHint(id, {
+      content: content || undefined,
+      attachments,
+    });
+    setNotice(
+      "success",
+      `已申请 #${id} 更便宜，等待官方回应；期间也可以直接按当前价确认。`,
+    );
+    cheaperTarget.value = null;
+    hintQuestion.value = "";
+    hintAttachments.clear();
   } catch (error) {
-    setNotice("error", errorText(error, "申请失败。"));
+    if (error?.code === "E_MUTED") {
+      setNotice(
+        "error",
+        "禁言期间不能附带说明与图片，请清空后重新提交（默认申请仍然有效）。",
+      );
+    } else {
+      setNotice("error", errorText(error, "申请失败。"));
+    }
   } finally {
+    hintSubmitting.value = false;
     hintActing.value = "";
     // 409（已申请过 / 已是最低价）时以服务端状态为准，把入口置灰
     await refreshHintSnapshot();
@@ -1278,10 +1783,13 @@ onMounted(async () => {
     restoreOpenHints(),
     loadPolicy(),
   ]);
+  // 列表页的增量拉新（since_id），每分钟一次；详情 / 写信时不跑
+  startMailPolling();
 });
 
 onBeforeUnmount(() => {
   stopHintPolling();
+  stopMailPolling();
   document.removeEventListener("visibilitychange", handleVisibilityChange);
   // 释放尚未提交的本地预览 URL
   composeAttachments.dispose();
@@ -1313,464 +1821,675 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="mail-layout">
-      <!-- 左侧功能列：写信、收信分类、频道与来源筛选 -->
-      <aside class="mail-nav" aria-label="站内信功能">
-        <!-- 禁言期间隐藏「写信」入口（写邮件 / 问题反馈 / 求提示提问都会被 403 E_MUTED） -->
-        <button
-          v-if="!isMuted"
-          type="button"
-          :class="['mail-nav__item', { 'is-active': activeView === 'compose' }]"
-          @click="startNewMail"
-        >
-          写信
-        </button>
-        <p v-else class="mail-nav__locked">写信已关闭（禁言中）</p>
+        <!-- 左侧功能列：写信、收信分类、频道与来源筛选 -->
+        <aside class="mail-nav" aria-label="站内信功能">
+          <!-- 禁言期间隐藏「写信」入口（写邮件 / 问题反馈 / 求提示提问都会被 403 E_MUTED） -->
+          <button
+            v-if="!isMuted"
+            type="button"
+            :class="[
+              'mail-nav__item',
+              { 'is-active': activeView === 'compose' },
+            ]"
+            @click="startNewMail"
+          >
+            写信
+          </button>
+          <p v-else class="mail-nav__locked">写信已关闭（禁言中）</p>
 
-        <div class="mail-nav__section">
-          <p class="mail-nav__group">收信</p>
-          <div class="mail-nav__items">
-            <button
-              v-for="item in INBOX_VIEWS"
-              :key="item.value"
-              type="button"
-              :class="[
-                'mail-nav__item',
-                { 'is-active': activeView === item.value },
-              ]"
-              @click="switchView(item.value)"
-            >
-              <span>{{ item.label }}</span>
-              <span
-                v-if="item.value === 'unread' && state.unreadMessages > 0"
-                class="unread-badge"
+          <div class="mail-nav__section">
+            <p class="mail-nav__group">文件夹</p>
+            <div class="mail-nav__items">
+              <button
+                v-for="item in MAILBOX_VIEWS"
+                :key="item.value"
+                type="button"
+                :class="[
+                  'mail-nav__item',
+                  { 'is-active': activeView === item.value },
+                ]"
+                @click="switchView(item.value)"
               >
-                {{ state.unreadMessages }}
-              </span>
-            </button>
-          </div>
-        </div>
-
-        <div class="mail-nav__section">
-          <p class="mail-nav__group">频道</p>
-          <div class="mail-nav__items">
-            <button
-              v-for="item in CHANNEL_VIEWS"
-              :key="item.value || 'all'"
-              type="button"
-              :class="[
-                'mail-nav__item',
-                { 'is-active': activeChannel === item.value },
-              ]"
-              @click="switchChannel(item.value)"
-            >
-              <span>{{ item.label }}</span>
-            </button>
-          </div>
-        </div>
-
-        <div class="mail-nav__section">
-          <p class="mail-nav__group">来源</p>
-          <div class="mail-nav__items">
-            <button
-              v-for="item in SOURCE_VIEWS"
-              :key="item.value || 'all'"
-              type="button"
-              :class="[
-                'mail-nav__item',
-                { 'is-active': activeSource === item.value },
-              ]"
-              @click="switchSource(item.value)"
-            >
-              <span>{{ item.label }}</span>
-            </button>
-          </div>
-        </div>
-      </aside>
-
-      <!-- 右侧邮件区：撰写页或收信面板 -->
-      <div class="mail-main">
-        <!-- 写信：收件人 / 主题 / 正文，与邮箱撰写一致 -->
-        <div v-if="activeTab === 'compose'" class="composer">
-          <div class="mail-meta">
-            <div class="mail-row">
-              <span class="label">收件人</span>
-              <select
-                v-if="!composeReplyTo"
-                id="compose-target"
-                v-model="composeTarget"
-                class="select"
-              >
-                <option
-                  v-for="item in composeRecipients"
-                  :key="item.value"
-                  :value="item.value"
+                <span>{{ item.label }}</span>
+                <span
+                  v-if="item.value === 'inbox' && state.unreadMessages > 0"
+                  class="unread-badge"
                 >
-                  {{ item.label }}
-                </option>
-              </select>
-              <span v-else class="value">
-                {{ mail?.channelName || "当前对话" }}（回复）
-              </span>
-            </div>
-            <div class="mail-row">
-              <span class="label">主题</span>
-              <span v-if="composeReplyTo" class="value">{{ replySubject }}</span>
-              <span v-else-if="isHintCompose" class="value">请求提示</span>
-              <input
-                v-else
-                id="compose-subject"
-                v-model="composeSubject"
-                class="input"
-                type="text"
-                maxlength="80"
-                placeholder="选填，留空时取正文首行"
-              />
+                  {{ state.unreadMessages }}
+                </span>
+                <span
+                  v-else-if="
+                    item.value === 'archive' && state.unreadArchive > 0
+                  "
+                  class="unread-badge"
+                >
+                  {{ state.unreadArchive }}
+                </span>
+              </button>
             </div>
           </div>
+        </aside>
 
-          <!-- 请求提示：先提问（不扣费），官方报价后由玩家确认扣费；答复进队伍会话。
+        <!-- 右侧邮件区：撰写页或收信面板 -->
+        <div class="mail-main">
+          <!-- 写信：收件人 / 主题 / 正文，与邮箱撰写一致 -->
+          <div v-if="activeTab === 'compose'" class="composer">
+            <div class="mail-meta">
+              <div class="mail-row">
+                <span class="label">收件人</span>
+                <select
+                  v-if="!composeReplyTo"
+                  id="compose-target"
+                  v-model="composeTarget"
+                  class="select"
+                >
+                  <option
+                    v-for="item in composeRecipients"
+                    :key="item.value"
+                    :value="item.value"
+                  >
+                    {{ item.label }}
+                  </option>
+                </select>
+                <span v-else class="value">
+                  {{ mail?.channelName || "当前对话" }}（回复）
+                </span>
+              </div>
+              <div class="mail-row">
+                <span class="label">主题</span>
+                <input
+                  v-if="composeReplyTo"
+                  id="compose-reply-subject"
+                  v-model="composeReplySubject"
+                  class="input"
+                  type="text"
+                  maxlength="80"
+                  :placeholder="replySubjectPlaceholder"
+                />
+                <span v-else-if="isHintCompose" class="value">请求提示</span>
+                <input
+                  v-else
+                  id="compose-subject"
+                  v-model="composeSubject"
+                  class="input"
+                  type="text"
+                  maxlength="80"
+                  placeholder="选填，留空时取正文首行"
+                />
+              </div>
+            </div>
+
+            <!-- 请求提示：先提问（不扣费），官方报价后由玩家确认扣费；答复进队伍会话。
                只有 pending 占「每队 1 条」名额：可以有 1 条 pending + 多条 quoted 同时存在，
                每条各自确认（按各自 quotedCost 扣费）。 -->
-          <template v-if="isHintCompose">
-            <div class="hint-panel">
-              <p class="helper-text">
-                求提示不预扣点数：先提问，官方报价后由你确认，确认时才扣本队 tips；答复会作为站内信发到「队伍会话」。
-              </p>
-              <p class="helper-text">
-                本队 tips：{{ tipsHasTeam ? tipsBalance : "加入队伍后开始累积" }}
-                <template v-if="tipsHasTeam && tipsToday">
-                  （今日已累积 {{ tipsToday.accrued }}/{{ tipsToday.cap }}）
-                </template>
-                · 待报价 {{ hintPendingCount }}/1（只有「待报价」占名额，待确认的不占）
-              </p>
+            <template v-if="isHintCompose">
+              <div class="hint-panel">
+                <p class="helper-text">
+                  求提示不预扣点数：先提问，官方报价后由你确认，确认时才扣本队
+                  tips；答复会作为站内信发到「队伍会话」。
+                </p>
+                <p class="helper-text">
+                  本队 tips：{{
+                    tipsHasTeam ? tipsBalance : "加入队伍后开始累积"
+                  }}
+                  <template v-if="tipsHasTeam && tipsToday">
+                    （今日已累积 {{ tipsToday.accrued }}/{{ tipsToday.cap }}）
+                  </template>
+                  · 待报价
+                  {{ hintPendingCount }}/1（只有「待报价」占名额，待确认的不占）
+                </p>
 
-              <!-- 进行中的请求（pending / quoted），可以有多条 -->
-              <ul v-if="openHints.length" class="hint-open">
-                <li
-                  v-for="item in openHints"
-                  :key="item.id"
-                  :class="['hint-open__item', { 'is-focus': item.id === focusedHintId }]"
-                >
-                  <div class="hint-open__head">
-                    <span class="hint-open__id">#{{ item.id }}</span>
-                    <span class="hint-open__status">{{ hintStatusLabel(item.status) }}</span>
-                    <span class="hint-open__cost">{{ hintCostText(item) }}</span>
-                    <span v-if="item.status === 'pending'" class="hint-open__wait">
-                      已等待 {{ waitedText(item.createdAt) }}
-                    </span>
-                  </div>
-                  <p class="hint-open__question">{{ item.question }}</p>
-                  <AttachmentGallery :items="item.attachments" />
+                <!-- 进行中的请求（pending / quoted），可以有多条 -->
+                <ul v-if="openHints.length" class="hint-open">
+                  <li
+                    v-for="item in openHints"
+                    :key="item.id"
+                    :class="[
+                      'hint-open__item',
+                      { 'is-focus': item.id === focusedHintId },
+                    ]"
+                  >
+                    <div class="hint-open__head">
+                      <span class="hint-open__id">#{{ item.id }}</span>
+                      <span class="hint-open__status">{{
+                        hintStatusLabel(item.status)
+                      }}</span>
+                      <span class="hint-open__cost">{{
+                        hintCostText(item)
+                      }}</span>
+                      <span
+                        v-if="item.status === 'pending'"
+                        class="hint-open__wait"
+                      >
+                        已等待 {{ waitedText(item.createdAt) }}
+                      </span>
+                    </div>
+                    <p class="hint-open__question">{{ item.question }}</p>
+                    <AttachmentGallery :items="item.attachments" />
 
-                  <p v-if="item.status === 'pending'" class="helper-text">
-                    等待官方报价…（报价前不扣费）
-                  </p>
-                  <template v-else>
+                    <p v-if="item.status === 'pending'" class="helper-text">
+                      等待官方报价…（报价前不扣费）
+                    </p>
+                    <template v-else>
+                      <p class="helper-text">
+                        官方报价：<strong>{{ item.quotedCost }}</strong>
+                        点（确认后才扣费）
+                      </p>
+                      <p v-if="cheaperPendingOf(item)" class="helper-text">
+                        已申请更便宜，等待官方回应；期间也可以直接按当前价确认。
+                      </p>
+                      <p v-else-if="item.isLowestPrice" class="helper-text">
+                        官方已表示这就是最低报价。
+                      </p>
+                      <p v-else-if="item.cheaperDecidedAt" class="helper-text">
+                        官方已回应你的降价申请，当前报价即最新价格。
+                      </p>
+                    </template>
+
+                    <div class="hint-open__actions">
+                      <button
+                        v-if="canRequestCheaperOf(item)"
+                        class="soft-btn"
+                        type="button"
+                        :disabled="Boolean(hintActing)"
+                        @click="requestCheaper(item)"
+                      >
+                        {{
+                          hintBusyOf(item, "cheaper")
+                            ? "申请中..."
+                            : "申请更便宜"
+                        }}
+                      </button>
+                      <button
+                        v-if="item.status === 'quoted'"
+                        class="primary-btn"
+                        type="button"
+                        :disabled="Boolean(hintActing)"
+                        @click="confirmHint(item)"
+                      >
+                        {{
+                          hintBusyOf(item, "confirm")
+                            ? "确认中..."
+                            : `确认（扣 ${item.quotedCost} 点）`
+                        }}
+                      </button>
+                      <button
+                        class="soft-btn"
+                        type="button"
+                        :disabled="Boolean(hintActing)"
+                        @click="closeHint(item)"
+                      >
+                        {{
+                          hintBusyOf(item, "close") ? "关闭中..." : "关闭请求"
+                        }}
+                      </button>
+                    </div>
+                  </li>
+                </ul>
+
+                <!-- 提交区：默认是「提交求提示」；点某条请求的「申请更便宜」后，
+                     同一个输入框 / 附件队列改用来写这一次的说明（带正文或附图会被禁言判定拦住） -->
+                <div class="hint-submit">
+                  <template v-if="cheaperTarget">
                     <p class="helper-text">
-                      官方报价：<strong>{{ item.quotedCost }}</strong> 点（确认后才扣费）
+                      正在为 #{{ cheaperTarget.id }}（报价
+                      {{ cheaperTarget.quotedCost }} 点）申请更便宜：
+                      更便宜的提示可能无法回答所有问题。可写说明并附图，官方会据此判断。
                     </p>
-                    <p v-if="cheaperPendingOf(item)" class="helper-text">
-                      已申请更便宜，等待官方回应；期间也可以直接按当前价确认。
-                    </p>
-                    <p v-else-if="item.isLowestPrice" class="helper-text">
-                      官方已表示这就是最低报价。
-                    </p>
-                    <p v-else-if="item.cheaperDecidedAt" class="helper-text">
-                      官方已回应你的降价申请，当前报价即最新价格。
+                  </template>
+                  <template v-else-if="hintQuotaFull">
+                    <p class="helper-text">
+                      已有一条待报价的求提示（每队同时只能 1
+                      条），等官方报价或先关闭它。
                     </p>
                   </template>
 
-                  <div class="hint-open__actions">
-                    <button
-                      v-if="canRequestCheaperOf(item)"
-                      class="soft-btn"
-                      type="button"
-                      :disabled="Boolean(hintActing)"
-                      @click="requestCheaper(item)"
-                    >
-                      {{ hintBusyOf(item, "cheaper") ? "申请中..." : "申请更便宜" }}
-                    </button>
-                    <button
-                      v-if="item.status === 'quoted'"
-                      class="primary-btn"
-                      type="button"
-                      :disabled="Boolean(hintActing)"
-                      @click="confirmHint(item)"
-                    >
-                      {{
-                        hintBusyOf(item, "confirm")
-                          ? "确认中..."
-                          : `确认（扣 ${item.quotedCost} 点）`
-                      }}
-                    </button>
-                    <button
-                      class="soft-btn"
-                      type="button"
-                      :disabled="Boolean(hintActing)"
-                      @click="closeHint(item)"
-                    >
-                      {{ hintBusyOf(item, "close") ? "关闭中..." : "关闭请求" }}
-                    </button>
-                  </div>
-                </li>
-              </ul>
-
-              <!-- 提交新请求：只要没有待报价（名额未占）就能提，既使还有待支付的请求 -->
-              <div class="hint-submit">
-                <template v-if="hintQuotaFull">
-                  <p class="helper-text">
-                    已有一条待报价的求提示（每队同时只能 1 条），等官方报价或先关闭它。
-                  </p>
-                </template>
-                <template v-else>
-                  <textarea
-                    id="hint-question"
-                    v-model="hintQuestion"
-                    class="mail-editor hint-question"
-                    :class="{ 'is-drop-target': hintDragging }"
-                    rows="5"
-                    maxlength="2000"
-                    placeholder="描述卡住的地方（1–2000 字），官方会据此报价；可拖拽或粘贴截图"
-                    @paste="onHintPaste"
-                    @dragenter="onHintDragenter"
-                    @dragover="onHintDragover"
-                    @dragleave="onHintDragleave"
-                    @drop="onHintDrop"
-                  ></textarea>
-                  <AttachmentPicker
-                    v-if="attachmentsEnabled"
-                    :items="hintFiles"
-                    :issue="hintIssue"
-                    :disabled="hintSubmitting"
-                    @pick="addHintFiles"
-                    @remove="removeHint"
-                    @retry="retryHint"
-                  />
-                  <p v-if="!tipsHasTeam" class="helper-text">
-                    加入队伍后才能求提示。
-                  </p>
-                  <button
-                    class="primary-btn"
-                    type="button"
-                    :disabled="
-                      hintSubmitting || !tipsHasTeam || !hintQuestion.trim()
-                    "
-                    @click="submitHintQuestion"
-                  >
-                    {{ hintSubmitting ? "提交中..." : "提交求提示" }}
-                  </button>
-                </template>
-              </div>
-            </div>
-
-            <div class="composer__footer">
-              <button class="soft-btn" type="button" @click="openHintHistory">
-                提示记录
-              </button>
-              <button class="soft-btn" type="button" @click="openLedger">
-                点数流水
-              </button>
-            </div>
-          </template>
-
-          <!-- 新邮件 / 回复：正文 + 发送 -->
-          <template v-else>
-            <div class="toolbar">
-              <label class="toolbar-label" for="compose-body">正文</label>
-            </div>
-
-            <textarea
-              id="compose-body"
-              v-model="composeDraft"
-              class="mail-editor"
-              :class="{ 'is-drop-target': composeDragging }"
-              rows="10"
-              maxlength="2000"
-              placeholder="请输入正文内容（1–2000 字）；可拖拽或粘贴截图"
-              @paste="onComposePaste"
-              @dragenter="onComposeDragenter"
-              @dragover="onComposeDragover"
-              @dragleave="onComposeDragleave"
-              @drop="onComposeDrop"
-            ></textarea>
-
-            <AttachmentPicker
-              v-if="attachmentsEnabled"
-              :items="composeFiles"
-              :issue="composeIssue"
-              :disabled="composing"
-              @pick="addComposeFiles"
-              @remove="removeCompose"
-              @retry="retryCompose"
-            />
-
-            <div class="composer__footer">
-              <button
-                class="primary-btn"
-                type="button"
-                :disabled="composing"
-                @click="sendCompose"
-              >
-                {{
-                  composing
-                    ? "发送中..."
-                    : composeReplyTo
-                      ? "发送回复"
-                      : "发送"
-                }}
-              </button>
-            </div>
-          </template>
-        </div>
-
-        <!-- 收信：邮件列表与信件详情 -->
-        <div v-else class="inbox-panel">
-          <!-- 信件详情：邮件式版式，回复统一走写信页 -->
-          <template v-if="activeMailId">
-            <header class="message-detail-header">
-              <div class="toolbar-group">
-                <button class="soft-btn" type="button" @click="closeMail">
-                  返回收件箱
-                </button>
-                <button
-                  class="soft-btn"
-                  type="button"
-                  :disabled="!canReply"
-                  :title="canReply ? '转到写信页回复' : replyDisabledReason"
-                  @click="replyToActiveMail"
-                >
-                  回复
-                </button>
-              </div>
-              
-            </header>
-
-            <article class="message-detail">
-              <h2 class="letter-subject">{{ mail?.subject || "（无主题）" }}</h2>
-
-              <div class="message-detail__meta-group">
-                <span class="detail-label">发件人</span>
-                <span>{{ mailSender }}</span>
-                <span class="detail-label">频道</span>
-                <span>{{ mail?.channelName || "—" }}</span>
-                <span class="detail-label">来源</span>
-                <span>{{ sourceLabel(mail?.source) }}</span>
-              </div>
-
-              <div v-if="messagesLoading && !messages.length" class="list-hint">
-                正在加载邮件...
-              </div>
-              <div v-else-if="!messages.length" class="list-hint">
-                暂无邮件记录。
-              </div>
-
-              <div v-else class="letter-list">
-                <article
-                  v-for="(message, index) in messages"
-                  :key="message.mailId"
-                  class="letter"
-                  :style="{ '--row-index': String(index) }"
-                >
-                  <header class="letter__head">
-                    <div class="letter__from">
-                      <strong>{{ senderName(message) }}</strong>
-                      <small>收件人：{{ recipientName(message) }}</small>
+                  <template v-if="cheaperTarget || !hintQuotaFull">
+                    <textarea
+                      id="hint-question"
+                      v-model="hintQuestion"
+                      class="mail-editor hint-question"
+                      :class="{ 'is-drop-target': hintDragging }"
+                      rows="5"
+                      maxlength="2000"
+                      :placeholder="hintComposePlaceholder"
+                      v-on="hintAttachEvents"
+                    ></textarea>
+                    <AttachmentPicker
+                      v-if="attachmentsEnabled"
+                      class="attach-inset"
+                      :items="hintFiles"
+                      :issue="hintIssue"
+                      :disabled="hintSubmitting"
+                      @pick="addHintFiles"
+                      @remove="removeHint"
+                      @retry="retryHint"
+                    />
+                    <p v-if="!tipsHasTeam && !cheaperTarget" class="helper-text">
+                      加入队伍后才能求提示。
+                    </p>
+                    <div class="hint-submit__actions">
+                      <button
+                        v-if="cheaperTarget"
+                        class="soft-btn"
+                        type="button"
+                        :disabled="hintSubmitting"
+                        @click="cancelCheaper"
+                      >
+                        取消
+                      </button>
+                      <button
+                        class="primary-btn"
+                        type="button"
+                        :disabled="
+                          hintSubmitting ||
+                          hintAttachBusy ||
+                          (cheaperTarget
+                            ? false
+                            : !tipsHasTeam || !hintQuestion.trim())
+                        "
+                        @click="cheaperTarget ? submitCheaper() : submitHintQuestion()"
+                      >
+                        {{
+                          hintSubmitting
+                            ? "提交中..."
+                            : cheaperTarget
+                              ? "提交申请更便宜"
+                              : "提交求提示"
+                        }}
+                      </button>
                     </div>
-                    <time class="letter__time">
-                      {{ formatTime(message.createdAt, { withYear: true }) }}
-                    </time>
-                  </header>
-                  <p class="letter__body">{{ message.content }}</p>
-                  <AttachmentGallery :items="message.attachments" />
-                </article>
+                  </template>
+                </div>
               </div>
-            </article>
 
-            <div v-if="mail && !canReply" class="reply-bar">
-              <p class="helper-text">{{ readOnlyHint }}</p>
-            </div>
-          </template>
+              <div class="composer__footer">
+                <button class="soft-btn" type="button" @click="openHintHistory">
+                  提示记录
+                </button>
+                <button class="soft-btn" type="button" @click="openLedger">
+                  点数流水
+                </button>
+              </div>
+            </template>
 
-          <!-- 收件箱列表 -->
-          <template v-else>
-            <header class="inbox-toolbar">
-              <span class="toolbar-label">{{ currentFolderLabel }}</span>
+            <!-- 新邮件 / 回复：正文 + 发送 -->
+            <template v-else>
+              <div class="toolbar">
+                <label class="toolbar-label" for="compose-body">正文</label>
+              </div>
 
-              <div class="toolbar-group toolbar-group--right">
+              <textarea
+                id="compose-body"
+                v-model="composeDraft"
+                class="mail-editor"
+                :class="{ 'is-drop-target': composeDragging }"
+                rows="10"
+                maxlength="2000"
+                :placeholder="composePlaceholder"
+                v-on="composeAttachEvents"
+              ></textarea>
+
+              <AttachmentPicker
+                v-if="attachmentsEnabled"
+                class="attach-inset"
+                :items="composeFiles"
+                :issue="composeIssue"
+                :disabled="composing"
+                @pick="addComposeFiles"
+                @remove="removeCompose"
+                @retry="retryCompose"
+              />
+
+              <div class="composer__footer">
                 <button
-                  class="soft-btn"
+                  class="primary-btn"
+                  type="button"
+                  :disabled="composing || composeAttachBusy"
+                  @click="sendCompose"
+                >
+                  {{
+                    composing
+                      ? "发送中..."
+                      : composeReplyTo
+                        ? "发送回复"
+                        : "发送"
+                  }}
+                </button>
+              </div>
+            </template>
+          </div>
+
+          <!-- 收信：邮件列表与信件详情 -->
+          <div v-else class="inbox-panel">
+            <!-- 信件详情：邮件式版式，回复统一走写信页 -->
+            <template v-if="activeMailId">
+              <header class="message-detail-header">
+                <div class="toolbar-group">
+                  <button class="soft-btn" type="button" @click="closeMail">
+                    返回列表
+                  </button>
+                  <button
+                    class="soft-btn"
+                    type="button"
+                    :disabled="!canReply"
+                    :title="canReply ? '转到写信页回复' : replyDisabledReason"
+                    @click="replyToActiveMail"
+                  >
+                    回复
+                  </button>
+                  <button
+                    class="soft-btn"
+                    type="button"
+                    :disabled="archiveBusy || !threadRootId"
+                    @click="toggleThreadArchive"
+                  >
+                    {{ threadArchived ? "取消归档" : "归档" }}
+                  </button>
+                </div>
+                <span v-if="detailSummary" class="detail-thread-meta">
+                  {{ detailSummary.messageCount }} 封<template
+                    v-if="Number(detailSummary.unreadCount) > 0"
+                  >
+                    · 未读 {{ detailSummary.unreadCount }}</template
+                  >
+                  <template v-if="detailSummary.shared"> · 全队可见</template>
+                </span>
+              </header>
+
+              <article class="message-detail">
+                <h2 class="letter-subject">
+                  {{ mail?.subject || "（无主题）" }}
+                </h2>
+
+                <div class="message-detail__meta-group">
+                  <span class="detail-label">发件人</span>
+                  <span>{{ mailSender }}</span>
+                  <span class="detail-label">频道</span>
+                  <span>{{
+                    mail?.channelName || detailSummary?.channelName || "—"
+                  }}</span>
+                  <span class="detail-label">来源</span>
+                  <span>{{
+                    sourceLabel(mail?.source || detailSummary?.source)
+                  }}</span>
+                </div>
+
+                <div
+                  v-if="messagesLoading && !messages.length"
+                  class="list-hint"
+                >
+                  正在加载邮件...
+                </div>
+                <div v-else-if="!messages.length" class="list-hint">
+                  暂无邮件记录。
+                </div>
+
+                <template v-else>
+                  <p v-if="chainTruncated" class="list-hint">
+                    这封邮件往上的回复超过 200 层，只显示了最近 200 层。
+                  </p>
+                  <div class="letter-list">
+                    <article
+                      v-for="(message, index) in messages"
+                      :key="message.mailId"
+                      class="letter"
+                      :style="{ '--row-index': String(index) }"
+                    >
+                      <header class="letter__head">
+                        <div class="letter__from">
+                          <strong>{{ senderName(message) }}</strong>
+                          <small>收件人：{{ recipientName(message) }}</small>
+                        </div>
+                        <time class="letter__time">
+                          {{
+                            formatTime(message.createdAt, { withYear: true })
+                          }}
+                        </time>
+                      </header>
+                      <p class="letter__body">{{ message.content }}</p>
+                      <AttachmentGallery :items="message.attachments" />
+                    </article>
+                  </div>
+                </template>
+              </article>
+
+              <div v-if="mail && !canReply" class="reply-bar">
+                <p class="helper-text">{{ readOnlyHint }}</p>
+              </div>
+            </template>
+
+            <!-- 收件箱列表 -->
+            <template v-else>
+              <header class="inbox-toolbar">
+                <span class="toolbar-label">{{ currentFolderLabel }}</span>
+
+                <div class="toolbar-group toolbar-group--right">
+                  <select
+                    id="mail-filter-scope"
+                    class="select select--compact"
+                    aria-label="筛选：全部 / 未读 / 已读"
+                    :value="inboxFilter"
+                    @change="switchInboxFilter($event.target.value)"
+                  >
+                    <option
+                      v-for="item in INBOX_VIEWS"
+                      :key="item.value"
+                      :value="item.value"
+                    >
+                      {{ item.label }}
+                    </option>
+                  </select>
+                  <select
+                    id="mail-filter-channel"
+                    class="select select--compact"
+                    aria-label="频道筛选"
+                    :value="channelFilter"
+                    @change="switchChannel($event.target.value)"
+                  >
+                    <option
+                      v-for="item in CHANNEL_VIEWS"
+                      :key="item.value || 'all'"
+                      :value="item.value"
+                    >
+                      {{ item.label }}
+                    </option>
+                  </select>
+                  <select
+                    id="mail-filter-source"
+                    class="select select--compact"
+                    aria-label="来源筛选"
+                    :value="sourceFilter"
+                    @change="switchSource($event.target.value)"
+                  >
+                    <option
+                      v-for="item in SOURCE_VIEWS"
+                      :key="item.value || 'all'"
+                      :value="item.value"
+                    >
+                      {{ item.label }}
+                    </option>
+                  </select>
+                  <select
+                    id="mail-filter-answered"
+                    class="select select--compact"
+                    aria-label="回复状态筛选"
+                    :value="answeredFilter"
+                    @change="switchAnswered($event.target.value)"
+                  >
+                    <option
+                      v-for="item in ANSWERED_VIEWS"
+                      :key="item.value || 'any'"
+                      :value="item.value"
+                    >
+                      {{ item.label }}
+                    </option>
+                  </select>
+                  <button
+                    class="soft-btn"
+                    type="button"
+                    :disabled="mailsLoading || Boolean(batchBusy)"
+                    title="把当前可见的全部未读标记为已读"
+                    @click="markAllRead"
+                  >
+                    全部已读
+                  </button>
+                  <button
+                    class="soft-btn"
+                    type="button"
+                    :disabled="mailsLoading"
+                    @click="loadMails()"
+                  >
+                    刷新
+                  </button>
+                </div>
+              </header>
+
+              <!-- 批量操作：勾选行之后出现（一次最多 100 项） -->
+              <div v-if="selectedCount" class="inbox-batch-bar">
+                <span class="toolbar-label">已选 {{ selectedCount }} 项</span>
+                <div class="toolbar-group">
+                  <button
+                    class="soft-btn"
+                    type="button"
+                    :disabled="Boolean(batchBusy)"
+                    @click="runBatch('read')"
+                  >
+                    标为已读
+                  </button>
+                  <button
+                    v-if="mailboxFilter !== 'archive'"
+                    class="soft-btn"
+                    type="button"
+                    :disabled="Boolean(batchBusy)"
+                    @click="runBatch('archive')"
+                  >
+                    归档
+                  </button>
+                  <!-- 「全部邮件」里两种状态的邮件都有，两个按钮都要给 -->
+                  <button
+                    v-if="
+                      mailboxFilter === 'archive' || mailboxFilter === 'all'
+                    "
+                    class="soft-btn"
+                    type="button"
+                    :disabled="Boolean(batchBusy)"
+                    @click="runBatch('unarchive')"
+                  >
+                    取消归档
+                  </button>
+                  <button
+                    class="soft-btn"
+                    type="button"
+                    :disabled="Boolean(batchBusy)"
+                    @click="clearSelection"
+                  >
+                    取消选择
+                  </button>
+                </div>
+              </div>
+
+              <div ref="inboxListRef" class="inbox-list">
+                <div class="inbox-row inbox-row--head">
+                  <span class="inbox-check">
+                    <input
+                      type="checkbox"
+                      :checked="allFilteredSelected"
+                      :disabled="!filteredMails.length"
+                      aria-label="全选当前列表"
+                      @change="toggleSelectAll"
+                    />
+                  </span>
+                  <span>发件人</span>
+                  <span>邮件</span>
+                  <span>最后回复</span>
+                  <span class="inbox-unread">未读</span>
+                </div>
+
+                <p v-if="mailsLoading && !mails.length" class="list-hint">
+                  正在加载邮件列表...
+                </p>
+                <p v-else-if="!filteredMails.length" class="list-hint">
+                  {{ emptyHint }}
+                </p>
+
+                <div
+                  v-for="item in filteredMails"
+                  :key="`${mailsListToken}-${item.mailId}`"
+                  :class="[
+                    'inbox-row',
+                    'inbox-row--button',
+                    {
+                      'is-unread': rowUnread(item) > 0,
+                      'is-selected': isSelected(item),
+                    },
+                  ]"
+                  :style="{ '--row-index': String(rowEnterIndex(item)) }"
+                  role="button"
+                  tabindex="0"
+                  @click="openMail(item.mailId)"
+                  @keydown.enter.prevent="openMail(item.mailId)"
+                >
+                  <span class="inbox-check" @click.stop>
+                    <input
+                      type="checkbox"
+                      :value="item.mailId"
+                      :checked="isSelected(item)"
+                      :aria-label="`选择 ${item.subject || '邮件'}`"
+                      @change="toggleSelect(item.mailId)"
+                    />
+                  </span>
+                  <span class="inbox-sender" :title="rowSenderTitle(item)">{{
+                    rowSender(item)
+                  }}</span>
+                  <span class="inbox-subject">
+                    <strong>{{ item.subject || "（无主题）" }}</strong>
+                    <small>
+                      {{ sourceLabel(item.source) }} · {{ item.channelName }}
+                      <template v-if="item.replyCount">
+                        · {{ item.replyCount }} 条回复
+                      </template>
+                      <template v-if="Number(item.hasAttachments)">
+                        · 含图片
+                      </template>
+                      <template v-if="Number(item.shared)">
+                        · 全队可见</template
+                      >
+                      <template v-if="Number(item.answered)">
+                        · 已回复</template
+                      >
+                      <template v-if="Number(item.archived)">
+                        · 已归档</template
+                      >
+                    </small>
+                    <small v-if="item.snippet" class="inbox-snippet">
+                      {{ item.snippet }}
+                    </small>
+                  </span>
+                  <span class="inbox-time">{{
+                    formatTime(item.lastReplyAt || item.createdAt)
+                  }}</span>
+                  <span class="inbox-unread">
+                    <span v-if="rowUnread(item) > 0" class="unread-badge">
+                      {{ rowUnread(item) }}
+                    </span>
+                    <template v-else>—</template>
+                  </span>
+                </div>
+
+                <button
+                  v-if="mailsHasMore"
+                  class="soft-btn inbox-more"
                   type="button"
                   :disabled="mailsLoading"
-                  @click="loadMails()"
+                  @click="loadMails({ append: true })"
                 >
-                  刷新
+                  {{ mailsLoading ? "加载中..." : "加载更早的邮件" }}
                 </button>
               </div>
-            </header>
-
-            <div class="inbox-list">
-              <div class="inbox-row inbox-row--head">
-                <span>发件人</span>
-                <span>邮件</span>
-                <span>最后回复</span>
-                <span class="inbox-unread">未读</span>
-              </div>
-
-              <p v-if="mailsLoading && !mails.length" class="list-hint">
-                正在加载邮件列表...
-              </p>
-              <p v-else-if="!filteredMails.length" class="list-hint">
-                {{ emptyHint }}
-              </p>
-
-              <button
-                v-for="item in filteredMails"
-                :key="item.mailId"
-                type="button"
-                :class="[
-                  'inbox-row',
-                  'inbox-row--button',
-                  { 'is-unread': item.unread > 0 },
-                ]"
-                :style="{ '--row-index': String(rowEnterIndex(item)) }"
-                @click="openMail(item.mailId)"
-              >
-                <span class="inbox-sender" :title="senderRoleLabel(item)">{{
-                  senderName(item)
-                }}</span>
-                <span class="inbox-subject">
-                  <strong>{{ item.subject || "（无主题）" }}</strong>
-                  <small>
-                    {{ sourceLabel(item.source) }} · {{ item.channelName }}
-                    <template v-if="item.replyCount">
-                      · {{ item.replyCount }} 条回复
-                    </template>
-                  </small>
-                </span>
-                <span class="inbox-time">{{
-                  formatTime(item.lastReplyAt || item.createdAt)
-                }}</span>
-                <span class="inbox-unread">
-                  <span v-if="item.unread > 0" class="unread-badge">
-                    {{ item.unread }}
-                  </span>
-                  <template v-else>—</template>
-                </span>
-              </button>
-
-              <button
-                v-if="mailsHasMore"
-                class="soft-btn inbox-more"
-                type="button"
-                :disabled="mailsLoading"
-                @click="loadMails({ append: true })"
-              >
-                {{ mailsLoading ? "加载中..." : "加载更早的邮件" }}
-              </button>
-            </div>
-          </template>
+            </template>
+          </div>
         </div>
-      </div>
       </div>
     </template>
 
@@ -1803,11 +2522,7 @@ onBeforeUnmount(() => {
               v-if="item.status === 'pending' || item.status === 'quoted'"
               class="hint-list__actions"
             >
-              <button
-                class="soft-btn"
-                type="button"
-                @click="focusHint(item)"
-              >
+              <button class="soft-btn" type="button" @click="focusHint(item)">
                 {{ item.status === "quoted" ? "去确认" : "查看" }}
               </button>
             </div>
@@ -1838,7 +2553,11 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- 本队点数流水（GET /api/tips/ledger）：余额变化都带 balanceAfter，可自查收支 -->
-    <div v-if="ledgerOpen" class="modal-backdrop" @click.self="ledgerOpen = false">
+    <div
+      v-if="ledgerOpen"
+      class="modal-backdrop"
+      @click.self="ledgerOpen = false"
+    >
       <div class="modal-card">
         <h2>本队点数流水</h2>
         <p
@@ -1858,10 +2577,16 @@ onBeforeUnmount(() => {
             >
               {{ ledgerDeltaText(item.delta) }}
             </span>
-            <span class="ledger-list__reason">{{ ledgerReasonLabel(item.reason) }}</span>
-            <span class="ledger-list__balance">余额 {{ item.balanceAfter }}</span>
+            <span class="ledger-list__reason">{{
+              ledgerReasonLabel(item.reason)
+            }}</span>
+            <span class="ledger-list__balance"
+              >余额 {{ item.balanceAfter }}</span
+            >
             <time>{{ formatTime(item.createdAt) }}</time>
-            <small v-if="item.note" class="ledger-list__note">{{ item.note }}</small>
+            <small v-if="item.note" class="ledger-list__note">{{
+              item.note
+            }}</small>
             <small v-if="item.operator" class="ledger-list__note">
               操作者：{{ item.operator }}
             </small>
@@ -1887,7 +2612,7 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- 确认弹窗：申请更便宜 / 关闭请求（玩家端没有组件库，复用 modal 样式） -->
+    <!-- 确认弹窗：关闭请求（申请更便宜改用下方的输入框 + 附件，不再弹确认框） -->
     <div
       v-if="hintConfirm"
       class="modal-backdrop"
@@ -2119,6 +2844,14 @@ onBeforeUnmount(() => {
   font-size: 13px;
 }
 
+/* 列表工具栏里的筛选下拉：与「刷新」按钮同高，别抢列表标题的位置 */
+.select--compact {
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
 /* 可编辑的主题输入框：与收件人下拉同一套外观。 */
 .input {
   flex: 1;
@@ -2179,6 +2912,14 @@ onBeforeUnmount(() => {
   justify-content: flex-end;
   gap: 10px;
   padding: 0 18px 16px;
+}
+
+/* 附件选择区的根元素（AttachmentPicker 的 class 会落到它的根 div 上）：
+   与上方正文框 .mail-editor 的 margin 14px 18px 18px 保持同一条左右内距。
+   组件本身不带左右 margin，申诉页那边的正文框是 100% 宽，那边不需要这个类。 */
+.attach-inset {
+  margin-right: 18px;
+  margin-left: 18px;
 }
 
 /* 撰写页的求提示面板：占满正文区，操作按钮固定在底部。 */
@@ -2258,11 +2999,18 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
-/* 新请求提交区：与进行中的卡片留出间隔 */
+/* 新请求 / 申请更便宜的提交区：与进行中的卡片留出间隔 */
 .hint-submit {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+/* 提交按钮与「取消」（申请更便宜时）排一行 */
+.hint-submit__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 /* 确认弹窗比历史弹窗窄一些 */
@@ -2291,6 +3039,7 @@ onBeforeUnmount(() => {
 
 .inbox-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -2382,12 +3131,38 @@ onBeforeUnmount(() => {
 
 .inbox-row {
   display: grid;
-  grid-template-columns: 116px minmax(0, 1fr) 120px 64px;
+  grid-template-columns: 20px 116px minmax(0, 1fr) 120px 64px;
   align-items: center;
   gap: 12px;
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--surface) 78%, transparent);
+}
+
+/* 勾选列：批量已读 / 归档用（api-8 §8.6 / §8.7） */
+.inbox-check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.inbox-check input {
+  cursor: pointer;
+}
+
+.inbox-row.is-selected {
+  background: var(--accent-soft);
+}
+
+/* 勾选后出现的批量操作条 */
+.inbox-batch-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-alt) 92%, transparent);
 }
 
 /* 发件人：单行省略，完整名字与角色见 title */
@@ -2454,6 +3229,22 @@ onBeforeUnmount(() => {
 .inbox-subject small {
   color: var(--text-dim);
   font-size: 11px;
+}
+
+/* 列表里的正文摘要（api-8 snippet，最多 60 字；纯图片时为「[图片]」） */
+.inbox-snippet {
+  color: var(--text-dim);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 详情右上角的线程汇总：封数 / 未读 / 全队可见 */
+.detail-thread-meta {
+  color: var(--text-dim);
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .inbox-time {
@@ -2729,7 +3520,7 @@ onBeforeUnmount(() => {
 
 @media (max-width: 960px) {
   .inbox-row {
-    grid-template-columns: 92px minmax(0, 1fr) 88px 48px;
+    grid-template-columns: 20px 92px minmax(0, 1fr) 88px 48px;
     gap: 8px;
     padding: 10px 12px;
   }

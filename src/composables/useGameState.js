@@ -16,6 +16,18 @@ import { clearAccessToken } from "@/api/request";
 
 const STORAGE_KEY = "mistarg2anns:state:v1";
 
+// 收藏板（board / boardLabels / 墓碑 / 拖出标记）是**账号级**数据，单独按账号分 key 持久化。
+//
+// 以前这些字段和 visitedFolders / ui 一起塞在 STORAGE_KEY 里，结果是：
+// A 登出、B 登录时 A 的卡片仍在内存与 localStorage 中，B 能看到 A 的板面，
+// 拖动一下还会把 A 的卡片作为差异上传进 B 的服务端快照（PR #101 review）。
+// 现在每个账号只读自己那份；没有归属信息就当作没有板面。
+const BOARD_STORAGE_PREFIX = "mistarg2anns:board:v1:";
+
+function boardStorageKey(owner) {
+  return owner ? `${BOARD_STORAGE_PREFIX}${String(owner)}` : "";
+}
+
 // 账号处罚状态的空值（未登录 / 尚未拉取 / 切换账号后）。
 // 字段口径见 api-11-moderation-mute.md：banned 是账号封禁；muted 是「账号级或队伍级禁言」的合一布尔。
 // teamAppeal 是队长代表队伍申诉的那一块（队伍级禁言 / 队伍封禁），非队长或队伍无处罚时为 null。
@@ -42,6 +54,8 @@ function createDefaultState() {
   return {
     visitedFolders: [],
     unreadMessages: 0,
+    // 归档文件夹的未读封数（GET /msg/mails/summary 的 archive.unread）
+    unreadArchive: 0,
     // 队伍级 tips（服务端权威数据，不持久化）：余额与今日累积，供顶栏与求提示面板共用
     teamTips: {
       loaded: false,
@@ -99,8 +113,88 @@ function isPlacement(item, labels = {}) {
     Boolean(labels[item.clueId])
   );
 }
-// 从 localStorage 读取并校验持久化的游戏进度；缺失或损坏时退回初始状态。
 
+// 板面标题快照（拖进来的题目）：老存档没有 cover 字段，归一化成 null（渲染时回退占位图）。
+function normalizeBoardLabels(raw) {
+  if (!raw || typeof raw !== "object") return {};
+  return Object.fromEntries(
+    Object.entries(raw)
+      .filter(
+        ([id, value]) =>
+          typeof id === "string" &&
+          Boolean(value) &&
+          typeof value.title === "string",
+      )
+      .map(([id, value]) => [
+        id,
+        {
+          title: value.title,
+          subtitle: typeof value.subtitle === "string" ? value.subtitle : "",
+          cover: toCover(value.cover),
+        },
+      ]),
+  );
+}
+
+// 板面排布：坐标非法或标题快照里解析不到的一律丢弃
+function normalizeBoard(raw, labels) {
+  return Array.isArray(raw) ? raw.filter((item) => isPlacement(item, labels)) : [];
+}
+
+// 墓碑 / 「拖出板面」标记：只接受字符串 id
+function normalizeIdList(raw) {
+  return Array.isArray(raw) ? raw.filter((id) => typeof id === "string") : [];
+}
+
+// 读取某个账号自己的板面；没有存档或存档损坏时给出空板面。
+function loadBoardFor(owner) {
+  const key = boardStorageKey(owner);
+  if (!key) return { board: [], boardLabels: {}, removedClues: [], unplacedClues: [] };
+
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return { board: [], boardLabels: {}, removedClues: [], unplacedClues: [] };
+
+    const saved = JSON.parse(raw);
+    const boardLabels = normalizeBoardLabels(saved?.boardLabels);
+    return {
+      board: normalizeBoard(saved?.board, boardLabels),
+      boardLabels,
+      removedClues: normalizeIdList(saved?.removedClues),
+      unplacedClues: normalizeIdList(saved?.unplacedClues),
+    };
+  } catch (error) {
+    console.warn("[mistarg2anns] 读取本地收藏板失败，已按空板面处理", error);
+    return { board: [], boardLabels: {}, removedClues: [], unplacedClues: [] };
+  }
+}
+
+// 当前板面属于哪个账号。空串表示未登录：这时不落盘，
+// 否则会把上一个账号的卡片写进下一个登录者的 key。
+let boardOwner = "";
+
+function persistBoard() {
+  const key = boardStorageKey(boardOwner);
+  if (!key) return;
+
+  try {
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        board: state.board,
+        boardLabels: state.boardLabels,
+        removedClues: state.removedClues,
+        unplacedClues: state.unplacedClues,
+      }),
+    );
+  } catch (error) {
+    console.warn("[mistarg2anns] 保存本地收藏板失败", error);
+  }
+}
+
+// 从 localStorage 读取并校验持久化的游戏进度；缺失或损坏时退回初始状态。
+// 注意：这里**不**还原收藏板 —— 板面按账号存在 BOARD_STORAGE_PREFIX 下，
+// 要等身份确定后由 switchBoardOwner() 载入。
 function loadState() {
   const fallback = createDefaultState();
 
@@ -109,34 +203,10 @@ function loadState() {
     if (!raw) return fallback;
 
     const saved = JSON.parse(raw);
-    // 板面卡片的标题快照（拖进来的题目）：先于 board 还原，过滤排布时要用它判断 id 是否可解析。
-    // 老存档没有 cover 字段，归一化成 null（渲染时回退占位图）。
-    const boardLabels =
-      saved.boardLabels && typeof saved.boardLabels === "object"
-        ? Object.fromEntries(
-            Object.entries(saved.boardLabels)
-              .filter(
-                ([id, value]) =>
-                  typeof id === "string" &&
-                  Boolean(value) &&
-                  typeof value.title === "string",
-              )
-              .map(([id, value]) => [
-                id,
-                {
-                  title: value.title,
-                  subtitle:
-                    typeof value.subtitle === "string" ? value.subtitle : "",
-                  cover: toCover(value.cover),
-                },
-              ]),
-          )
-        : {};
     // 以默认状态为底再覆盖「可持久化」的字段：
     // 这样新增的、不持久化的字段（teamTips、accountStatus 等）不会因为本地存的是旧结构而缺失。
     return {
       ...fallback,
-      boardLabels,
       visitedFolders: Array.isArray(saved.visitedFolders)
         ? saved.visitedFolders
         : [],
@@ -147,16 +217,6 @@ function loadState() {
       // 队伍 tips 与处罚状态都是服务端数据，不从本地恢复
       teamTips: { ...fallback.teamTips },
       accountStatus: { ...fallback.accountStatus },
-      board: Array.isArray(saved.board)
-        ? saved.board.filter((item) => isPlacement(item, boardLabels))
-        : [],
-      // 待上传的墓碑与「拖出板面」标记要跨刷新保留，否则改动会丢
-      removedClues: Array.isArray(saved.removedClues)
-        ? saved.removedClues.filter((id) => typeof id === "string")
-        : [],
-      unplacedClues: Array.isArray(saved.unplacedClues)
-        ? saved.unplacedClues.filter((id) => typeof id === "string")
-        : [],
       user: {
         ...fallback.user,
       },
@@ -171,6 +231,7 @@ function loadState() {
 const state = reactive(loadState());
 
 // 监听游戏状态变化并持久化到 localStorage。
+// 分两条：非账号级偏好写 STORAGE_KEY，收藏板写「当前账号」自己的 key（见 persistBoard）。
 watch(
   state,
   (value) => {
@@ -178,10 +239,6 @@ watch(
       const persistedState = {
         visitedFolders: value.visitedFolders,
         unreadMessages: value.unreadMessages,
-        board: value.board,
-        boardLabels: value.boardLabels,
-        removedClues: value.removedClues,
-        unplacedClues: value.unplacedClues,
         ui: value.ui,
       };
 
@@ -193,9 +250,15 @@ watch(
   { deep: true },
 );
 
+watch(
+  () => [state.board, state.boardLabels, state.removedClues, state.unplacedClues],
+  () => persistBoard(),
+  { deep: true },
+);
+
 // 当前用户身份变化（登录 / 登出 / 切换账号）时集中清空队伍缓存。
 // 不会在新账号的 /team/me 失败时继续渲染上一个账号的队伍、成员与邀请码。
-// 上一个活跃账号：用来区分「登出」和「换账号」—— 后者必须把线索栏也清掉。
+// 上一个活跃账号：只用来判断「身份是否变了」。
 let lastAccountKey = null;
 
 watch(
@@ -204,6 +267,7 @@ watch(
     state.user.team = { loaded: false, team: null, myJoinRequest: null };
     // 未读角标是服务端数据，切换账号时一并清零，避免残留上一账号的未读数。
     state.unreadMessages = 0;
+    state.unreadArchive = 0;
     // 队伍 tips 同理：切换账号后先清空，等新的 /tips/balance 回来再填。
     state.teamTips = {
       loaded: false,
@@ -213,17 +277,33 @@ watch(
     };
     // 处罚状态也不能跨账号残留（否则上一个账号的封禁会把新账号也锁住）。
     state.accountStatus = createEmptyAccountStatus();
-    // 线索栏现在是账号级数据（服务端快照）：换成另一个账号时清掉上一个账号的卡片，
-    // 否则会把 A 的卡片带进 B 的会话，下一次上传还会写进 B 的快照。
-    // 单纯登出（→ null）只作废内存里的服务端快照，重新登录同一账号时本地坐标仍能参与合并。
-    if (accountKey && lastAccountKey && accountKey !== lastAccountKey) {
-      resetClueBoardLocal();
-    } else if (!accountKey) {
-      resetClueBoardSync();
+
+    // 线索栏现在是账号级数据：每个账号只读自己那份本地存档。
+    // 身份一变（含 A → 登出 → B，以及登出本身）就先清空内存板面与服务端基线，
+    // 再按新身份载入 —— 上一个账号的卡片绝不会出现在新账号的界面里，
+    // 也不会被当成差异上传进新账号的快照。
+    if (accountKey !== lastAccountKey) {
+      switchBoardOwner(accountKey);
     }
     lastAccountKey = accountKey;
   },
 );
+
+// 切换收藏板归属：清空内存板面（服务端基线一并作废）→ 载入该账号自己的本地存档。
+// owner 为 null 表示已登出：只清空，不落盘。
+function switchBoardOwner(owner) {
+  const nextOwner = owner ? String(owner) : "";
+  // 先把归属切过去再载入：这之间的任何写盘都会落到新账号的 key 上（板面此时已清空）
+  boardOwner = nextOwner;
+  resetClueBoardLocal();
+  if (!nextOwner) return;
+
+  const saved = loadBoardFor(nextOwner);
+  state.board = saved.board;
+  state.boardLabels = saved.boardLabels;
+  state.removedClues = saved.removedClues;
+  state.unplacedClues = saved.unplacedClues;
+}
 
 // ---------- 派生状态 ----------
 
@@ -574,7 +654,22 @@ function toggleCluePanel() {
 
 // 清空全部游戏进度并恢复初始状态，但保留当前界面设置。
 function resetProgress() {
+  // 板面存档是按账号分 key 的：只把内存清空，重新登录 / 刷新后它还会回来，
+  // 所以这里要把当前账号那份存档一并删掉。
+  // 顺序很重要：先切断归属，否则清空 board 触发的持久化又会把空板面写回同一个 key。
+  const owner = boardOwner;
+  boardOwner = "";
+
   Object.assign(state, createDefaultState(), { ui: state.ui });
+
+  const key = boardStorageKey(owner);
+  if (key) {
+    try {
+      localStorage.removeItem(key);
+    } catch (error) {
+      console.warn("[mistarg2anns] 清空本地收藏板失败", error);
+    }
+  }
 }
 
 // ---------- 队伍操作 ----------
@@ -828,11 +923,14 @@ async function dissolveTeam() {
 // 未读汇总请求代号：轮询、页面切换、标记已读后都会触发，只接受最新一次的结果。
 let unreadRequestGeneration = 0;
 
-// 刷新未读角标（GET /api/msg/mails/summary），把「有未读的对话数」写入全局状态供顶栏与桌面展示。
+// 刷新未读角标（GET /api/msg/mails/summary），把「收件箱 / 归档的未读封数」写入全局状态。
+// 2026-11-11（mistarg.2.0.0）起响应是嵌套形状 { inbox: { unread }, archive: { unread } }，
+// 只按「封」统计、不含自己发的；旧版的 threads / total 字段已不存在。
 // 失败时静默处理，不影响页面主流程。
 async function refreshUnreadSummary() {
   if (!state.user.currentUser) {
     state.unreadMessages = 0;
+    state.unreadArchive = 0;
     return { ok: false };
   }
 
@@ -849,8 +947,14 @@ async function refreshUnreadSummary() {
     ) {
       return { ok: false, stale: true };
     }
-    state.unreadMessages = Number(response?.data?.total ?? 0) || 0;
-    return { ok: true, total: state.unreadMessages };
+    const summary = response?.data ?? {};
+    state.unreadMessages = Number(summary?.inbox?.unread ?? 0) || 0;
+    state.unreadArchive = Number(summary?.archive?.unread ?? 0) || 0;
+    return {
+      ok: true,
+      total: state.unreadMessages,
+      archive: state.unreadArchive,
+    };
   } catch {
     return { ok: false };
   }

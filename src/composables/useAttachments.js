@@ -28,6 +28,17 @@ export function useAttachments({ maxCount = IMAGE_MAX_COUNT, onError } = {}) {
   const issue = ref("");
   let dragDepth = 0;
 
+  // 正在校验（或排队等着校验）的文件数。inspectImageFile 是异步的（要解码图片），
+  // 这段时间 items 里还没有任何一项，所以单看 uploading 会漏掉「正在校验」这个状态：
+  // 选完图立刻点提交就能把不带附件的正文发出去。
+  const validating = ref(0);
+  // 取消代次：clear() / dispose() 时 +1。排队的批次与正在校验的批次都靠它作废 ——
+  // 组件卸载后不该再解码图片、申请预览地址，更不该继续 sign + 上传。
+  let epoch = 0;
+
+  // addFiles 串行化用的链：同一时刻只允许一批在跑。
+  let addChain = Promise.resolve();
+
   function setIssue(text) {
     issue.value = text || "";
     if (issue.value) onError?.(issue.value);
@@ -39,6 +50,9 @@ export function useAttachments({ maxCount = IMAGE_MAX_COUNT, onError } = {}) {
   const uploading = computed(() =>
     items.value.some((item) => item.status === "uploading"),
   );
+  // 「附件还在处理」：正在校验 + 正在上传。提交入口据此禁用，
+  // 否则校验窗口内的点击会发出不带附件的正文。
+  const busy = computed(() => validating.value > 0 || uploading.value);
   const failed = computed(() =>
     items.value.some((item) => item.status === "error"),
   );
@@ -88,10 +102,33 @@ export function useAttachments({ maxCount = IMAGE_MAX_COUNT, onError } = {}) {
   }
 
   // 统一的入口：选择按钮、Ctrl+V、拖拽都调这里。
-  async function addFiles(fileList) {
+  //
+  // 串行化：两批文件同时进来（连按两次粘贴、粘贴 + 拖拽）时，各自算出的剩余名额都是旧值，
+  // 都能通过检查，实际插入后就会突破 maxCount，提交时被服务端整条拒绝。
+  // 排成一条链后，第二批复用第一批发完后的真实数量。
+  function addFiles(fileList) {
     const files = Array.from(fileList || []).filter(Boolean);
-    if (!files.length) return;
+    if (!files.length) return addChain;
 
+    validating.value += files.length;
+    // 入队时记下代次：排到自己时若已经被清理（离开页面），这一批整份丢弃
+    const my = epoch;
+
+    const run = async () => {
+      try {
+        if (my !== epoch) return;
+        await addFilesNow(files, my);
+      } finally {
+        validating.value = Math.max(0, validating.value - files.length);
+      }
+    };
+    // 前一批失败也要继续跑下一批
+    addChain = addChain.then(run, run);
+    return addChain;
+  }
+
+  async function addFilesNow(files, my) {
+    if (my !== epoch) return;
     const slots = maxCount - items.value.length;
     if (slots <= 0) {
       setIssue(`最多只能附带 ${maxCount} 张图片。`);
@@ -107,11 +144,20 @@ export function useAttachments({ maxCount = IMAGE_MAX_COUNT, onError } = {}) {
     const failures = [];
     for (const file of files.slice(0, slots)) {
       const result = await inspectImageFile(file);
+      // 校验期间被清理（离开页面）：剩下的不校验、不插入
+      if (my !== epoch) return;
       if (result.ok) checked.push({ file, result });
       else failures.push(result.reason);
     }
 
+    let skipped = 0;
     for (const { file, result } of checked) {
+      if (my !== epoch) return;
+      // 插入前复查：校验是异步的，期间可能已被别的入口（重试、另一批排队中的文件）占满
+      if (items.value.length >= maxCount) {
+        skipped += 1;
+        continue;
+      }
       items.value.push({
         uid: nextUid(),
         file,
@@ -133,6 +179,7 @@ export function useAttachments({ maxCount = IMAGE_MAX_COUNT, onError } = {}) {
     }
 
     if (failures.length) message = failures[0];
+    else if (skipped > 0) message = `最多只能附带 ${maxCount} 张图片，多余的已忽略。`;
     setIssue(message);
   }
 
@@ -152,6 +199,8 @@ export function useAttachments({ maxCount = IMAGE_MAX_COUNT, onError } = {}) {
   }
 
   function clear() {
+    // 代次 +1：排队中的批次、正在校验的批次都作废（否则卸载后还会建预览地址、继续上传）
+    epoch += 1;
     for (const item of items.value) releasePreview(item);
     items.value = [];
     setIssue("");
@@ -235,6 +284,8 @@ export function useAttachments({ maxCount = IMAGE_MAX_COUNT, onError } = {}) {
     hasItems,
     canAdd,
     uploading,
+    validating,
+    busy,
     failed,
     ready,
     maxCount,

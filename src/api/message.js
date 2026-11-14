@@ -4,13 +4,20 @@ import request from "@/api/request";
 // 成功响应为 { ok: true, data, req_id }；失败为 { ok: false, error: { code, message, detail }, req_id }。
 // 失败时 request 抛出的 Error 带 status / code / payload，调用方读取 error.payload.error.message。
 export const messageApi = {
-  // 邮件列表（GET /api/msg/mails）：每条发信一行，倒序分页；
-  // sinceId > 0 时切换为「取更新」（按 id 正序，轮询用），此时忽略 cursor。
+  // 邮件列表（GET /api/msg/mails）：每次发信一行，倒序分页（前端固定按「邮件」粒度，不用 threaded）；
+  // sinceId > 0 时切换为「取更新」（按 id 正序，忽略 cursor 与 threaded —— 我们不传 threaded）。
+  // 2026-11-11（mistarg.2.0.0）起新增 box/source/answered：
+  //   · box: inbox（默认）/ sent / archive / all —— 默认只给收件箱，自己发的邮件在 sent
+  //   · source: 见 api-8 的 source 枚举，服务端过滤（不再由前端筛）
+  //   · answered: 0 = 只看未回复、1 = 只看已回复
   getMails: ({
     cursor = 0,
     sinceId = 0,
     limit = 20,
+    box,
     channel,
+    source,
+    answered,
     onlyUnread,
   } = {}) =>
     request("/msg/mails", {
@@ -19,21 +26,26 @@ export const messageApi = {
         cursor,
         since_id: sinceId,
         limit,
+        ...(box ? { box } : {}),
         ...(channel ? { channel } : {}),
+        ...(source ? { source } : {}),
+        ...(answered === 0 || answered === 1 ? { answered } : {}),
         ...(onlyUnread ? { only_unread: true } : {}),
       },
       useAuth: true,
     }),
 
-  // 未读汇总（GET /api/msg/mails/summary）：threads = 有未读的对话数，total = 未读条数
+  // 未读汇总（GET /api/msg/mails/summary）：2026-11-11 起为嵌套形状
+  // { inbox: { unread }, archive: { unread } }，只按「封」统计、不含自己发的。
   getMailsSummary: () =>
     request("/msg/mails/summary", {
       method: "GET",
       useAuth: true,
     }),
 
-  // 邮件详情（GET /api/msg/mails/:id）：返回 mail（这一封自身）+ replyChain（它回复过的链，
-  // 时间倒序、只上溯、不含自身与后续回复）；id 传根或任意一条回复都行。
+  // 邮件详情（GET /api/msg/mails/:id）：返回 mail（这一封自身，带 content / attachments）+
+  // replyChain（它回复过的链，时间倒序、只上溯、不含自身与后续回复）+ truncated（祖先超 200 层）。
+  // 正文只在详情里给（列表只有 snippet）；前端的详情页用的就是这个接口。
   getMail: (mailId) =>
     request(`/msg/mails/${mailId}`, {
       method: "GET",
@@ -47,22 +59,54 @@ export const messageApi = {
       useAuth: true,
     }),
 
-  // 发信（POST /api/msg/mails）：省略 replyTo 是发新邮件（subject 必填 1–80）；
-  // 给了 replyTo 则是回复，主题由服务端按根主题生成，客户端传的 subject 会被忽略。
-  // 玩家侧不传 channel：后端不再支持队伍内通讯，新邮件只会落在自己的账号级频道，
-  // 面向官方的新邮件统一走下面的 feedback。
+  // 批量已读（POST /api/msg/mails/read，2026-11-11 新增）：三选一
+  //   { ids: [≤100] } / { rootId }（整条线程）/ { all: true }（当前可见的全部未读）
+  // 只标记非本人发送的邮件；幂等。
+  markReadBatch: ({ ids, rootId, all } = {}) =>
+    request("/msg/mails/read", {
+      method: "POST",
+      body: {
+        ...(Array.isArray(ids) && ids.length ? { ids } : {}),
+        ...(rootId ? { root_id: rootId } : {}),
+        ...(all ? { all: true } : {}),
+      },
+      useAuth: true,
+    }),
+
+  // 归档 / 取消归档（POST /api/msg/mails/archive，2026-11-11 新增）：
+  // { ids: [≤100] } 或 { rootId }（整条线程），archived 必填；
+  // includeUnread=false 时归档跳过未读的非本人邮件（默认 true）。
+  archiveMails: ({ ids, rootId, archived, includeUnread } = {}) =>
+    request("/msg/mails/archive", {
+      method: "POST",
+      body: {
+        ...(Array.isArray(ids) && ids.length ? { ids } : {}),
+        ...(rootId ? { root_id: rootId } : {}),
+        archived: Boolean(archived),
+        ...(includeUnread === false ? { include_unread: false } : {}),
+      },
+      useAuth: true,
+    }),
+
+  // 发信（POST /api/msg/mails）：
+  //   · 省略 replyTo 是发新邮件（subject 必填 1–80；channel 可选 account / team，默认 account）
+  //   · 给了 replyTo 是回复：subject 可省略（服务端生成「回复：…」），传非空值 = 中途改题
+  // 玩家侧的新邮件目前统一走下面的 feedback（不受发信开关影响），所以 channel 基本用不到。
   // attachments（2026-10-31 起）：[{ objectKey, filename, mime, sizeBytes }]，≤3 张，新邮件与回复都支持。
   sendMail: ({
     subject,
     content,
     contentType = "text",
     replyTo,
+    channel,
     attachments,
   } = {}) =>
     request("/msg/mails", {
       method: "POST",
       body: {
-        ...(replyTo ? { reply_to: replyTo } : { subject }),
+        ...(subject ? { subject } : {}),
+        ...(replyTo ? { reply_to: replyTo } : {}),
+        ...(!replyTo && channel ? { channel } : {}),
         content,
         content_type: contentType,
         ...(attachments?.length ? { attachments } : {}),
@@ -106,11 +150,18 @@ export const messageApi = {
       useAuth: true,
     }),
 
-  // 申请更便宜（POST /api/msg/hint/:id/cheaper）：整个提问只允许 1 次，不扣费、不改价
-  requestCheaperHint: (id) =>
+  // 申请更便宜（POST /api/msg/hint/:id/cheaper）：整个提问只允许 1 次，不扣费、不改价。
+  // 2026-11-13（2.2.0）起可带 content（1..2000 可选）与 attachments（≤3 图）：
+  // 它们成为「申请更便宜」邮件的正文 / 图片，staff 在求提示工作台可见；
+  // 响应新增 cheaperMailId（那封邮件）。
+  // 注意：带 content / attachments 时会按禁言口径拦截（403 E_MUTED），都不带则沿用默认文案、不拦。
+  requestCheaperHint: (id, { content, attachments } = {}) =>
     request(`/msg/hint/${id}/cheaper`, {
       method: "POST",
-      body: {},
+      body: {
+        ...(content ? { content } : {}),
+        ...(attachments?.length ? { attachments } : {}),
+      },
       useAuth: true,
     }),
 

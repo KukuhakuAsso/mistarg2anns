@@ -157,6 +157,10 @@ export function useMediaObjectUrl(source) {
   // 释放时要把自己在「失败计数」和「重试句柄」里的登记一起撤掉
   let unregisterRetry = null;
   let failedPath = "";
+  // 加载代次：只有最新一次 load 能改状态与失败计数。
+  // A → 空 → A 会复用同一条记录（activeRecord 相同），只比记录身份会让两个
+  // rejection 处理器都通过，failedCounts 被 +2 而 clear() 只 -1，路径永久残留。
+  let loadSeq = 0;
 
   // getter 与 ref 都要能读到最新值：unref 只解包 ref，函数需要主动调用。
   const readSource = () =>
@@ -182,6 +186,7 @@ export function useMediaObjectUrl(source) {
     const path = String(rawPath ?? "").trim();
     if (!path) return;
 
+    const my = ++loadSeq;
     status.value = "loading";
 
     const record = acquire(path, { fresh });
@@ -191,12 +196,12 @@ export function useMediaObjectUrl(source) {
     try {
       const url = await record.promise;
       // 用记录身份而不是路径判断：A→B→A 这种来回切换时路径会重复，
-      // 只比路径会把迟到的旧响应写进新状态。
-      if (activeRecord !== record) return;
+      // 只比路径会把迟到的旧响应写进新状态；loadSeq 再挡掉复用同一记录的旧加载。
+      if (my !== loadSeq || activeRecord !== record) return;
       src.value = url;
       status.value = "ready";
     } catch (err) {
-      if (activeRecord !== record) return;
+      if (my !== loadSeq || activeRecord !== record) return;
       error.value = err?.message || "素材加载失败";
       status.value = "error";
       bumpFailed(path, 1);
