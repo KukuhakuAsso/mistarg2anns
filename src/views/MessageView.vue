@@ -368,6 +368,8 @@ function matchesMailFilter(item) {
 const filteredMails = computed(() => mails.value.filter(matchesMailFilter));
 
 // ---------- 批量选择（api-8 §8.6 / §8.7） ----------
+// 批量接口单次最多 100 个 id：勾选不设上限，发送时按 100 分片串行发，
+// 不再做「只处理前 100 封却报成功」的静默截断。
 const BATCH_LIMIT = 100;
 const batchBusy = ref("");
 const isSelected = (item) => selectedIds.value.includes(item.mailId);
@@ -380,6 +382,13 @@ const allFilteredSelected = computed(
     ),
 );
 
+// 按 BATCH_LIMIT 分片串行执行：任一片抛错就中断，由调用方决定怎么收尾
+async function forEachBatch(ids, run) {
+  for (let start = 0; start < ids.length; start += BATCH_LIMIT) {
+    await run(ids.slice(start, start + BATCH_LIMIT));
+  }
+}
+
 function toggleSelect(mailId) {
   selectedIds.value = selectedIds.value.includes(mailId)
     ? selectedIds.value.filter((id) => id !== mailId)
@@ -389,7 +398,7 @@ function toggleSelect(mailId) {
 function toggleSelectAll() {
   selectedIds.value = allFilteredSelected.value
     ? []
-    : filteredMails.value.slice(0, BATCH_LIMIT).map((item) => item.mailId);
+    : filteredMails.value.map((item) => item.mailId);
 }
 
 function clearSelection() {
@@ -398,12 +407,26 @@ function clearSelection() {
 
 function selectedRows() {
   const ids = new Set(selectedIds.value);
-  return filteredMails.value
-    .filter((item) => ids.has(item.mailId))
-    .slice(0, BATCH_LIMIT);
+  return filteredMails.value.filter((item) => ids.has(item.mailId));
 }
 
-// 批量已读 / 归档：一次请求传全部 id（`ids` 上限 100，§8.6 / §8.7）。
+// 每一片成功后即时同步本地行状态，中途失败时已处理的那些也不会显示成没处理
+function applyBatchLocally(ids, action) {
+  const selected = new Set(ids);
+  for (const item of mails.value) {
+    if (!selected.has(item.mailId)) continue;
+    if (action === "read") {
+      item.unread = 0;
+      if (item.thread) {
+        item.thread = { ...item.thread, unreadCount: 0 };
+      }
+    } else {
+      item.archived = action === "archive" ? 1 : 0;
+    }
+  }
+}
+
+// 批量已读 / 归档：勾多少处理多少，每片 ≤100（`ids` 上限，§8.6 / §8.7）。
 async function runBatch(action) {
   const rows = selectedRows();
   if (!rows.length || batchBusy.value) {
@@ -411,44 +434,46 @@ async function runBatch(action) {
   }
 
   const ids = rows.map((row) => row.mailId);
+  const label =
+    action === "read"
+      ? "标记为已读"
+      : action === "archive"
+        ? "归档"
+        : "取消归档";
   batchBusy.value = action;
+  const done = [];
   try {
-    if (action === "read") {
-      await messageApi.markReadBatch({ ids });
-    } else {
-      await messageApi.archiveMails({
-        ids,
-        archived: action === "archive",
-      });
-    }
-
-    const selected = new Set(ids);
-    for (const item of mails.value) {
-      if (!selected.has(item.mailId)) continue;
+    await forEachBatch(ids, async (chunk) => {
       if (action === "read") {
-        item.unread = 0;
-        if (item.thread) {
-          item.thread = { ...item.thread, unreadCount: 0 };
-        }
+        await messageApi.markReadBatch({ ids: chunk });
       } else {
-        item.archived = action === "archive" ? 1 : 0;
+        await messageApi.archiveMails({
+          ids: chunk,
+          archived: action === "archive",
+        });
       }
-    }
+      done.push(...chunk);
+      applyBatchLocally(chunk, action);
+    });
 
-    setNotice(
-      "success",
-      action === "read"
-        ? "已标记为已读。"
-        : action === "archive"
-          ? "已归档，可在「归档」文件夹找回。"
-          : "已取消归档。",
-    );
+    setNotice("success", `已${label} ${done.length} 封。`);
     selectedIds.value = [];
-    await Promise.all([loadMails(), refreshUnreadSummary()]);
   } catch (error) {
-    setNotice("error", errorText(error, "批量操作失败。"));
+    // 中途失败：已成功的照实说，没处理的保留勾选，方便直接重试
+    const doneSet = new Set(done);
+    const rest = ids.filter((id) => !doneSet.has(id));
+    selectedIds.value = rest;
+    const detail = errorText(error, "批量操作失败。");
+    setNotice(
+      "error",
+      done.length
+        ? `已${label} ${done.length} 封，剩余 ${rest.length} 封未处理：${detail}`
+        : detail,
+    );
   } finally {
     batchBusy.value = "";
+    // 无论成功还是部分成功，都以服务端为准重拉列表与未读汇总
+    await Promise.all([loadMails(), refreshUnreadSummary()]);
   }
 }
 
@@ -1008,26 +1033,40 @@ async function markActiveThreadRead() {
     return;
   }
 
+  // 批量接口一次最多 100 个 id，而详情里的祖先链最多 200 层：按 100 分片串行发，
+  // 避免一条长会话因为超限整批 400（结果一封都没标上）。
+  const marked = [];
   try {
-    await messageApi.markReadBatch({ ids });
-    // 标记期间可能已切到别的邮件：只清这一封自己的状态
-    if (mail.value?.mailId !== openedId) {
-      return;
-    }
-    for (const message of messages.value) {
-      message.unread = 0;
-    }
-    refreshUnreadSummary();
+    await forEachBatch(ids, async (chunk) => {
+      await messageApi.markReadBatch({ ids: chunk });
+      marked.push(...chunk);
+    });
   } catch (error) {
-    if (mail.value?.mailId !== openedId) {
-      return;
+    // 已成功的那几片照实清掉；切走了就别再动当前这封的状态
+    if (mail.value?.mailId === openedId) {
+      const doneSet = new Set(marked);
+      for (const message of messages.value) {
+        if (doneSet.has(message.mailId)) message.unread = 0;
+      }
+      setNotice("error", errorText(error, "标记已读失败。"));
     }
-    setNotice("error", errorText(error, "标记已读失败。"));
+    return;
   }
+
+  // 标记期间可能已切到别的邮件：只清这一封自己的状态
+  if (mail.value?.mailId !== openedId) {
+    return;
+  }
+  for (const message of messages.value) {
+    message.unread = 0;
+  }
+  refreshUnreadSummary();
 }
 
 // 归档 / 取消归档：整条线程（root_id）。归档不改变已读状态，只是移出收件箱。
-// 归档文件夹里的邮件一律视为「已归档」（按钮就是取消归档），收件箱 / 已发送反之。
+// 「归档」文件夹里的邮件一律视为已归档（按钮就是取消归档），其余文件夹看邮件自己的标记。
+// 注意这里的判断只在**点击那一刻**要正确：动作成功后详情会被关掉（见 toggleThreadArchive），
+// 所以不存在「取消归档之后按钮还停在取消归档」的失真状态。
 const threadArchived = computed(
   () => Number(mail.value?.archived) === 1 || mailboxFilter.value === "archive",
 );
@@ -1043,25 +1082,28 @@ async function toggleThreadArchive() {
   archiveBusy.value = true;
   try {
     await messageApi.archiveMails({ rootId, archived: next });
-    for (const message of messages.value) {
-      message.archived = next ? 1 : 0;
-    }
-    if (mail.value) {
-      mail.value = { ...mail.value, archived: next ? 1 : 0 };
-    }
     setNotice(
       "success",
       next
         ? "已归档，可在「归档」文件夹找回。"
         : "已取消归档，邮件回到原文件夹。",
     );
-    await fetchMail(openedId);
-    await Promise.all([loadMails(), refreshUnreadSummary()]);
+    // 归档后这封多半已经不属于当前文件夹（「归档」里取消归档尤其如此）：直接回列表，
+    // 别让详情停在 archived 与服务端不一致的那一封上。
+    // 期间已经切到别的邮件时只刷列表与未读，别把别人的详情关掉。
+    if (openedId === activeMailId.value) {
+      closeMail(); // 内部已重建列表并刷新未读汇总
+    } else {
+      await Promise.all([loadMails(), refreshUnreadSummary()]);
+    }
   } catch (error) {
-    setNotice(
-      "error",
-      errorText(error, next ? "归档失败。" : "取消归档失败。"),
-    );
+    // 期间已经切到别的邮件：这是上一封的失败，别把提示盖到当前这封头上
+    if (openedId === activeMailId.value) {
+      setNotice(
+        "error",
+        errorText(error, next ? "归档失败。" : "取消归档失败。"),
+      );
+    }
   } finally {
     archiveBusy.value = false;
   }
@@ -1775,6 +1817,11 @@ onMounted(async () => {
   }
 
   document.addEventListener("visibilitychange", handleVisibilityChange);
+  // 先起轮询再 await 初始化：初始化期间就卸载的话，onBeforeUnmount 拿到的 timer 一定有效，
+  // 不会在挂载回调恢复执行后留下一个没人清理的 setInterval。
+  // 轮询自身有守卫（页面不可见 / 详情打开 / 写信页 / 列表加载中 / 无 since_id 基准都跳过），
+  // 提前起步不会和下面的初始化重复发请求。
+  startMailPolling();
   // 未读角标（GET /msg/mails/summary）由 App.vue 的全局轮询统一负责，本页只加载自己的数据。
   // 附件开关随页面取一次（策略因用户而异，不进缓存；拿不到就按关闭处理）。
   await Promise.all([
@@ -1783,8 +1830,6 @@ onMounted(async () => {
     restoreOpenHints(),
     loadPolicy(),
   ]);
-  // 列表页的增量拉新（since_id），每分钟一次；详情 / 写信时不跑
-  startMailPolling();
 });
 
 onBeforeUnmount(() => {
@@ -2345,7 +2390,7 @@ onBeforeUnmount(() => {
                 </div>
               </header>
 
-              <!-- 批量操作：勾选行之后出现（一次最多 100 项） -->
+              <!-- 批量操作：勾选行之后出现（按 100 分片发送，勾多少处理多少） -->
               <div v-if="selectedCount" class="inbox-batch-bar">
                 <span class="toolbar-label">已选 {{ selectedCount }} 项</span>
                 <div class="toolbar-group">
