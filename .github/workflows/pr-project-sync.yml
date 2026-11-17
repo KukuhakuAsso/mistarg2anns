@@ -1,5 +1,9 @@
 # =============================================================================
-# PR ↔ GitHub Project 2 / cross-repo issue automation
+# PR ↔ GitHub Projects / cross-repo issue automation
+#
+# Two boards:
+#   - Project 2 (ISSUE_PROJECT_NUMBER): issues only
+#   - Project 3 (PR_PROJECT_NUMBER): PRs only (this workflow adds every PR)
 #
 # Location: .github/workflows/pr-project-sync.yml in
 #           KukuhakuAsso/ku2hakuasso-admin and KukuhakuAsso/mistarg2anns
@@ -35,14 +39,15 @@ permissions:
 
 env:
     # ↓↓↓↓↓↓↓↓↓↓ per-repo configuration ↓↓↓↓↓↓↓↓↓↓
-    MODULE_VALUE: ku2hakuasso-admin # option name of the Project 2 "Module" field
+    MODULE_VALUE: ku2hakuasso-admin # option name of the PR project "Module" field
     MODULE_LABEL: module:admin # label added to the PR (warning only if missing)
     DEFAULT_BRANCH: main # only PRs merged into this branch close the issue
     # ↑↑↑↑↑↑↑↑↑↑ per-repo configuration ↑↑↑↑↑↑↑↑↑↑
 
     # shared configuration
     PROJECT_OWNER: KukuhakuAsso
-    PROJECT_NUMBER: "2"
+    ISSUE_PROJECT_NUMBER: "2" # Project 2: issues only
+    PR_PROJECT_NUMBER: "3" # Project 3: PR tracking
     ISSUE_REPO: KukuhakuAsso/issue # single issue tracker
     STATUS_FIELD: Status
     MODULE_FIELD: Module
@@ -115,9 +120,9 @@ jobs:
                   fi
 
             # ------------------------------------------------------------------
-            # 1) The PR itself: add to Project 2, set Status and Module
+            # 1) The PR itself: add to the PR project (Project 3), set Status and Module
             # ------------------------------------------------------------------
-            - name: PR | add to Project 2 and set Status / Module
+            - name: PR | add to the PR project and set Status / Module
               if: steps.guard.outputs.ready == 'true'
               env:
                   PR_URL: ${{ github.event.pull_request.html_url }}
@@ -126,18 +131,18 @@ jobs:
                   set -uo pipefail
 
                   # idempotent: item-add fails when the item already exists
-                  gh project item-add "$PROJECT_NUMBER" --owner "$PROJECT_OWNER" --url "$PR_URL" >/dev/null 2>&1 || true
+                  gh project item-add "$PR_PROJECT_NUMBER" --owner "$PROJECT_OWNER" --url "$PR_URL" >/dev/null 2>&1 || true
 
                   case "$ACTION" in
                       closed) PR_STATUS="Done" ;;
                       *)      PR_STATUS="$STATUS_IN_REVIEW" ;;
                   esac
 
-                  gh project item-edit "$PROJECT_NUMBER" --owner "$PROJECT_OWNER" --url "$PR_URL" \
+                  gh project item-edit "$PR_PROJECT_NUMBER" --owner "$PROJECT_OWNER" --url "$PR_URL" \
                       --field "$STATUS_FIELD" --value "$PR_STATUS" \
                       || echo "::warning::failed to set PR status: check that Status has the option \"$PR_STATUS\""
 
-                  gh project item-edit "$PROJECT_NUMBER" --owner "$PROJECT_OWNER" --url "$PR_URL" \
+                  gh project item-edit "$PR_PROJECT_NUMBER" --owner "$PROJECT_OWNER" --url "$PR_URL" \
                       --field "$MODULE_FIELD" --value "$MODULE_VALUE" \
                       || echo "::warning::failed to set Module: check that the \"$MODULE_FIELD\" field and option \"$MODULE_VALUE\" exist"
 
@@ -227,31 +232,12 @@ jobs:
               env:
                   PR_URL: ${{ github.event.pull_request.html_url }}
               run: |
-                  gh project item-edit "$PROJECT_NUMBER" --owner "$PROJECT_OWNER" --url "$PR_URL" \
+                  gh project item-edit "$PR_PROJECT_NUMBER" --owner "$PROJECT_OWNER" --url "$PR_URL" \
                       --field "$STATUS_FIELD" --value "$STATUS_CHORE_DONE" \
                       || echo "::warning::failed to set \"$STATUS_CHORE_DONE\": check that Status has this option"
 
             # ------------------------------------------------------------------
-            # 2c) PRs linked to an issue keep only the ISSUE item on the board.
-            #     Remove the PR item if it was (or previously got) added.
-            # ------------------------------------------------------------------
-            - name: PR | remove project item for issue-linked PRs
-              if: steps.guard.outputs.ready == 'true' && steps.refs.outputs.count != '0'
-              env:
-                  PR_URL: ${{ github.event.pull_request.html_url }}
-              run: |
-                  set -uo pipefail
-                  item_id="$(gh project item-list "$PROJECT_NUMBER" --owner "$PROJECT_OWNER" --limit 1000 --format json \
-                      --jq ".items[] | select(.content.url == \"$PR_URL\") | .id" 2>/dev/null | head -n 1 || true)"
-                  if [ -n "$item_id" ]; then
-                      gh project item-delete "$PROJECT_NUMBER" --owner "$PROJECT_OWNER" --id "$item_id" \
-                          && echo "removed PR item $item_id (issue-linked PR keeps only the issue item)"
-                  else
-                      echo "no project item for this PR, nothing to remove"
-                  fi
-
-            # ------------------------------------------------------------------
-            # 3) React per PR event: In Review / rollback / close after merge
+            # 3) React per PR event on the LINKED ISSUE (issue project only)
             # ------------------------------------------------------------------
             - name: issue | comment / rollback / close after merge
               if: steps.guard.outputs.ready == 'true' && steps.refs.outputs.count != '0'
@@ -265,19 +251,19 @@ jobs:
               run: |
                   set -uo pipefail
 
-                  # Ensure the issue is in Project 2 and set its status.
+                  # Ensure the issue is in the issue project (Project 2) and set its status.
                   # Retry a few times because built-in auto-add can lag.
                   ensure_in_project() {
                       local url="$1" status="$2" i
                       for i in 1 2 3 4 5; do
-                          if gh project item-edit "$PROJECT_NUMBER" --owner "$PROJECT_OWNER" \
+                          if gh project item-edit "$ISSUE_PROJECT_NUMBER" --owner "$PROJECT_OWNER" \
                               --url "$url" --field "$STATUS_FIELD" --value "$status" >/dev/null 2>&1; then
                               return 0
                           fi
-                          gh project item-add "$PROJECT_NUMBER" --owner "$PROJECT_OWNER" --url "$url" >/dev/null 2>&1 || true
+                          gh project item-add "$ISSUE_PROJECT_NUMBER" --owner "$PROJECT_OWNER" --url "$url" >/dev/null 2>&1 || true
                           sleep 2
                       done
-                      echo "::warning::could not add $url to Project 2 or set its status (check the App/PAT project permission)"
+                      echo "::warning::could not add $url to the issue project or set its status (check the App/PAT project permission)"
                       return 1
                   }
 
