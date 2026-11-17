@@ -1,0 +1,290 @@
+# =============================================================================
+# PR ↔ GitHub Project 2 / cross-repo issue automation
+#
+# Location: .github/workflows/pr-project-sync.yml in
+#           KukuhakuAsso/ku2hakuasso-admin and KukuhakuAsso/mistarg2anns
+#           Each repo has its own copy; only change the "per repo" block below.
+#
+# Why pull_request_target:
+#   - The workflow runs in the context of the DEFAULT branch (the workflow file
+#     is taken from the default branch), has access to secrets (even for PRs
+#     from forks), and never checks out untrusted PR code.
+#   - Note: the file must be merged into the default branch (main / master)
+#     before it takes effect.
+#
+# Closing rule (see BASE_REF check below):
+#   Only PRs merged into the DEFAULT branch (DEFAULT_BRANCH, e.g. main) close
+#   the linked issue. PRs merged into any other branch only sync the board.
+#
+# Why a GitHub App token (org secrets APP_ID / APP_PRIVATE_KEY):
+#   - Closing an issue in KukuhakuAsso/issue needs write access to that repo;
+#   - Updating an organization-level Project needs project write access;
+#   - GITHUB_TOKEN is scoped to the current repo and can do neither.
+#   A PAT (secrets.AUTOMATION_TOKEN) is supported as a fallback for transition.
+# =============================================================================
+name: PR ↔ Project / issue sync
+
+on:
+    pull_request_target:
+        types: [opened, reopened, synchronize, edited, closed]
+
+permissions:
+    contents: read
+    issues: write # comment on same-repo issues when referenced
+    pull-requests: write # add labels to the PR
+
+env:
+    # ↓↓↓↓↓↓↓↓↓↓ per-repo configuration ↓↓↓↓↓↓↓↓↓↓
+    MODULE_VALUE: 2anns # option name of the Project 2 "Module" field
+    MODULE_LABEL: module:2anns # label added to the PR (warning only if missing)
+    DEFAULT_BRANCH: main # only PRs merged into this branch close the issue
+    # ↑↑↑↑↑↑↑↑↑↑ per-repo configuration ↑↑↑↑↑↑↑↑↑↑
+
+    # shared configuration
+    PROJECT_OWNER: KukuhakuAsso
+    PROJECT_NUMBER: "2"
+    ISSUE_REPO: KukuhakuAsso/issue # single issue tracker
+    STATUS_FIELD: Status
+    MODULE_FIELD: Module
+    STATUS_IN_REVIEW: In Review
+    STATUS_IN_PROGRESS: In Progress
+    STATUS_DONE: Done
+
+concurrency:
+    group: pr-automation-${{ github.event.pull_request.number }}
+    cancel-in-progress: true
+
+jobs:
+    sync:
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Preflight | choose token source (GitHub App first, PAT fallback)
+              id: guard
+              env:
+                  APP_ID: ${{ secrets.APP_ID }}
+                  APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+                  PAT: ${{ secrets.AUTOMATION_TOKEN }}
+              run: |
+                  if [ -n "${APP_ID:-}" ] && [ -n "${APP_PRIVATE_KEY:-}" ]; then
+                      source=app
+                      ready=true
+                      echo "::notice::using GitHub App token"
+                  elif [ -n "${PAT:-}" ]; then
+                      source=pat
+                      ready=true
+                      echo "::notice::App secrets not found, falling back to AUTOMATION_TOKEN"
+                  else
+                      source=none
+                      ready=false
+                      echo "::warning::neither APP_ID/APP_PRIVATE_KEY nor AUTOMATION_TOKEN is configured; skipping project sync and cross-repo close"
+                  fi
+                  echo "source=$source" >> "$GITHUB_OUTPUT"
+                  echo "ready=$ready" >> "$GITHUB_OUTPUT"
+
+            - name: Mint GitHub App token
+              if: steps.guard.outputs.source == 'app'
+              id: app-token
+              uses: actions/create-github-app-token@v3
+              with:
+                  app-id: ${{ secrets.APP_ID }}
+                  private-key: ${{ secrets.APP_PRIVATE_KEY }}
+                  owner: KukuhakuAsso
+                  # The App is installed on all repos; scope the token to just
+                  # the issue tracker + the current repo.
+                  repositories: issue,${{ github.event.repository.name }}
+                  # Narrow the token to what the scripts actually use.
+                  permission-organization-projects: write
+                  permission-issues: write
+                  permission-pull-requests: read
+
+            - name: Export GH_TOKEN for the following steps
+              if: steps.guard.outputs.ready == 'true'
+              env:
+                  SOURCE: ${{ steps.guard.outputs.source }}
+                  APP_TOKEN: ${{ steps.app-token.outputs.token }}
+                  PAT: ${{ secrets.AUTOMATION_TOKEN }}
+              run: |
+                  if [ "$SOURCE" = "app" ]; then
+                      echo "GH_TOKEN=$APP_TOKEN" >> "$GITHUB_ENV"
+                  else
+                      echo "GH_TOKEN=$PAT" >> "$GITHUB_ENV"
+                  fi
+
+            # ------------------------------------------------------------------
+            # 1) The PR itself: add to Project 2, set Status and Module
+            # ------------------------------------------------------------------
+            - name: PR | add to Project 2 and set Status / Module
+              if: steps.guard.outputs.ready == 'true'
+              env:
+                  PR_URL: ${{ github.event.pull_request.html_url }}
+                  ACTION: ${{ github.event.action }}
+              run: |
+                  set -uo pipefail
+
+                  # idempotent: item-add fails when the item already exists
+                  gh project item-add "$PROJECT_NUMBER" --owner "$PROJECT_OWNER" --url "$PR_URL" >/dev/null 2>&1 || true
+
+                  case "$ACTION" in
+                      closed) PR_STATUS="Done" ;;
+                      *)      PR_STATUS="$STATUS_IN_REVIEW" ;;
+                  esac
+
+                  gh project item-edit "$PROJECT_NUMBER" --owner "$PROJECT_OWNER" --url "$PR_URL" \
+                      --field "$STATUS_FIELD" --value "$PR_STATUS" \
+                      || echo "::warning::failed to set PR status: check that Status has the option \"$PR_STATUS\""
+
+                  gh project item-edit "$PROJECT_NUMBER" --owner "$PROJECT_OWNER" --url "$PR_URL" \
+                      --field "$MODULE_FIELD" --value "$MODULE_VALUE" \
+                      || echo "::warning::failed to set Module: check that the \"$MODULE_FIELD\" field and option \"$MODULE_VALUE\" exist"
+
+            - name: PR | add module label (optional)
+              if: steps.guard.outputs.ready == 'true' && github.event.action != 'closed'
+              env:
+                  PR_URL: ${{ github.event.pull_request.html_url }}
+              run: |
+                  gh pr edit "$PR_URL" --add-label "$MODULE_LABEL" 2>/dev/null \
+                      || echo "::notice::label \"$MODULE_LABEL\" is missing or not permitted; skipped (run scripts/setup-labels.sh)"
+
+            # ------------------------------------------------------------------
+            # 2) Parse issue references from the PR
+            #    Supported: Closes KukuhakuAsso/issue#12 / Fixes #12 (same repo)
+            #               / any KukuhakuAsso/issue#12 mention
+            #               / branch names like issue-12 or issue/12
+            #    Only the current repo and KukuhakuAsso/issue are allowed, so a
+            #    malicious PR body cannot make us close issues in other repos.
+            # ------------------------------------------------------------------
+            - name: issue | parse linked issues
+              id: refs
+              if: steps.guard.outputs.ready == 'true'
+              env:
+                  PR_TITLE: ${{ github.event.pull_request.title }}
+                  PR_BODY: ${{ github.event.pull_request.body }}
+                  HEAD_REF: ${{ github.event.pull_request.head.ref }}
+                  CURRENT_REPO: ${{ github.repository }}
+                  TRACKER_REPO: ${{ env.ISSUE_REPO }}
+              run: |
+                  set -uo pipefail
+
+                  python3 - > refs.txt <<'PY'
+                  import os, re
+
+                  title = os.environ.get("PR_TITLE") or ""
+                  body = os.environ.get("PR_BODY") or ""
+                  head = os.environ.get("HEAD_REF") or ""
+                  text = "\n".join([title, body, head])
+
+                  current = os.environ["CURRENT_REPO"].lower()
+                  tracker = os.environ["TRACKER_REPO"].lower()
+                  allowed = {current, tracker}
+                  refs = set()
+
+                  # 1) closing keywords: Closes #12 / Fixes KukuhakuAsso/issue#12
+                  keyword = re.compile(
+                      r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs?)\b\s*:?\s*"
+                      r"(?:([a-z0-9_.-]+/[a-z0-9_.-]+))?#(\d+)"
+                  )
+                  # 2) explicit KukuhakuAsso/issue#12 anywhere
+                  explicit = re.compile(r"(?i)\b(kukuhakuasso/issue)#(\d+)")
+                  # 3) branch convention: feature/issue-12, fix/issue/12
+                  branch = re.compile(r"(?i)\bissue[-/_](\d+)\b")
+
+                  for m in keyword.finditer(text):
+                      repo = (m.group(1) or current).lower()
+                      if repo in allowed:
+                          refs.add((repo, int(m.group(2))))
+
+                  for m in explicit.finditer(text):
+                      repo = m.group(1).lower()
+                      if repo in allowed:
+                          refs.add((repo, int(m.group(2))))
+
+                  for m in branch.finditer(head):
+                      refs.add((tracker, int(m.group(1))))
+
+                  for repo, num in sorted(refs):
+                      print(f"{repo}\t{num}")
+                  PY
+
+                  count="$(wc -l < refs.txt | tr -d ' ')"
+                  echo "count=$count" >> "$GITHUB_OUTPUT"
+                  if [ "$count" = "0" ]; then
+                      echo "::notice::no KukuhakuAsso/issue#N reference found, skipping issue sync"
+                  else
+                      echo "found $count linked issue(s):"
+                      cat refs.txt
+                  fi
+
+            # ------------------------------------------------------------------
+            # 3) React per PR event: In Review / rollback / close after merge
+            # ------------------------------------------------------------------
+            - name: issue | comment / rollback / close after merge
+              if: steps.guard.outputs.ready == 'true' && steps.refs.outputs.count != '0'
+              env:
+                  PR_URL: ${{ github.event.pull_request.html_url }}
+                  PR_REPO: ${{ github.repository }}
+                  BASE_REF: ${{ github.event.pull_request.base.ref }}
+                  MERGED: ${{ github.event.pull_request.merged }}
+                  ACTION: ${{ github.event.action }}
+                  DEFAULT_BRANCH: ${{ env.DEFAULT_BRANCH }}
+              run: |
+                  set -uo pipefail
+
+                  # Ensure the issue is in Project 2 and set its status.
+                  # Retry a few times because built-in auto-add can lag.
+                  ensure_in_project() {
+                      local url="$1" status="$2" i
+                      for i in 1 2 3 4 5; do
+                          if gh project item-edit "$PROJECT_NUMBER" --owner "$PROJECT_OWNER" \
+                              --url "$url" --field "$STATUS_FIELD" --value "$status" >/dev/null 2>&1; then
+                              return 0
+                          fi
+                          gh project item-add "$PROJECT_NUMBER" --owner "$PROJECT_OWNER" --url "$url" >/dev/null 2>&1 || true
+                          sleep 2
+                      done
+                      echo "::warning::could not add $url to Project 2 or set its status (check the App/PAT project permission)"
+                      return 1
+                  }
+
+                  while IFS=$'\t' read -r repo num; do
+                      [ -n "${repo:-}" ] || continue
+                      url="https://github.com/$repo/issues/$num"
+                      state="$(gh api "repos/$repo/issues/$num" --jq .state 2>/dev/null || true)"
+
+                      if [ -z "$state" ]; then
+                          echo "::warning::cannot read $url (missing, transferred, or no permission)"
+                          continue
+                      fi
+
+                      if [ "$ACTION" = "closed" ] && [ "$MERGED" = "true" ]; then
+                          # Only merges into the default branch close the issue.
+                          if [ "$BASE_REF" != "$DEFAULT_BRANCH" ]; then
+                              echo "::notice::$url not closed: PR merged into \"$BASE_REF\", not the default branch \"$DEFAULT_BRANCH\""
+                              continue
+                          fi
+                          if [ "$state" = "open" ]; then
+                              gh issue close "$url" --reason completed \
+                                  --comment "Merged in ${PR_URL} (repo \`${PR_REPO}\`, base \`${BASE_REF}\`). Closed automatically." \
+                                  && echo "closed $url"
+                          else
+                              echo "$url is already $state, skipping close"
+                          fi
+                          # Make sure the board converges even if the built-in
+                          # "Item closed → Done" workflow is disabled.
+                          ensure_in_project "$url" "$STATUS_DONE" || true
+                      elif [ "$ACTION" = "closed" ]; then
+                          if [ "$state" = "open" ]; then
+                              ensure_in_project "$url" "$STATUS_IN_PROGRESS" || true
+                              gh issue comment "$url" \
+                                  --body "PR ${PR_URL} was closed without merging; issue moved back to \`${STATUS_IN_PROGRESS}\`." || true
+                          fi
+                      else
+                          ensure_in_project "$url" "$STATUS_IN_REVIEW" || true
+                          if [ "$ACTION" = "opened" ] || [ "$ACTION" = "reopened" ]; then
+                              gh issue comment "$url" \
+                                  --body "PR opened: ${PR_URL} (repo \`${PR_REPO}\`, base \`${BASE_REF}\`)" || true
+                          fi
+                      fi
+                  done < refs.txt
+
+                  echo "--- sync finished ---"
