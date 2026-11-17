@@ -54,9 +54,9 @@ env:
     STATUS_IN_REVIEW: In Review
     STATUS_IN_PROGRESS: In Progress
     STATUS_DONE: Done
-    STATUS_SUB_ISSUE: detail done
-    STATUS_CHORE_DONE: chore done
-    STATUS_PS: ps
+    STATUS_SUB_ISSUE: Detail Done
+    STATUS_CHORE_DONE: Chore Done
+    STATUS_PS: PS
 
 concurrency:
     group: pr-automation-${{ github.event.pull_request.number }}
