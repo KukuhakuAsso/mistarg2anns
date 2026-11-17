@@ -35,8 +35,8 @@ permissions:
 
 env:
     # ↓↓↓↓↓↓↓↓↓↓ per-repo configuration ↓↓↓↓↓↓↓↓↓↓
-    MODULE_VALUE: 2anns # option name of the Project 2 "Module" field
-    MODULE_LABEL: module:2anns # label added to the PR (warning only if missing)
+    MODULE_VALUE: ku2hakuasso-admin # option name of the Project 2 "Module" field
+    MODULE_LABEL: module:admin # label added to the PR (warning only if missing)
     DEFAULT_BRANCH: main # only PRs merged into this branch close the issue
     # ↑↑↑↑↑↑↑↑↑↑ per-repo configuration ↑↑↑↑↑↑↑↑↑↑
 
@@ -49,6 +49,7 @@ env:
     STATUS_IN_REVIEW: In Review
     STATUS_IN_PROGRESS: In Progress
     STATUS_DONE: Done
+    STATUS_SUB_ISSUE: detail done
 
 concurrency:
     group: pr-automation-${{ github.event.pull_request.number }}
@@ -256,6 +257,22 @@ jobs:
                           continue
                       fi
 
+                      # Sub-issues are tracked in the "detail done" status at
+                      # every stage; parent issues follow the normal flow.
+                      parent="$(gh api graphql \
+                          -f query="query { repository(owner: \"${repo%%/*}\", name: \"${repo#*/}\") { issue(number: $num) { parent { number } } } }" \
+                          --jq '.data.repository.issue.parent.number // empty' 2>/dev/null || true)"
+                      if [ -n "$parent" ]; then
+                          REVIEW_STATUS="$STATUS_SUB_ISSUE"
+                          ROLLBACK_STATUS="$STATUS_SUB_ISSUE"
+                          MERGED_STATUS="$STATUS_SUB_ISSUE"
+                          echo "$url is a sub-issue of #$parent; using status \"$STATUS_SUB_ISSUE\""
+                      else
+                          REVIEW_STATUS="$STATUS_IN_REVIEW"
+                          ROLLBACK_STATUS="$STATUS_IN_PROGRESS"
+                          MERGED_STATUS="$STATUS_DONE"
+                      fi
+
                       if [ "$ACTION" = "closed" ] && [ "$MERGED" = "true" ]; then
                           # Only merges into the default branch close the issue.
                           if [ "$BASE_REF" != "$DEFAULT_BRANCH" ]; then
@@ -269,17 +286,15 @@ jobs:
                           else
                               echo "$url is already $state, skipping close"
                           fi
-                          # Make sure the board converges even if the built-in
-                          # "Item closed → Done" workflow is disabled.
-                          ensure_in_project "$url" "$STATUS_DONE" || true
+                          ensure_in_project "$url" "$MERGED_STATUS" || true
                       elif [ "$ACTION" = "closed" ]; then
                           if [ "$state" = "open" ]; then
-                              ensure_in_project "$url" "$STATUS_IN_PROGRESS" || true
+                              ensure_in_project "$url" "$ROLLBACK_STATUS" || true
                               gh issue comment "$url" \
-                                  --body "PR ${PR_URL} was closed without merging; issue moved back to \`${STATUS_IN_PROGRESS}\`." || true
+                                  --body "PR ${PR_URL} was closed without merging; issue moved back to \`${ROLLBACK_STATUS}\`." || true
                           fi
                       else
-                          ensure_in_project "$url" "$STATUS_IN_REVIEW" || true
+                          ensure_in_project "$url" "$REVIEW_STATUS" || true
                           if [ "$ACTION" = "opened" ] || [ "$ACTION" = "reopened" ]; then
                               gh issue comment "$url" \
                                   --body "PR opened: ${PR_URL} (repo \`${PR_REPO}\`, base \`${BASE_REF}\`)" || true
