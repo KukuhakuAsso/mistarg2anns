@@ -237,6 +237,26 @@ jobs:
                       || echo "::warning::failed to set \"$STATUS_CHORE_DONE\": check that Status has this option"
 
             # ------------------------------------------------------------------
+            # 2c) PRs linked to an issue keep only the ISSUE item on the board.
+            #     Remove the PR item (it is not needed: the issue carries the
+            #     In Review / Done status).
+            # ------------------------------------------------------------------
+            - name: PR | remove project item for issue-linked PRs
+              if: steps.guard.outputs.ready == 'true' && steps.refs.outputs.count != '0'
+              env:
+                  PR_URL: ${{ github.event.pull_request.html_url }}
+              run: |
+                  set -uo pipefail
+                  item_id="$(gh project item-list "$PROJECT_NUMBER" --owner "$PROJECT_OWNER" --limit 1000 --format json \
+                      --jq ".items[] | select(.content.url == \"$PR_URL\") | .id" 2>/dev/null | head -n 1 || true)"
+                  if [ -n "$item_id" ]; then
+                      gh project item-delete "$PROJECT_NUMBER" --owner "$PROJECT_OWNER" --id "$item_id" \
+                          && echo "removed PR item $item_id (issue-linked PR keeps only the issue item)"
+                  else
+                      echo "no project item for this PR, nothing to remove"
+                  fi
+
+            # ------------------------------------------------------------------
             # 3) React per PR event on the LINKED ISSUE status in Project 2
             # ------------------------------------------------------------------
             - name: issue | comment / rollback / close after merge
