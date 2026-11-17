@@ -51,6 +51,7 @@ env:
     STATUS_DONE: Done
     STATUS_SUB_ISSUE: detail done
     STATUS_CHORE_DONE: chore done
+    STATUS_PS: ps
 
 concurrency:
     group: pr-automation-${{ github.event.pull_request.number }}
@@ -290,12 +291,19 @@ jobs:
                           continue
                       fi
 
-                      # Sub-issues are tracked in the "detail done" status at
-                      # every stage; parent issues follow the normal flow.
+                      # Announcements (label "announcement") stay in "ps";
+                      # sub-issues in "detail done"; parent issues follow the
+                      # normal In Review -> Done flow.
+                      labels="$(gh api "repos/$repo/issues/$num" --jq '[.labels[].name] | join(",")' 2>/dev/null || true)"
                       parent="$(gh api graphql \
                           -f query="query { repository(owner: \"${repo%%/*}\", name: \"${repo#*/}\") { issue(number: $num) { parent { number } } } }" \
                           --jq '.data.repository.issue.parent.number // empty' 2>/dev/null || true)"
-                      if [ -n "$parent" ]; then
+                      if echo ",$labels," | grep -q ",announcement,"; then
+                          REVIEW_STATUS="$STATUS_PS"
+                          ROLLBACK_STATUS="$STATUS_PS"
+                          MERGED_STATUS="$STATUS_PS"
+                          echo "$url is an announcement; keeping status \"$STATUS_PS\""
+                      elif [ -n "$parent" ]; then
                           REVIEW_STATUS="$STATUS_SUB_ISSUE"
                           ROLLBACK_STATUS="$STATUS_SUB_ISSUE"
                           MERGED_STATUS="$STATUS_SUB_ISSUE"
