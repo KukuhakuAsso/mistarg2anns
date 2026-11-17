@@ -50,6 +50,7 @@ env:
     STATUS_IN_PROGRESS: In Progress
     STATUS_DONE: Done
     STATUS_SUB_ISSUE: detail done
+    STATUS_CHORE_DONE: chore done
 
 concurrency:
     group: pr-automation-${{ github.event.pull_request.number }}
@@ -215,6 +216,19 @@ jobs:
                       echo "found $count linked issue(s):"
                       cat refs.txt
                   fi
+
+            # ------------------------------------------------------------------
+            # 2b) Closed PR without a linked issue -> chore done
+            #     (chore PRs: version bumps, submodule syncs, etc.)
+            # ------------------------------------------------------------------
+            - name: PR | closed without a linked issue -> chore done
+              if: steps.guard.outputs.ready == 'true' && github.event.action == 'closed' && steps.refs.outputs.count == '0'
+              env:
+                  PR_URL: ${{ github.event.pull_request.html_url }}
+              run: |
+                  gh project item-edit "$PROJECT_NUMBER" --owner "$PROJECT_OWNER" --url "$PR_URL" \
+                      --field "$STATUS_FIELD" --value "$STATUS_CHORE_DONE" \
+                      || echo "::warning::failed to set \"$STATUS_CHORE_DONE\": check that Status has this option"
 
             # ------------------------------------------------------------------
             # 3) React per PR event: In Review / rollback / close after merge
