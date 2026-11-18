@@ -67,6 +67,28 @@ export function extractFieldMessages(source) {
   return messages;
 }
 
+// 取出机读错误信息：code / reason_code 以及限流的秒数。
+//
+// 分支判断只看这些字段，不要去匹配中文 message —— 文案会改、会本地化，reason_code 才是稳定契约。
+// 注意这些键在错误体的**顶层 detail 上**，不是 detail.fields 的键。
+export function extractErrorInfo(source) {
+  const payload = resolveErrorPayload(source);
+  const detail = payload.error?.detail ?? payload.detail ?? {};
+  const toSeconds = (value) => {
+    const seconds = Number(value);
+    return Number.isFinite(seconds) && seconds >= 0
+      ? Math.floor(seconds)
+      : null;
+  };
+
+  return {
+    code: payload.error?.code || payload.code || source?.code || "",
+    reasonCode: detail?.reason_code || "",
+    retryAfterSec: toSeconds(detail?.retry_after_sec),
+    resendAfterSec: toSeconds(detail?.resend_after_sec),
+  };
+}
+
 // 把错误整理成一句展示文案；source 可以是响应体，也可以是抛出的 Error。
 export function extractErrorMessage(source, fallback = DEFAULT_ERROR_MESSAGE) {
   const payload = resolveErrorPayload(source);
