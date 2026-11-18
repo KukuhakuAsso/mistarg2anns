@@ -6,6 +6,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { meApi } from "@/api/me";
 import { extractErrorMessage } from "@/api/errors";
+import { isAccountBanStatus, BAN_SCOPE_TEAM, resolveErrorBanScope } from "@/utils/banScope";
 import { useGameState } from "@/composables/useGameState";
 import { useStatusMessage } from "@/composables/useStatusMessage";
 import { useAttachments } from "@/composables/useAttachments";
@@ -83,7 +84,9 @@ const appealPlaceholder = computed(() => {
 });
 
 const isLoggedIn = computed(() => Boolean(state.user.currentUser));
-const banned = computed(() => Boolean(status.value?.banned));
+// /me/status 的 banned 是「等效门禁状态」（含队伍封禁），不能直接当账号封禁展示：
+// 个人封禁 > 队伍封禁 > 禁言（文档口径），accountBanned 按处罚来源区分。
+const accountBanned = computed(() => isAccountBanStatus(status.value));
 const muted = computed(() => Boolean(status.value?.muted));
 const teamInfo = computed(() => status.value?.team || null);
 // 队伍封禁（team.status=4）：全局门禁里只锁参赛与队伍结构，队长可代表队伍申诉
@@ -119,7 +122,7 @@ function untilText(value, verb) {
 // 顶部状态卡：账号封禁 > 队伍封禁 > 账号禁言 > 队伍禁言 > 正常
 // （文档口径：封禁 > 禁言；同级别时账号级 > 队伍级）
 const statusCard = computed(() => {
-  if (banned.value) {
+  if (accountBanned.value) {
     return {
       tone: "danger",
       title: "账号已被封禁",
@@ -304,7 +307,9 @@ async function loadChain(target = scope.value) {
     setMessage(
       "error",
       error?.code === "E_BANNED"
-        ? "账号已被封禁，仅可查看申诉。"
+        ? resolveErrorBanScope(error) === BAN_SCOPE_TEAM
+          ? "所在队伍已被封禁，仅可查看申诉。"
+          : "账号已被封禁，仅可查看申诉。"
         : extractErrorMessage(error, "读取申诉记录失败。"),
     );
   }
@@ -506,13 +511,13 @@ onBeforeUnmount(() => {
             <span>{{ statusCard.detail }}</span>
           </div>
 
-          <p v-if="banned" class="helper-text">
+          <p v-if="accountBanned" class="helper-text">
             账号封禁期间功能页全部不可用（403），仅申诉相关接口放行；
             仍可前往「注册 / 登录」页更换账号或重新登录。
           </p>
           <p v-else-if="teamBanned" class="helper-text">
-            队伍封禁只冻结参赛与队伍结构（取题 / 提交、组队操作、申请加入），
-            站内信、求提示的确认 / 议价 / 关闭、账号设置都不受影响。
+            队伍封禁期间与账号封禁口径相同：除申诉相关接口外功能页全部不可用
+            （403），你的账号本身没有被处罚。
             {{ teamAppeal
               ? "你是队长，可在下方「队伍申诉」中提交申诉，官方回复写在队伍频道（全队可见）。"
               : "队伍封禁只有队长可以代表队伍申诉。" }}

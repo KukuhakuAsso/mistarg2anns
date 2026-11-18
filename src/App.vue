@@ -21,6 +21,7 @@ import { usePuzzleMap } from "@/composables/usePuzzleMap";
 import { useClueBoardSync } from "@/composables/useClueBoardSync";
 import { FEATURE_ROUTES, router } from "@/router";
 import { useGameState } from "@/composables/useGameState";
+import { BAN_SCOPE_TEAM, resolveBanScope } from "@/utils/banScope";
 
 const {
     state,
@@ -28,6 +29,7 @@ const {
     refreshTeamTips,
     refreshAccountStatus,
     markAccountBanned,
+    markTeamBanned,
     forceLogout,
 } = useGameState();
 // 题目结构（stage1 目录 → stage2 题目）是服务端权威数据，档案页的路由参数要在这里解出。
@@ -159,14 +161,28 @@ onBeforeUnmount(() => {
     window.removeEventListener("mistarg:session-lost", handleSessionLost);
 });
 
-// 403 E_BANNED。
-// - 会话中途被封（登录时快照里还没有封禁）：立刻退出登录 —— 封禁会递增 token_version，
-//   旧令牌已全部失效，硬留在原页面只会得到一串 401/403，连 /me/* 申诉接口都调不动；
-//   封禁账号可以正常登录，重新登录后由守卫直接送到申诉页。
-// - 登录时就知道被封（sessionBanAcknowledged）：保持登录，收敛到申诉页即可。
+// 403 E_BANNED。2.2.2 起 detail 带机读 reason_code，两种封禁必须分开处理：
+// - ACCOUNT_BANNED（或旧后端不带 reason_code）：封禁会递增 token_version，旧令牌已全部失效，
+//   硬留在原页面只会得到一串 401/403 —— 会话中途被封要立刻登出；登录时就已知被封则保持登录、
+//   收敛到申诉页即可。
+// - TEAM_BANNED：账号本身正常，只是所在队伍被封，令牌仍然有效，**不能登出**；
+//   标记队伍状态后同样收敛到申诉页（队伍申诉由队长提交）。
 function handleBanned(event) {
+    const detail = event?.detail ?? {};
+
+    if (resolveBanScope(detail) === BAN_SCOPE_TEAM) {
+        markTeamBanned(detail);
+        // 只从功能页收敛到申诉页；登录/注册、找回密码、桌面保持可用
+        if (!BAN_SAFE_ROUTES.has(router.currentRoute.name)) {
+            router.goToRoute("/appeal");
+        }
+        // 队伍名 / 申诉额度 / 是否队长只能从 /me/status 拿到
+        refreshAccountStatus();
+        return;
+    }
+
     if (!state.sessionBanAcknowledged) {
-        const reason = event?.detail?.reason;
+        const reason = detail.reason;
         forceLogout(
             `账号已被封禁${reason ? `：${reason}` : ""}，请重新登录后提交申诉。`,
         );

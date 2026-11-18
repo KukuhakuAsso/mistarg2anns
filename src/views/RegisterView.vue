@@ -6,7 +6,15 @@ import { useStatusMessage } from "@/composables/useStatusMessage";
 import { router } from "@/router";
 import { probeHealth } from "@/api/health";
 import { authApi } from "@/api/auth";
-import { extractErrorMessage, extractFieldMessages } from "@/api/errors";
+import {
+  extractErrorInfo,
+  extractErrorMessage,
+  extractFieldMessages,
+} from "@/api/errors";
+import {
+  BAN_SCOPE_TEAM,
+  resolveErrorBanScope,
+} from "@/utils/banScope";
 import { loginWithPassword } from "@/config/auth";
 import NameStatus from "@/components/NameStatus.vue";
 import StatusMessage from "@/components/StatusMessage.vue";
@@ -508,12 +516,15 @@ function clearResendCooldown() {
   resendCooldownRemaining.value = 0;
 }
 
-// 按后端配置的冷却秒数启动重发倒计时；为 0 或非法时不启动。
-function startResendCooldown() {
+// 按冷却秒数启动重发倒计时；seconds 缺省用后端配置，为 0 或非法时不启动。
+// 后端 429 会给出 retry_after_sec / resend_after_sec，此时以服务端为准（可能比配置更短）。
+function startResendCooldown(seconds) {
   clearResendCooldown();
   const cooldownSeconds = Math.max(
     0,
-    Math.floor(Number(registrationConfig.value.resend_cooldown_sec) || 0),
+    Math.floor(
+      Number(seconds ?? registrationConfig.value.resend_cooldown_sec) || 0,
+    ),
   );
 
   if (!cooldownSeconds) {
@@ -567,6 +578,35 @@ function ensureCaptchaToken() {
   return false;
 }
 
+// 读错误体里的机读字段：403 人机验证、429 冷却都按 reason_code / 秒数分支，不匹配中文文案。
+// 人机验证类 403：凭据已被用掉 / 过期 / 来源不符，必须重置组件让用户重新验证。
+// 返回 true 表示已经处理完（调用方不要再覆盖提示）。
+function handleCaptchaFailure(info) {
+  if (!String(info?.reasonCode || "").startsWith("CAPTCHA_")) {
+    return false;
+  }
+
+  if (
+    info.reasonCode === "CAPTCHA_MISCONFIGURED" ||
+    info.reasonCode === "CAPTCHA_NOT_READY"
+  ) {
+    setAuthMessage("error", "注册暂不可用，请联系工作人员。");
+    return true;
+  }
+
+  refreshCaptcha();
+  if (info.reasonCode === "CAPTCHA_UNAVAILABLE") {
+    setAuthMessage("error", "人机验证服务暂时不可用，请稍后重试。");
+    return true;
+  }
+  if (info.reasonCode === "CAPTCHA_HOST_MISMATCH") {
+    setAuthMessage("error", "人机验证来源校验失败，请联系工作人员。");
+    return true;
+  }
+  setAuthMessage("error", "人机验证未通过，请重新验证后再试。");
+  return true;
+}
+
 // 回到第一步（保留已填写的表单），并停止重发冷却。
 function backToRegisterForm(message, tone = "info") {
   registerStep.value = "form";
@@ -588,7 +628,8 @@ function enterVerifyStep(email, message, tone) {
 }
 
 // 第一步：邮箱格式与人机验证通过即请求发送验证码。
-// 429 表示发送过于频繁（验证码已发出过），按发送成功处理，直接进入第二步。
+// 该邮箱已有未消费的码时后端回 429 REG_VERIFY_PENDING：按「已发送」进第二步；
+// 其余 429（冷却 / 今日额度）是失败，按服务端给的秒数倒计时。
 async function sendRegisterCode() {
   if (authSubmitting.value) {
     return;
@@ -611,8 +652,28 @@ async function sendRegisterCode() {
       "success",
     );
   } catch (error) {
-    if (error?.status === 429) {
+    const info = extractErrorInfo(error);
+
+    // 该邮箱已有一张未消费的验证码：直接进第二步，重发改走 /auth/reg/resend。
+    // 其余 429（60 秒冷却 / 今日额度用尽）不能当成「已发送」，否则用户会白等一封不存在的邮件。
+    if (error?.status === 429 && info.reasonCode === "REG_VERIFY_PENDING") {
       enterVerifyStep(email, "验证码此前已发送，请查收邮箱后填写。", "info");
+      if (info.resendAfterSec !== null) startResendCooldown(info.resendAfterSec);
+      return;
+    }
+
+    if (error?.status === 429) {
+      if (info.retryAfterSec !== null && info.retryAfterSec > 0) {
+        startResendCooldown(info.retryAfterSec);
+      }
+      setAuthMessage(
+        "error",
+        extractErrorMessage(error, "发送过于频繁，请稍后再试。"),
+      );
+      return;
+    }
+
+    if (handleCaptchaFailure(info)) {
       return;
     }
 
@@ -625,7 +686,7 @@ async function sendRegisterCode() {
   }
 }
 
-// 第二步重发：冷却结束且人机验证通过后，再次请求发送验证码。
+// 第二步重发：冷却结束且人机验证通过后，调重发接口换一张新码（旧码立即失效）。
 async function resendRegisterCode() {
   if (
     authSubmitting.value ||
@@ -649,11 +710,50 @@ async function resendRegisterCode() {
   authSubmitting.value = true;
   setAuthMessage("pending", "正在重新发送验证码，请稍候...");
   try {
-    await authApi.sendVerificationCode(buildSendCodePayload(email));
-    setAuthMessage("success", `验证码已重新发送至 ${email}。`);
+    // 重发必须走 /auth/reg/resend：3.2 只发第一次，再调只会拿到 429 REG_VERIFY_PENDING
+    await authApi.resendVerificationCode(buildSendCodePayload(email));
+    setAuthMessage("success", `验证码已重新发送至 ${email}，旧验证码已失效。`);
     startResendCooldown();
     markCaptchaTokenUsed();
   } catch (error) {
+    const info = extractErrorInfo(error);
+
+    // 409：该邮箱没有进行中的注册，或已经建号成功 —— 两种都只能退回第一步重来
+    if (error?.status === 409) {
+      backToRegisterForm(
+        extractErrorMessage(
+          error,
+          "该邮箱没有进行中的注册验证，请重新发送验证码。",
+        ),
+        "error",
+      );
+      return;
+    }
+
+    if (error?.status === 429) {
+      if (info.retryAfterSec !== null && info.retryAfterSec > 0) {
+        startResendCooldown(info.retryAfterSec);
+      }
+      setAuthMessage(
+        "error",
+        extractErrorMessage(error, "验证码发送过于频繁，请稍后再试。"),
+      );
+      return;
+    }
+
+    if (handleCaptchaFailure(info)) {
+      return;
+    }
+
+    if (info.code === "E_VALIDATION") {
+      setAuthMessage(
+        "error",
+        extractFieldMessages(error).join("；") ||
+          extractErrorMessage(error, "参数校验失败，请检查邮箱。"),
+      );
+      return;
+    }
+
     setAuthMessage("error", extractErrorMessage(error, "验证码重发失败。"));
   } finally {
     authSubmitting.value = false;
@@ -919,7 +1019,13 @@ async function submitUsernameChange() {
     } else if (code === "E_AUTH") {
       setUsernameChangeMessage("error", "未登录或令牌失效，无法修改用户名。");
     } else if (code === "E_BANNED") {
-      setUsernameChangeMessage("error", "账号已被封禁，不能修改用户名。");
+      // 队伍封禁对在任队员同样返回 403 E_BANNED，别把队伍处罚说成账号封禁
+      setUsernameChangeMessage(
+        "error",
+        resolveErrorBanScope(error) === BAN_SCOPE_TEAM
+          ? "所在队伍已被封禁，不能修改用户名。"
+          : "账号已被封禁，不能修改用户名。",
+      );
     } else if (code === "E_CONFLICT") {
       setUsernameChangeMessage("error", "该用户名已被占用，请换一个用户名。");
     } else {

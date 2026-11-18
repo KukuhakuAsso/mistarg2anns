@@ -10,7 +10,7 @@ export const apiConfig = {
   basePath: import.meta.env.VITE_API_BASE_PATH || "/api",
   // 主、次版本必须与服务端一致（修订号差异 ≤5），否则全部业务接口 426 E_VERSION。
   // 兜底值要跟着服务端当前版本走；正常构建由 .env 的 VITE_API_VERSION 覆盖。
-  apiVersion: import.meta.env.VITE_API_VERSION || "mistarg.2.1.0",
+  apiVersion: import.meta.env.VITE_API_VERSION || "mistarg.2.2.2",
   devTicket: import.meta.env.VITE_DEV_TICKET || "",
   testTicket: import.meta.env.VITE_X_MISTARG_TEST_TICKET || "",
 };

@@ -33,9 +33,19 @@ export const authApi = {
       skipRefresh: true,
     }),
 
-  // 发送邮箱验证码（注册第一步）：仅需 email / captcha / dev_ticket
+  // 发送邮箱验证码（注册第一步）：仅需 email / captcha / dev_ticket。
+  // 本接口只发第一次：同一邮箱第二次会得到 429 REG_VERIFY_PENDING，改走 resendVerificationCode。
   sendVerificationCode: (payload) =>
     request("/auth/reg/start", {
+      method: "POST",
+      body: payload,
+      skipRefresh: true,
+    }),
+
+  // 重新发送验证码（注册第二步的「重新发送」）：作废旧码、从这一刻重新计时。
+  // 请求体与 3.2 相同（email / captcha / dev_ticket），不带 platform / platform_uid。
+  resendVerificationCode: (payload) =>
+    request("/auth/reg/resend", {
       method: "POST",
       body: payload,
       skipRefresh: true,

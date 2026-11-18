@@ -13,6 +13,7 @@ import { tipsApi } from "@/api/tips";
 import { meApi } from "@/api/me";
 import { authApi } from "@/api/auth";
 import { clearAccessToken } from "@/api/request";
+import { isAccountBanStatus } from "@/utils/banScope";
 
 const STORAGE_KEY = "mistarg2anns:state:v1";
 
@@ -29,7 +30,8 @@ function boardStorageKey(owner) {
 }
 
 // 账号处罚状态的空值（未登录 / 尚未拉取 / 切换账号后）。
-// 字段口径见 api-11-moderation-mute.md：banned 是账号封禁；muted 是「账号级或队伍级禁言」的合一布尔。
+// 字段口径见 api-11-moderation-mute.md：banned 是**等效门禁状态**（个人封禁或所在队伍封禁），
+// muted 是「账号级或队伍级禁言」的合一布尔。
 // teamAppeal 是队长代表队伍申诉的那一块（队伍级禁言 / 队伍封禁），非队长或队伍无处罚时为 null。
 // 图片附件开关不放这里：统一读 GET /api/msg/policy 的 attachmentsEnabled
 //（2026-10-31 起封禁账号同样可调，见 useMsgAttachments），避免两个数据源互相打架。
@@ -64,7 +66,7 @@ function createDefaultState() {
       today: null,
     },
     // 账号处罚状态（GET /api/me/status，服务端权威、不持久化）：
-    // banned = 账号封禁（全局门禁）；muted = 账号级禁言或所在队伍禁言（只拦发信）。
+    // banned = 等效门禁状态（个人封禁或所在队伍封禁，判来源用 utils/banScope）；muted = 账号级禁言或所在队伍禁言（只拦发信）。
     accountStatus: createEmptyAccountStatus(),
     // 本会话是否「登录时账号快照里就带着封禁」：是则不再因为 /me/status 报 banned 而强制登出，
     // 否则会把刚重新登录的封禁用户又踢下线（无限循环）。
@@ -1046,7 +1048,13 @@ async function refreshAccountStatus() {
     // 会话中途被封（本次登录时快照里还没有封禁）：立刻退出登录。
     // 封禁会递增 token_version，旧令牌已全部失效；留在原地只会得到一串 401/403，
     // 连 /me/* 申诉接口都调不动。封禁账号仍可登录，重新登录后即可申诉。
-    if (state.accountStatus.banned && !state.sessionBanAcknowledged) {
+    //
+    // 但 /me/status 的 banned 是「等效门禁状态」，队伍封禁（team.status=4）也同样为 true：
+    // 那种情况令牌仍然有效，把队员踢下线只会让他反复登录，所以只对**账号级**封禁强制登出。
+    if (
+      isAccountBanStatus(state.accountStatus) &&
+      !state.sessionBanAcknowledged
+    ) {
       const reason = state.accountStatus.banReason;
       await forceLogout(
         `账号已被封禁${reason ? `：${reason}` : ""}，请重新登录后提交申诉。`,
@@ -1060,7 +1068,7 @@ async function refreshAccountStatus() {
   }
 }
 
-// 收到 403 E_BANNED 时立刻把账号标记为封禁（详情等 /me/status 回来再补全），
+// 收到 403 E_BANNED 时把账号标记为封禁（详情等 /me/status 回来再补全），
 // 让全局守卫先把界面切到申诉页。本地存的是旧结构时 accountStatus 可能缺失，这里补空对象。
 function markAccountBanned() {
   if (!state.accountStatus) {
@@ -1068,6 +1076,33 @@ function markAccountBanned() {
   }
   state.accountStatus.loaded = true;
   state.accountStatus.banned = true;
+  return state.accountStatus;
+}
+
+// 收到 403 E_BANNED + detail.reason_code=TEAM_BANNED：账号本身没被封，只是所在队伍被封。
+// 先把队伍状态标成 4，让申诉页立刻显示队伍封禁卡片；队伍名 / 申诉状态等细节由 /me/status 补全。
+// banned 也置 true：后端 /me/status 的 banned 是「等效门禁状态」（含队伍封禁），
+// 全局守卫据此把用户收敛到申诉页；但这里**不写**个人处罚字段，AppealView 按 team.status 展示队伍封禁。
+function markTeamBanned(detail = {}) {
+  if (!state.accountStatus) {
+    state.accountStatus = createEmptyAccountStatus();
+  }
+  const team = state.accountStatus.team ?? {};
+  const reason = detail?.reason ?? team.reason ?? null;
+  const until = detail?.until ?? team.until ?? null;
+
+  state.accountStatus.loaded = true;
+  state.accountStatus.banned = true;
+  state.accountStatus.banReason = reason;
+  state.accountStatus.banUntil = until;
+  state.accountStatus.team = {
+    teamId: team.teamId ?? null,
+    teamName: team.teamName ?? null,
+    muted: Boolean(team.muted),
+    status: 4,
+    reason,
+    until,
+  };
   return state.accountStatus;
 }
 
@@ -1170,6 +1205,7 @@ export function useGameState() {
     // 账号处罚状态（封禁 / 禁言 / 申诉摘要）
     refreshAccountStatus,
     markAccountBanned,
+    markTeamBanned,
     applyAccountSnapshot,
     forceLogout,
     consumeSessionNotice,
