@@ -3,9 +3,17 @@
 // 组件内部的排版由组件自己负责（组件包内联了自己的 Vue 运行时）。
 import { computed, h, onBeforeUnmount, watch } from "vue";
 import { useMalleableWidget } from "@/composables/useMalleableWidget";
+import { usePzBridge } from "@/composables/usePzBridge";
 
 const props = defineProps({
   malleable: { type: Object, required: true },
+  // 组件题状态桥的输入：puzzleKey 只有题目页知道，runtime 只在非预览的组件题里下发。
+  puzzleKey: { type: String, default: "" },
+  runtime: { type: Object, default: null },
+  // 完整题目视图（含 malleable / hints 等），透给组件的 pz.snapshot().view
+  view: { type: Object, default: null },
+  // 显式指定宿主模式（管理端预览传 "preview"）；留空按 runtime 是否存在推断
+  mode: { type: String, default: "" },
 });
 
 const isComponent = computed(() => props.malleable?.kind === "component");
@@ -20,19 +28,34 @@ const minHeight = computed(() => {
 const widgetProps = computed(() => props.malleable?.props ?? {});
 const asset = computed(() => props.malleable?.asset ?? null);
 
+const { status, error, tag, ensure, cancel } = useMalleableWidget();
+
+// 组件不自行处理 token / API 地址 / 刷新，全部经 props.pz（pz-bridge@0.2）。
+// tag 变化也要换桥：换版本后旧组件的在飞请求不能再写回新组件。
+const { bridge } = usePzBridge({
+  puzzleKey: () => props.puzzleKey,
+  runtime: () => props.runtime,
+  view: () => props.view,
+  tag: () => tag.value,
+  mode: () => props.mode || (props.runtime ? "play" : "degraded"),
+});
+
 // 用 render 函数挂自定义元素：props 走 DOM property 而不是 attribute，
 // 这样出题人配置的对象/回调不会在跨边界时被序列化成字符串。
 const WidgetHost = {
   props: {
     tag: { type: String, required: true },
     widgetProps: { type: Object, default: () => ({}) },
+    pz: { type: Object, default: null },
   },
   setup(hostProps) {
-    return () => h(hostProps.tag, { ...hostProps.widgetProps });
+    return () =>
+      h(hostProps.tag, {
+        ...hostProps.widgetProps,
+        ...(hostProps.pz ? { pz: hostProps.pz } : {}),
+      });
   },
 };
-
-const { status, error, tag, ensure, cancel } = useMalleableWidget();
 
 watch(
   asset,
@@ -58,6 +81,7 @@ function retry() {
           v-if="status === 'ready'"
           :tag="tag"
           :widget-props="widgetProps"
+          :pz="bridge"
           class="malleable__host"
         />
         <div v-else-if="status === 'error'" class="malleable__fallback">
@@ -69,6 +93,8 @@ function retry() {
         <div v-else class="malleable__skeleton" aria-hidden="true" />
       </template>
 
+      <!-- 外链题：后端可能在 url 的 fragment 追加短时 pz_ticket，主站原样透传即可；
+           ticket 由 iframe 页面（SCF/COS）从 location.hash 读取验签，主站不读、不写日志。 -->
       <iframe
         v-else-if="isIframe"
         class="malleable__iframe"

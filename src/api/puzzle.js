@@ -21,6 +21,28 @@ export const puzzleApi = {
       useAuth: true,
     }),
 
+  // 组件状态 / 平台方法写入（api-12 §二，2026-11-18 起）。仅 kind=component 的题可用。
+  // 请求体 { method, payload, rev }：rev 是当前快照的 runtime.rev（首写传 0），服务端据此做 CAS。
+  // B 类方法（<puzzleKey>.<method>）里有副作用的方法必须带 Idempotency-Key：
+  // 同一个 key 的重试返回首次响应、不重复执行 handler，所以网络重试务必复用它。
+  rpc: (key, { method, payload, rev }, { idempotencyKey, signal } = {}) =>
+    request(`/puzzle/${encodeURIComponent(String(key ?? ""))}/rpc`, {
+      method: "POST",
+      useAuth: true,
+      headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {},
+      body: { method, payload, rev },
+      signal,
+    }),
+
+  // 组件状态轻量读：data { rev, state, server? }；无状态行时 { rev: 0, state: {} }。
+  // 桥的 refresh() 用它做同步，避免 409 后重拉整个题目视图。
+  getState: (key, { signal } = {}) =>
+    request(`/puzzle/${encodeURIComponent(String(key ?? ""))}/state`, {
+      method: "GET",
+      useAuth: true,
+      signal,
+    }),
+
   // 购买一条预置提示（api-10 §10.11）。无请求体；队伍级买断、只扣一次、不可退款。
   // 成功 data: { hint, charged, alreadyUnlocked, balance }；余额不足 → 400 E_TIPS_SHORT。
   buyHint: (key, id) =>

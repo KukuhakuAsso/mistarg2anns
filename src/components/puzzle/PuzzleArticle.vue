@@ -194,6 +194,9 @@ async function submitAnswer() {
     <MalleableArea
       v-if="puzzle.malleable"
       :malleable="puzzle.malleable"
+      :puzzle-key="puzzle.key"
+      :runtime="puzzle.runtime ?? null"
+      :view="puzzle"
       class="puzzle__malleable"
     />
 
