@@ -11,6 +11,10 @@ import {
   extractErrorMessage,
   extractFieldMessages,
 } from "@/api/errors";
+import {
+  BAN_SCOPE_TEAM,
+  resolveErrorBanScope,
+} from "@/utils/banScope";
 import { loginWithPassword } from "@/config/auth";
 import NameStatus from "@/components/NameStatus.vue";
 import StatusMessage from "@/components/StatusMessage.vue";
@@ -1015,7 +1019,13 @@ async function submitUsernameChange() {
     } else if (code === "E_AUTH") {
       setUsernameChangeMessage("error", "未登录或令牌失效，无法修改用户名。");
     } else if (code === "E_BANNED") {
-      setUsernameChangeMessage("error", "账号已被封禁，不能修改用户名。");
+      // 队伍封禁对在任队员同样返回 403 E_BANNED，别把队伍处罚说成账号封禁
+      setUsernameChangeMessage(
+        "error",
+        resolveErrorBanScope(error) === BAN_SCOPE_TEAM
+          ? "所在队伍已被封禁，不能修改用户名。"
+          : "账号已被封禁，不能修改用户名。",
+      );
     } else if (code === "E_CONFLICT") {
       setUsernameChangeMessage("error", "该用户名已被占用，请换一个用户名。");
     } else {

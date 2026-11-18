@@ -3,6 +3,7 @@
 import { authApi } from "@/api/auth";
 import { extractErrorMessage, extractFieldMessages } from "@/api/errors";
 import { setAccessToken } from "@/api/request";
+import { BAN_SCOPE_TEAM, resolveBanScope } from "@/utils/banScope";
 
 // 归一化登录类型为 email / username / player_no；其他值直接抛错。
 function normalizeLoginType(type) {
@@ -88,8 +89,13 @@ export async function loginWithPassword({ type, identifier, password }) {
     }
 
     if (code === "E_BANNED") {
+      // 2.2.2 起 detail 带 reason_code：账号封禁与队伍封禁要分开说，别让队员以为自己被封了
+      const subject =
+        resolveBanScope(detail) === BAN_SCOPE_TEAM
+          ? "所在队伍已被封禁"
+          : "账号已被封禁";
       throw new Error(
-        detail?.reason ? `账号已被封禁：${detail.reason}` : "账号已被封禁。",
+        detail?.reason ? `${subject}：${detail.reason}` : `${subject}。`,
         { cause: error },
       );
     }

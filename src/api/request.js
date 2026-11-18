@@ -1,5 +1,5 @@
 import { buildApiUrl, getApiHeaders, isApiUrl } from "@/config/api";
-import { extractErrorMessage } from "@/api/errors";
+import { extractErrorInfo, extractErrorMessage } from "@/api/errors";
 
 // access token key JWT，2 小时。所有需要登录的接口用 Authorization: Bearer <token>
 const ACCESS_TOKEN_KEY = "mistarg_access_token";
@@ -268,10 +268,13 @@ export async function request(path, options = {}) {
 
   if (!response.ok) {
     const message = extractErrorMessage(payload);
+    const info = extractErrorInfo(payload);
     const error = new Error(message);
     error.status = response.status;
     error.payload = payload;
-    error.code = payload?.error?.code || payload?.code;
+    error.code = info.code || undefined;
+    // 封禁类 403 的机读原因（ACCOUNT_BANNED / TEAM_BANNED）：调用方按它区分账号封禁与队伍封禁
+    error.reasonCode = info.reasonCode || "";
     // 账号被封禁：除 /me/* 三条申诉接口外一切接口都 403 E_BANNED。
     // 广播一次，交给 App.vue 把界面切到申诉页（这里不直接依赖路由，避免循环引用）。
     if (error.code === "E_BANNED" && typeof window !== "undefined") {
@@ -299,10 +302,12 @@ function notifySessionLost() {
 // 用于「旧会话的 401」：当前会话本身是好的，不能因为上一个会话的请求把新会话踢下线。
 async function responseError(response) {
   const payload = await readResponse(response);
+  const info = extractErrorInfo(payload);
   const error = new Error(extractErrorMessage(payload));
   error.status = response.status;
   error.payload = payload;
-  error.code = payload?.error?.code || payload?.code;
+  error.code = info.code || undefined;
+  error.reasonCode = info.reasonCode || "";
   return error;
 }
 
