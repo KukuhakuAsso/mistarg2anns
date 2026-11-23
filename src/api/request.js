@@ -1,5 +1,5 @@
 import { buildApiUrl, getApiHeaders, isApiUrl } from "@/config/api";
-import { extractErrorInfo, extractErrorMessage } from "@/api/errors";
+import { extractErrorInfo, extractErrorMessage } from "@/utils/errors";
 
 // access token key JWT，2 小时。所有需要登录的接口用 Authorization: Bearer <token>
 const ACCESS_TOKEN_KEY = "mistarg_access_token";
@@ -22,7 +22,7 @@ function readStorage(key) {
 
   try {
     return window.localStorage.getItem(key);
-  } catch (error) {
+  } catch {
     return null;
   }
 }
@@ -35,7 +35,7 @@ function writeStorage(key, value) {
 
   try {
     window.localStorage.setItem(key, value);
-  } catch (error) {
+  } catch {
     // localStorage may be unavailable in private browsing or restricted environments.
   }
 }
@@ -48,7 +48,7 @@ function removeStorage(key) {
 
   try {
     window.localStorage.removeItem(key);
-  } catch (error) {
+  } catch {
     // localStorage may be unavailable in private browsing or restricted environments.
   }
 }
@@ -118,7 +118,7 @@ async function readResponse(response, raw = false) {
   try {
     const json = JSON.parse(text);
     return raw ? { response, data: json } : json;
-  } catch (error) {
+  } catch {
     return raw ? { response, data: text } : text;
   }
 }

@@ -4,7 +4,7 @@
 // 拿不到的 key 就是没解锁（或已停用），前端不做任何本地推算，也不预加载。
 import { computed, reactive } from "vue";
 import { puzzleApi } from "@/api/puzzle";
-import { extractErrorMessage } from "@/api/errors";
+import { extractErrorMessage } from "@/utils/errors";
 
 const state = reactive({
   loaded: false,

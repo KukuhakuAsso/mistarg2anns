@@ -5,7 +5,7 @@
 // 这三个 /me/* 接口是封禁账号唯一可用的接口族，所以本页在封禁状态下也必须能正常打开。
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { meApi } from "@/api/me";
-import { extractErrorMessage } from "@/api/errors";
+import { extractErrorMessage } from "@/utils/errors";
 import { isAccountBanStatus, BAN_SCOPE_TEAM, resolveErrorBanScope } from "@/utils/banScope";
 import { useGameState } from "@/composables/useGameState";
 import { useStatusMessage } from "@/composables/useStatusMessage";

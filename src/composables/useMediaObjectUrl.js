@@ -7,7 +7,7 @@
 // 缓存按原始路径复用，引用计数归零时释放，避免同一素材被重复下载或过早撤销。
 import { computed, onBeforeUnmount, ref, unref, watch } from "vue";
 import { fetchWithAuth } from "@/api/request";
-import { extractErrorMessage } from "@/api/errors";
+import { extractErrorMessage } from "@/utils/errors";
 import { resolveServerUrl } from "@/config/api";
 
 const cache = new Map();

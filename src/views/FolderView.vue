@@ -22,7 +22,7 @@ import StatusMessage from "@/components/StatusMessage.vue";
 import PuzzleArticle from "@/components/puzzle/PuzzleArticle.vue";
 import PuzzleCover from "@/components/puzzle/PuzzleCover.vue";
 import { puzzleApi } from "@/api/puzzle";
-import { extractErrorMessage } from "@/api/errors";
+import { extractErrorMessage } from "@/utils/errors";
 import {
   failedMediaPaths,
   retryFailedMedia,

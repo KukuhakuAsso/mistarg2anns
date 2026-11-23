@@ -6,7 +6,7 @@ import MalleableArea from "@/components/puzzle/MalleableArea.vue";
 import MediaAttachment from "@/components/puzzle/MediaAttachment.vue";
 import StatusMessage from "@/components/StatusMessage.vue";
 import { puzzleApi } from "@/api/puzzle";
-import { extractErrorMessage } from "@/api/errors";
+import { extractErrorMessage } from "@/utils/errors";
 import { renderMarkdown } from "@/utils/miniMarkdown";
 import { useMediaObjectUrl } from "@/composables/useMediaObjectUrl";
 import { useMarkdownMedia } from "@/composables/useMarkdownMedia";

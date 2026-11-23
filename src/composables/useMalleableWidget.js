@@ -9,7 +9,7 @@
 // fetch 默认跟随跳转，两种形态都会落到同一段「取文本」逻辑上。
 import { ref } from "vue";
 import { fetchWithAuth } from "@/api/request";
-import { extractErrorMessage } from "@/api/errors";
+import { extractErrorMessage } from "@/utils/errors";
 import { resolveServerUrl } from "@/config/api";
 import { verifySha384 } from "@/utils/integrity";
 

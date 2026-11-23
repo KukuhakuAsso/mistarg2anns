@@ -5,7 +5,7 @@ import { authApi } from "@/api/auth";
 import { clearAccessToken } from "@/api/request";
 import { useGameState } from "@/composables/useGameState";
 import { useStatusMessage } from "@/composables/useStatusMessage";
-import { extractErrorMessage, extractFieldMessages } from "@/api/errors";
+import { extractErrorMessage, extractFieldMessages } from "@/utils/errors";
 import { router } from "@/router";
 import StatusMessage from "@/components/StatusMessage.vue";
 

@@ -1,7 +1,7 @@
 // 登录（账号密码）相关逻辑：归一化入参、调用登录接口并保存 access token，
 // 同时把后端返回的错误码翻译成可直接展示给用户的中文提示。
 import { authApi } from "@/api/auth";
-import { extractErrorMessage, extractFieldMessages } from "@/api/errors";
+import { extractErrorMessage, extractFieldMessages } from "@/utils/errors";
 import { setAccessToken } from "@/api/request";
 import { BAN_SCOPE_TEAM, resolveBanScope } from "@/utils/banScope";
 

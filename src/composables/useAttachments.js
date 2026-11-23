@@ -82,7 +82,7 @@ export function useAttachments({ maxCount = IMAGE_MAX_COUNT, onError } = {}) {
         mime: item.mime,
         sizeBytes: item.sizeBytes,
       });
-      const uploadInfo = signed?.upload ?? null;
+      const uploadInfo = signed?.data?.upload ?? null;
       const objectKey = uploadInfo?.objectKey ?? "";
       if (!objectKey) throw new Error("未获取到上传地址。");
 
