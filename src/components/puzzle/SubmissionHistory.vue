@@ -7,7 +7,7 @@
 // 只负责「一道题的记录列表」，选题由调用方负责（队伍页的 TeamSubmissions）。
 import { ref, watch } from "vue";
 import { puzzleApi } from "@/api/puzzle";
-import { extractErrorMessage } from "@/api/errors";
+import { extractErrorMessage } from "@/utils/errors";
 import {
   normalizeSubmissionPage,
   toSubmissionRow,

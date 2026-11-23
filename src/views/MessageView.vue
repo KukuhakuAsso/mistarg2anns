@@ -13,7 +13,7 @@ import {
 } from "vue";
 import { useGameState } from "@/composables/useGameState";
 import { useStatusMessage } from "@/composables/useStatusMessage";
-import { extractErrorMessage } from "@/api/errors";
+import { extractErrorMessage } from "@/utils/errors";
 import StatusMessage from "@/components/StatusMessage.vue";
 import { messageApi } from "@/api/message";
 import { tipsApi } from "@/api/tips";
@@ -517,7 +517,7 @@ const composeRecipients = [
   { value: HINT_TARGET, label: "请求提示" },
 ];
 
-// 错误文案统一由 @/api/errors 解析（含字段级原因），本地保留短名便于调用。
+// 错误文案统一由 @/utils/errors 解析（含字段级原因），本地保留短名便于调用。
 const errorText = extractErrorMessage;
 
 // 来源标记（服务端判定，客户端不能指定）

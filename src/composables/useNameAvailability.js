@@ -1,5 +1,5 @@
 import { onScopeDispose, ref, watch } from "vue";
-import { extractFieldMessages } from "@/api/errors";
+import { extractFieldMessages } from "@/utils/errors";
 
 // 名称查重（用户名 / 队名共用）：本地规则即时校验 + 防抖查唯一性 + 序号防竞态。
 // 判定采用「正向确认制」：只有接口明确回 available / taken 才落状态，未知响应保持中性。

@@ -3,7 +3,7 @@
 //
 // 宿主只负责「拿数据 + 同步快照」：token、API 地址、重试节奏都在这里收口，
 // 组件只调 pz.rpc() / pz.refresh() 并读 pz.snapshot()。
-import { extractErrorMessage } from "../api/errors.js";
+import { extractErrorMessage } from "./errors.js";
 import {
   PZ_BRIDGE_CONTRACT,
   applyConflictSnapshot,

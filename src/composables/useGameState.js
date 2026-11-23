@@ -6,7 +6,7 @@
 import { computed, reactive, watch } from "vue";
 import { CARD_GAP, CARD_H, CARD_W } from "@/config/board";
 import { validateTeamName } from "@/config/team";
-import { extractErrorMessage, extractFieldMessage } from "@/api/errors";
+import { extractErrorMessage, extractFieldMessage } from "@/utils/errors";
 import { teamApi } from "@/api/team";
 import { messageApi } from "@/api/message";
 import { tipsApi } from "@/api/tips";

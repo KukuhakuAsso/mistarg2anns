@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { authApi } from "@/api/auth";
 import { useGameState } from "@/composables/useGameState";
 import { useStatusMessage } from "@/composables/useStatusMessage";
-import { extractErrorMessage, extractFieldMessages } from "@/api/errors";
+import { extractErrorMessage, extractFieldMessages } from "@/utils/errors";
 import { router } from "@/router";
 import StatusMessage from "@/components/StatusMessage.vue";
 

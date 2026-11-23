@@ -6,7 +6,7 @@ import { useGameState } from "@/composables/useGameState";
 import { router } from "@/router";
 import { useNameAvailability } from "@/composables/useNameAvailability";
 import { useStatusMessage } from "@/composables/useStatusMessage";
-import { extractErrorMessage } from "@/api/errors";
+import { extractErrorMessage } from "@/utils/errors";
 import { teamApi } from "@/api/team";
 import { normalizeTeamName, validateTeamName } from "@/config/team";
 import NameStatus from "@/components/NameStatus.vue";

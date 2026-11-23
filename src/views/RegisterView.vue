@@ -10,7 +10,7 @@ import {
   extractErrorInfo,
   extractErrorMessage,
   extractFieldMessages,
-} from "@/api/errors";
+} from "@/utils/errors";
 import {
   BAN_SCOPE_TEAM,
   resolveErrorBanScope,
@@ -579,27 +579,34 @@ function ensureCaptchaToken() {
 }
 
 // 读错误体里的机读字段：403 人机验证、429 冷却都按 reason_code / 秒数分支，不匹配中文文案。
-// 人机验证类 403：凭据已被用掉 / 过期 / 来源不符，必须重置组件让用户重新验证。
+// 服务不可用 / 未就绪 / 缺测试凭证时不重置组件：重置解决不了，UNAVAILABLE 还会立刻重拉一次挑战。
+// 其余人机验证类 403（凭据缺失、已用掉、过期、来源不符）重置组件让用户重新验证。
 // 返回 true 表示已经处理完（调用方不要再覆盖提示）。
 function handleCaptchaFailure(info) {
-  if (!String(info?.reasonCode || "").startsWith("CAPTCHA_")) {
+  const reason = String(info?.reasonCode || "");
+  if (!reason.startsWith("CAPTCHA_")) {
     return false;
   }
 
-  if (
-    info.reasonCode === "CAPTCHA_MISCONFIGURED" ||
-    info.reasonCode === "CAPTCHA_NOT_READY"
-  ) {
+  if (reason === "CAPTCHA_MISCONFIGURED" || reason === "CAPTCHA_NOT_READY") {
     setAuthMessage("error", "注册暂不可用，请联系工作人员。");
+    return true;
+  }
+  if (reason === "CAPTCHA_TEST_TICKET_REQUIRED") {
+    setAuthMessage("error", "缺少测试放行凭证（dev_ticket），请联系工作人员。");
     return true;
   }
 
   refreshCaptcha();
-  if (info.reasonCode === "CAPTCHA_UNAVAILABLE") {
+    if (reason === "CAPTCHA_UNAVAILABLE") {
     setAuthMessage("error", "人机验证服务暂时不可用，请稍后重试。");
     return true;
   }
-  if (info.reasonCode === "CAPTCHA_HOST_MISMATCH") {
+  if (reason === "CAPTCHA_MISSING") {
+    setAuthMessage("error", "请先完成人机验证，再发送验证码。");
+    return true;
+  }
+  if (reason === "CAPTCHA_HOST_MISMATCH") {
     setAuthMessage("error", "人机验证来源校验失败，请联系工作人员。");
     return true;
   }
