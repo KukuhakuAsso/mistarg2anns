@@ -297,9 +297,10 @@ jobs:
                           continue
                       fi
 
-                      # Announcements (label "announcement") stay in "ps";
-                      # sub-issues in "detail done"; parent issues follow the
-                      # normal In Review -> Done flow.
+                      # Announcements (label "announcement") stay in "ps".
+                      # Sub-issues follow the normal flow (In Review /
+                      # In Progress) and land in "detail done" only when the PR
+                      # is merged (completed). Parent issues end in "done".
                       labels="$(gh api "repos/$repo/issues/$num" --jq '[.labels[].name] | join(",")' 2>/dev/null || true)"
                       parent="$(gh api graphql \
                           -f query="query { repository(owner: \"${repo%%/*}\", name: \"${repo#*/}\") { issue(number: $num) { parent { number } } } }" \
@@ -310,10 +311,10 @@ jobs:
                           MERGED_STATUS="$STATUS_PS"
                           echo "$url is an announcement; keeping status \"$STATUS_PS\""
                       elif [ -n "$parent" ]; then
-                          REVIEW_STATUS="$STATUS_SUB_ISSUE"
-                          ROLLBACK_STATUS="$STATUS_SUB_ISSUE"
+                          REVIEW_STATUS="$STATUS_IN_REVIEW"
+                          ROLLBACK_STATUS="$STATUS_IN_PROGRESS"
                           MERGED_STATUS="$STATUS_SUB_ISSUE"
-                          echo "$url is a sub-issue of #$parent; using status \"$STATUS_SUB_ISSUE\""
+                          echo "$url is a sub-issue of #$parent; merged status will be \"$STATUS_SUB_ISSUE\""
                       else
                           REVIEW_STATUS="$STATUS_IN_REVIEW"
                           ROLLBACK_STATUS="$STATUS_IN_PROGRESS"
