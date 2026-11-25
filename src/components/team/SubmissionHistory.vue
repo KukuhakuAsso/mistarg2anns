@@ -1,13 +1,8 @@
 <script setup>
 // 本队某题的提交历史（api-12 § 提交历史）。
-//   * 服务端强制 team_id，只返回本队数据，不接受队伍参数；
 //   * 含答错与「已解出后的重复提交」；
 //   * 游标分页：id 倒序（最新在前），nextCursor 传回即可取下一页。
 //
-// 只负责「一道题的记录列表」，选题由调用方负责（队伍页的 TeamSubmissions）。
-// 放在 components/team/ 而不是 components/puzzle/：components/puzzle/ 是「题目内容
-// 渲染」域（题面 / 封面 / 可塑区 / 附件，服务于题目页与线索板），而本组件的调用链是
-// TeamView → TeamSubmissions → 这里，属队伍域；且服务端强制 team_id、只返回本队数据。
 import { ref, watch } from "vue";
 import { puzzleApi } from "@/api/puzzle";
 import { extractErrorMessage } from "@/utils/errors";

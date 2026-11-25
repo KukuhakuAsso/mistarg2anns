@@ -15,7 +15,6 @@ import { useGameState } from "@/composables/useGameState";
 import { useStatusMessage } from "@/composables/useStatusMessage";
 import { CARD_GAP, CARD_H } from "@/config/board";
 import {
-  CLUE_PANEL_MAX_W,
   CLUE_PANEL_MIN_W,
   clampCluePanelWidth,
 } from "@/utils/panelWidth";
@@ -120,8 +119,6 @@ async function uploadNow() {
 // ---------- 宽度调整 ----------
 
 const WIDTH_STORAGE_KEY = "mistarg2anns:clue-board-width";
-// 键盘每次调整的步长
-const WIDTH_STEP = 24;
 
 // 面板根元素：拖动时用它拿当前实际宽度（可能是 CSS 里 clamp() 算出来的）
 const panelEl = ref(null);
@@ -202,23 +199,6 @@ function stopResize() {
   persistWidth(panelWidth.value);
 }
 
-// 键盘也能调（把手可获得焦点）：左方向键 = 往左扩 = 变宽
-function nudgeWidth(event) {
-  const step =
-    event.key === "ArrowLeft"
-      ? WIDTH_STEP
-      : event.key === "ArrowRight"
-        ? -WIDTH_STEP
-        : 0;
-  if (!step) return;
-  event.preventDefault();
-  panelWidth.value = clampCluePanelWidth(
-    measuredWidth() + step,
-    window.innerWidth,
-  );
-  persistWidth(panelWidth.value);
-}
-
 // 双击把手恢复 CSS 默认宽度（并清掉记忆）
 function resetWidth() {
   panelWidth.value = null;
@@ -281,18 +261,12 @@ function onPoolPointerDown(event, clue) {
     :class="{ 'is-resizing': resizing }"
     :style="panelStyle"
   >
-    <!-- 左侧靠边把手：拖动或按左右方向键调整宽度，双击恢复默认 -->
+    <!-- 左侧靠边把手：拖动调整宽度，双击恢复默认（仅鼠标操作） -->
     <span
       class="clue-board__resizer"
-      role="separator"
-      aria-orientation="vertical"
-      aria-label="拖动或按左右方向键调整线索栏宽度，双击恢复默认"
-      :aria-valuenow="panelWidth ?? undefined"
-      :aria-valuemin="CLUE_PANEL_MIN_W"
-      :aria-valuemax="CLUE_PANEL_MAX_W"
-      tabindex="0"
+      aria-hidden="true"
+      title="拖动调整线索栏宽度，双击恢复默认"
       @pointerdown="startResize"
-      @keydown="nudgeWidth"
       @dblclick="resetWidth"
     />
 
@@ -435,15 +409,10 @@ function onPoolPointerDown(event, clue) {
 }
 
 .clue-board__resizer:hover::after,
-.clue-board__resizer:focus-visible::after,
 .clue-board.is-resizing .clue-board__resizer::after {
   width: 2px;
   background: var(--accent);
   opacity: 1;
-}
-
-.clue-board__resizer:focus-visible {
-  outline: none;
 }
 
 .clue-board__head {

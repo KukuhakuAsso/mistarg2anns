@@ -1,6 +1,6 @@
 <script setup>
 // 设置栏：只放功能性按钮与进度读数，不承载内容展示。
-import { computed } from "vue";
+import { computed, watch } from "vue";
 import AppIcon from "@/components/AppIcon.vue";
 import { useGameState } from "@/composables/useGameState";
 import { usePuzzleMap } from "@/composables/usePuzzleMap";
@@ -14,13 +14,35 @@ defineProps({
 const emit = defineEmits(["go-desktop"]);
 
 const { state, toggleCluePanel, resetProgress } = useGameState();
-const { progress } = usePuzzleMap();
+const { progress, loaded: mapLoaded, error: mapError } = usePuzzleMap();
 const { themeIcon, themeLabel, cycleTheme } = useTheme();
 const isTestEnvironment = computed(() => apiEnvironment.value === "test");
 const testEnvironmentAvailable = Boolean(apiConfig.testTicket);
 
-// 线索栏需要登录后才能使用（内容是账号相关的本地记录），未登录时按钮置灰。
+// 线索栏的内容是账号级记录，但只有进入游戏（题目结构拉取成功）后才可读：
+// 未入队 / 未确认参赛 / 未开赛时 map 会报门禁错误，此时卡片既没有标题封面也没有操作意义。
+// 所以按钮在「未进入游戏」时保持关闭态且不可点击 —— 与桌面上那条 map 报错同源判定。
 const isLoggedIn = computed(() => Boolean(state.user.currentUser));
+const canUseClueBoard = computed(
+  () => isLoggedIn.value && mapLoaded.value && !mapError.value,
+);
+const clueBoardTitle = computed(() => {
+  if (!isLoggedIn.value) return "登录后才能打开线索栏";
+  if (mapError.value) return `比赛开始后才能打开线索栏：${mapError.value}`;
+  if (!mapLoaded.value) return "正在读取题目结构…";
+  return "显示 / 隐藏线索栏";
+});
+
+// 还没进入游戏（map 报门禁错误：未入队 / 未确认参赛 / 未开赛 / 被封禁）时，
+// 线索栏没有意义：按钮保持关闭态且不可点。若上次登录时它是展开的，
+// 这里一并收起，避免出现「按钮显示关闭、右侧却还挂着线索栏」。
+watch(
+  () => isLoggedIn.value && Boolean(mapError.value),
+  (blocked) => {
+    if (blocked && state.ui.cluePanelOpen) toggleCluePanel();
+  },
+  { immediate: true },
+);
 
 // 右上角的 tips 是本队共享余额（服务端权威数据）：无队伍时提示加入队伍后开始累积，
 // 未加载时先用占位符，避免先显示一个假的 0。
@@ -73,9 +95,9 @@ function toggleApiEnvironment() {
       <button
         class="bar-btn"
         type="button"
-        :class="{ 'is-active': isLoggedIn && state.ui.cluePanelOpen }"
-        :disabled="!isLoggedIn"
-        :title="isLoggedIn ? '显示 / 隐藏线索栏' : '登录后才能打开线索栏'"
+        :class="{ 'is-active': canUseClueBoard && state.ui.cluePanelOpen }"
+        :disabled="!canUseClueBoard"
+        :title="clueBoardTitle"
         @click="toggleCluePanel()"
       >
         <AppIcon name="board" />
