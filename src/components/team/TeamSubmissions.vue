@@ -6,7 +6,7 @@
 // 题目清单来自 usePuzzleMap 单例（只含已解锁题，带 solved 标记与目录分组）。
 import { computed, onMounted, ref, watch } from "vue";
 import { usePuzzleMap } from "@/composables/usePuzzleMap";
-import SubmissionHistory from "@/components/puzzle/SubmissionHistory.vue";
+import SubmissionHistory from "@/components/team/SubmissionHistory.vue";
 
 const { folders, loaded, loading, error, load, refresh: refreshMap } = usePuzzleMap();
 
