@@ -1,7 +1,5 @@
-﻿// 全局游戏状态：服务端权威数据（账号 / 队伍 / 未读 / tips / 处罚）+ 本地收藏板。
+﻿// 全局游戏状态：服务端权威数据（账号 / 队伍 / 未读 / tips / 处罚）+ 本地线索栏。
 // 单例模块，任意组件直接调用 useGameState() 即可读写同一份状态。
-//
-// 题目与目录全部来自 GET /api/puzzle/map（含解锁、已解状态），本模块不再保留任何 mock 题目 / 线索数据。
 
 import { computed, reactive, watch } from "vue";
 import { CARD_GAP, CARD_H, CARD_W } from "@/config/board";
@@ -14,15 +12,11 @@ import { meApi } from "@/api/me";
 import { authApi } from "@/api/auth";
 import { clearAccessToken } from "@/api/request";
 import { isAccountBanStatus } from "@/utils/banScope";
+import { usePuzzleMap } from "./usePuzzleMap";
 
 const STORAGE_KEY = "mistarg2anns:state:v1";
 
-// 收藏板（board / boardLabels / 墓碑 / 拖出标记）是**账号级**数据，单独按账号分 key 持久化。
-//
-// 以前这些字段和 visitedFolders / ui 一起塞在 STORAGE_KEY 里，结果是：
-// A 登出、B 登录时 A 的卡片仍在内存与 localStorage 中，B 能看到 A 的板面，
-// 拖动一下还会把 A 的卡片作为差异上传进 B 的服务端快照（PR #101 review）。
-// 现在每个账号只读自己那份；没有归属信息就当作没有板面。
+// 线索栏（board / boardLabels / 墓碑 / 拖出标记）是**账号级**数据，单独按账号分 key 持久化。
 const BOARD_STORAGE_PREFIX = "mistarg2anns:board:v1:";
 
 function boardStorageKey(owner) {
@@ -30,11 +24,7 @@ function boardStorageKey(owner) {
 }
 
 // 账号处罚状态的空值（未登录 / 尚未拉取 / 切换账号后）。
-// 字段口径见 api-11-moderation-mute.md：banned 是**等效门禁状态**（个人封禁或所在队伍封禁），
-// muted 是「账号级或队伍级禁言」的合一布尔。
-// teamAppeal 是队长代表队伍申诉的那一块（队伍级禁言 / 队伍封禁），非队长或队伍无处罚时为 null。
-// 图片附件开关不放这里：统一读 GET /api/msg/policy 的 attachmentsEnabled
-//（2026-10-31 起封禁账号同样可调，见 useMsgAttachments），避免两个数据源互相打架。
+// 字段口径见 api-11-moderation-mute.md：
 function createEmptyAccountStatus() {
   return {
     loaded: false,
@@ -51,14 +41,14 @@ function createEmptyAccountStatus() {
   };
 }
 
-// 生成一份全新的初始状态：无浏览标记、收藏板为空、未登录。
+// 生成一份全新的初始状态：无浏览标记、线索栏为空、未登录。
 function createDefaultState() {
   return {
     visitedFolders: [],
     unreadMessages: 0,
     // 归档文件夹的未读封数（GET /msg/mails/summary 的 archive.unread）
     unreadArchive: 0,
-    // 队伍级 tips（服务端权威数据，不持久化）：余额与今日累积，供顶栏与求提示面板共用
+    // 队伍级 tips
     teamTips: {
       loaded: false,
       hasTeam: false,
@@ -66,7 +56,6 @@ function createDefaultState() {
       today: null,
     },
     // 账号处罚状态（GET /api/me/status，服务端权威、不持久化）：
-    // banned = 等效门禁状态（个人封禁或所在队伍封禁，判来源用 utils/banScope）；muted = 账号级禁言或所在队伍禁言（只拦发信）。
     accountStatus: createEmptyAccountStatus(),
     // 本会话是否「登录时账号快照里就带着封禁」：是则不再因为 /me/status 报 banned 而强制登出，
     // 否则会把刚重新登录的封禁用户又踢下线（无限循环）。
@@ -75,17 +64,13 @@ function createDefaultState() {
     sessionNotice: "",
     board: [],
     boardLabels: {},
-    // 线索栏服务端快照（api-13）：clueId → { x, y, removed }，只用于算差量，不持久化 ——
+    // 线索栏服务端快照：clueId → { x, y, removed }，只用于算差量，不持久化 ——
     // 每次登录都重新 GET，避免把上一个账号的状态当成「已知服务端状态」。
     serverBoard: {},
-    // 待上传的移除墓碑：只有「从收藏里删掉」才产生（拖出板面只是回到待用区）。
+    // 待上传的移除墓碑
     removedClues: [],
-    // 本机主动拖出板面的卡片：服务端只有「在板上」一种状态，这类改动不上传，
-    // 但要记住，免得下次 GET 又把它们摆回板上。
+    // 本机主动拖出板面的卡片
     unplacedClues: [],
-    // 被服务端以 E_VALIDATION 拒过的条目（clueId → 签名）：不重发同一份数据，
-    // 等用户把它改成别的坐标 / 重新收藏才会再次尝试。
-    rejectedClueBoard: {},
     user: {
       currentUser: null,
       users: [],
@@ -116,7 +101,8 @@ function isPlacement(item, labels = {}) {
   );
 }
 
-// 板面标题快照（拖进来的题目）：老存档没有 cover 字段，归一化成 null（渲染时回退占位图）。
+// 板面标题快照（拖进来的题目）：cover 缺失或该题本就没配封面时归一化成 null
+// （PuzzleCover 渲染时回退占位图）
 function normalizeBoardLabels(raw) {
   if (!raw || typeof raw !== "object") return {};
   return Object.fromEntries(
@@ -140,7 +126,9 @@ function normalizeBoardLabels(raw) {
 
 // 板面排布：坐标非法或标题快照里解析不到的一律丢弃
 function normalizeBoard(raw, labels) {
-  return Array.isArray(raw) ? raw.filter((item) => isPlacement(item, labels)) : [];
+  return Array.isArray(raw)
+    ? raw.filter((item) => isPlacement(item, labels))
+    : [];
 }
 
 // 墓碑 / 「拖出板面」标记：只接受字符串 id
@@ -151,11 +139,18 @@ function normalizeIdList(raw) {
 // 读取某个账号自己的板面；没有存档或存档损坏时给出空板面。
 function loadBoardFor(owner) {
   const key = boardStorageKey(owner);
-  if (!key) return { board: [], boardLabels: {}, removedClues: [], unplacedClues: [] };
+  if (!key)
+    return { board: [], boardLabels: {}, removedClues: [], unplacedClues: [] };
 
   try {
     const raw = localStorage.getItem(key);
-    if (!raw) return { board: [], boardLabels: {}, removedClues: [], unplacedClues: [] };
+    if (!raw)
+      return {
+        board: [],
+        boardLabels: {},
+        removedClues: [],
+        unplacedClues: [],
+      };
 
     const saved = JSON.parse(raw);
     const boardLabels = normalizeBoardLabels(saved?.boardLabels);
@@ -166,7 +161,7 @@ function loadBoardFor(owner) {
       unplacedClues: normalizeIdList(saved?.unplacedClues),
     };
   } catch (error) {
-    console.warn("[mistarg2anns] 读取本地收藏板失败，已按空板面处理", error);
+    console.warn("[mistarg2anns] 读取本地线索栏失败，已按空板面处理", error);
     return { board: [], boardLabels: {}, removedClues: [], unplacedClues: [] };
   }
 }
@@ -190,12 +185,12 @@ function persistBoard() {
       }),
     );
   } catch (error) {
-    console.warn("[mistarg2anns] 保存本地收藏板失败", error);
+    console.warn("[mistarg2anns] 保存本地线索栏失败", error);
   }
 }
 
 // 从 localStorage 读取并校验持久化的游戏进度；缺失或损坏时退回初始状态。
-// 注意：这里**不**还原收藏板 —— 板面按账号存在 BOARD_STORAGE_PREFIX 下，
+// 注意：这里**不**还原线索栏 —— 板面按账号存在 BOARD_STORAGE_PREFIX 下，
 // 要等身份确定后由 switchBoardOwner() 载入。
 function loadState() {
   const fallback = createDefaultState();
@@ -233,7 +228,7 @@ function loadState() {
 const state = reactive(loadState());
 
 // 监听游戏状态变化并持久化到 localStorage。
-// 分两条：非账号级偏好写 STORAGE_KEY，收藏板写「当前账号」自己的 key（见 persistBoard）。
+// 分两条：非账号级偏好写 STORAGE_KEY，线索板写「当前账号」自己的 key（见 persistBoard）。
 watch(
   state,
   (value) => {
@@ -253,7 +248,12 @@ watch(
 );
 
 watch(
-  () => [state.board, state.boardLabels, state.removedClues, state.unplacedClues],
+  () => [
+    state.board,
+    state.boardLabels,
+    state.removedClues,
+    state.unplacedClues,
+  ],
   () => persistBoard(),
   { deep: true },
 );
@@ -264,7 +264,7 @@ watch(
 let lastAccountKey = null;
 
 watch(
-  () => state.user.currentUser?.id ?? state.user.currentUser?.username ?? null,
+  () => state.user.currentUser?.id ?? null,
   (accountKey) => {
     state.user.team = { loaded: false, team: null, myJoinRequest: null };
     // 未读角标是服务端数据，切换账号时一并清零，避免残留上一账号的未读数。
@@ -291,7 +291,7 @@ watch(
   },
 );
 
-// 切换收藏板归属：清空内存板面（服务端基线一并作废）→ 载入该账号自己的本地存档。
+// 切换线索栏归属：清空内存板面（服务端基线一并作废）→ 载入该账号自己的本地存档。
 // owner 为 null 表示已登出：只清空，不落盘。
 function switchBoardOwner(owner) {
   const nextOwner = owner ? String(owner) : "";
@@ -379,14 +379,14 @@ function markFolderVisited(folderId) {
   }
 }
 
-// 封面快照只留渲染需要的字段，别把整条 map 数据塞进 localStorage。
+// 封面快照只留渲染需要的字段
 function toCover(value) {
   const url = typeof value?.url === "string" ? value.url : "";
   if (!url) return null;
   return { url, alt: typeof value.alt === "string" ? value.alt : "" };
 }
 
-// 从数组里就地删掉某个 id（这些集合都是 string[]，靠 includes 判断）。
+// 从数组里就地删掉某个 id（功能性函数）
 function dropFrom(list, id) {
   if (!Array.isArray(list)) return;
   const index = list.indexOf(id);
@@ -394,10 +394,6 @@ function dropFrom(list, id) {
 }
 
 // 记录一张「从档案拖进板面的题目」卡片的标题快照。
-// 板面只存 id + 坐标，标题、来源与封面存在这里：题目来自服务端 map，
-// 靠这份快照才能在脱离 map 时（刷新、换页）照常渲染板面卡片。
-// createIfMissing=false 时只更新已存在的快照（用于「解出后换完成态封面」）——
-// 否则解一道从没拖过的题，它会自己跑进待用区。
 function registerBoardCard(
   { id, title, subtitle, cover } = {},
   { createIfMissing = true } = {},
@@ -414,8 +410,6 @@ function registerBoardCard(
 }
 
 // 从收藏里彻底移除一张卡（待用区的删除按钮、或卡片上的移除）：
-// board 与 boardLabels 必须一起删，否则 boardLabels 里会留下再也看不到的孤儿条目。
-// 同时记一条移除墓碑：服务端只有「在板上 / 已移除」两种状态，删卡必须显式上传（api-13）。
 function uncollectCard(cardId) {
   if (!cardId) return;
   state.board = state.board.filter((item) => item.clueId !== cardId);
@@ -426,7 +420,7 @@ function uncollectCard(cardId) {
   if (!state.removedClues.includes(cardId)) state.removedClues.push(cardId);
 }
 
-// 预置提示购买成功后，用响应里的 balance 就地更新余额角标（省一次 /tips/balance）。
+// 预置提示购买成功后，用响应里的 balance 就地更新余额角标。
 function applyTipsBalance(balance) {
   const value = Number(balance);
   if (!Number.isFinite(value)) return;
@@ -446,14 +440,13 @@ function placeClue(clueId, x, y) {
   state.board.push({ clueId, x, y });
 }
 
-// 从板面移除一条线索（回到待用区）。这不是「删除收藏」，所以不产生移除墓碑；
-// 但要记进 unplacedClues，否则下一次 GET 会按服务端坐标把它摆回板上。
+// 从板面移除一条线索（回到待用区）。
 function removeClueFromBoard(clueId) {
   state.board = state.board.filter((item) => item.clueId !== clueId);
   if (!state.unplacedClues.includes(clueId)) state.unplacedClues.push(clueId);
 }
 
-// 清空板面上的所有线索（全部回到待用区，理由同上）。
+// 清空板面上的所有线索（全部回到待用区）。
 function clearBoard() {
   for (const item of state.board) {
     if (!state.unplacedClues.includes(item.clueId)) {
@@ -474,7 +467,6 @@ function applyClueBoardSnapshot(items = []) {
   const nextServer = {};
   const nextRemoved = new Set(state.removedClues ?? []);
   const unplaced = new Set(state.unplacedClues ?? []);
-  const rejected = { ...(state.rejectedClueBoard ?? {}) };
   const labels = { ...(state.boardLabels ?? {}) };
   const board = state.board.map((item) => ({ ...item }));
   const byId = new Map(board.map((item) => [item.clueId, item]));
@@ -494,7 +486,6 @@ function applyClueBoardSnapshot(items = []) {
       // 服务端已确认移除：墓碑完成任务，本地卡片一并消失
       nextRemoved.delete(clueId);
       unplaced.delete(clueId);
-      delete rejected[clueId];
       delete labels[clueId];
       const local = byId.get(clueId);
       if (local) {
@@ -504,7 +495,7 @@ function applyClueBoardSnapshot(items = []) {
       continue;
     }
 
-    if (nextRemoved.has(clueId)) continue; // 本机刚删掉，等服务端确认，别复活
+    if (nextRemoved.has(clueId)) continue; // 本机刚删掉
     if (unplaced.has(clueId)) continue; // 本机故意拖出板面
 
     const local = byId.get(clueId);
@@ -527,10 +518,6 @@ function applyClueBoardSnapshot(items = []) {
       local.x = server.x;
       local.y = server.y;
     }
-    // 服务端坐标与本地一致 = 这条已经被接受，之前 400 的拒绝记录作废
-    if (server.x === Math.round(local.x) && server.y === Math.round(local.y)) {
-      delete rejected[clueId];
-    }
   }
 
   state.board = board;
@@ -538,23 +525,18 @@ function applyClueBoardSnapshot(items = []) {
   state.serverBoard = nextServer;
   state.removedClues = [...nextRemoved];
   state.unplacedClues = [...unplaced];
-  state.rejectedClueBoard = rejected;
 }
 
 // 本地与「已知服务端状态」的差异，按 api-13 的增量语义拼成 items：
 // 只有本地新增/移动的坐标，以及显式删除的墓碑；没出现的线索不会被删除。
-// 被服务端拒绝过的同一份数据不再重发，否则每次冷却结束都会重复撞同一个 400。
 function pendingClueBoardChanges() {
   const items = [];
   const known = state.serverBoard ?? {};
-  const rejected = state.rejectedClueBoard ?? {};
 
   for (const placement of state.board) {
     const x = Math.round(placement.x);
     const y = Math.round(placement.y);
     if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-    const signature = `${x},${y}`;
-    if (rejected[placement.clueId] === signature) continue;
     const server = known[placement.clueId];
     if (!server || server.removed || server.x !== x || server.y !== y) {
       items.push({ clue_id: placement.clueId, x, y });
@@ -562,7 +544,6 @@ function pendingClueBoardChanges() {
   }
 
   for (const clueId of state.removedClues ?? []) {
-    if (rejected[clueId] === "removed") continue;
     // 本地已在板上的不会再进墓碑集合，这里只补服务端还不知道的移除
     if (!known[clueId] || !known[clueId].removed) {
       items.push({ clue_id: clueId, removed: true });
@@ -570,17 +551,6 @@ function pendingClueBoardChanges() {
   }
 
   return items;
-}
-
-// 服务端判定这批条目非法（400 E_VALIDATION）时记下签名，避免反复重发。
-// 用户再把卡片挪到别的坐标就是新数据，会重新尝试。
-function markClueBoardRejected(items = []) {
-  const rejected = { ...(state.rejectedClueBoard ?? {}) };
-  for (const item of items) {
-    if (typeof item?.clue_id !== "string") continue;
-    rejected[item.clue_id] = item.removed ? "removed" : `${item.x},${item.y}`;
-  }
-  state.rejectedClueBoard = rejected;
 }
 
 // 跨设备同步过来的卡片只有 clue_id（boardLabels 不同步）：用 map 里的题目标题补快照，
@@ -610,7 +580,6 @@ function resetClueBoardSync() {
   state.serverBoard = {};
   state.removedClues = [];
   state.unplacedClues = [];
-  state.rejectedClueBoard = {};
 }
 
 // 换成另一个账号：上一个账号的卡片不能留在界面里，更不能被上传进新账号的快照。
@@ -647,9 +616,18 @@ function addClueToBoard(clueId, boardWidth) {
   placeClue(clueId, x, y);
 }
 
-// 切换线索栏的展开 / 收起状态。未登录时不允许打开（返回 false）。
+// 线索栏可用 = 已登录 + 进入游戏（题目结构拉取成功且无门禁错误）。
+const mapState = usePuzzleMap();
+const canUseClueBoard = computed(
+  () =>
+    Boolean(state.user.currentUser) &&
+    mapState.loaded.value &&
+    !mapState.error.value,
+);
+
+// 切换线索栏的展开 / 收起状态。不可用时不允许打开（返回 false）。
 function toggleCluePanel() {
-  if (!state.user.currentUser) return false;
+  if (!canUseClueBoard.value) return false;
   state.ui.cluePanelOpen = !state.ui.cluePanelOpen;
   return true;
 }
@@ -669,17 +647,12 @@ function resetProgress() {
     try {
       localStorage.removeItem(key);
     } catch (error) {
-      console.warn("[mistarg2anns] 清空本地收藏板失败", error);
+      console.warn("[mistarg2anns] 清空本地线索栏失败", error);
     }
   }
 }
 
 // ---------- 队伍操作 ----------
-
-// 从后端错误对象提取可读文案（含 detail.fields 里的字段级原因）。
-function teamErrorMessage(error, fallback) {
-  return extractErrorMessage(error, fallback);
-}
 
 // 当前登录账号的身份标识，用于判断异步响应是否仍属于当前活跃账号。
 function currentAccountKey() {
@@ -687,7 +660,7 @@ function currentAccountKey() {
   if (!user) {
     return null;
   }
-  return user.id ?? user.username ?? null;
+  return user.id ?? null;
 }
 
 // 队伍请求代号：每次发起新的 loadMyTeam 时递增，用于丢弃更早发出的过期响应。
@@ -720,7 +693,7 @@ async function loadMyTeam() {
   } catch (error) {
     return {
       ok: false,
-      message: teamErrorMessage(error, "获取队伍信息失败。"),
+      message: extractErrorMessage(error, "获取队伍信息失败。"),
     };
   }
 }
@@ -749,7 +722,7 @@ async function createTeam(name, intro = "") {
 
     return {
       ok: false,
-      message: teamErrorMessage(error, "创建队伍失败。"),
+      message: extractErrorMessage(error, "创建队伍失败。"),
       status: error?.status,
       code: payload?.code || payload?.error?.code || error?.code || "",
       // 400 E_VALIDATION 时后端会在 detail.fields 里写明原因；这里只取 name 的，
@@ -783,7 +756,7 @@ async function joinTeam(code) {
       data,
     };
   } catch (error) {
-    return { ok: false, message: teamErrorMessage(error, "加入队伍失败。") };
+    return { ok: false, message: extractErrorMessage(error, "加入队伍失败。") };
   }
 }
 
@@ -794,7 +767,10 @@ async function rotateInviteCode() {
     await loadMyTeam();
     return { ok: true, message: "邀请码已更新。" };
   } catch (error) {
-    return { ok: false, message: teamErrorMessage(error, "更换邀请码失败。") };
+    return {
+      ok: false,
+      message: extractErrorMessage(error, "更换邀请码失败。"),
+    };
   }
 }
 
@@ -810,7 +786,7 @@ async function setAutoApprove(enabled) {
   } catch (error) {
     return {
       ok: false,
-      message: teamErrorMessage(error, "设置自动审批失败。"),
+      message: extractErrorMessage(error, "设置自动审批失败。"),
     };
   }
 }
@@ -825,7 +801,7 @@ async function leaveTeam() {
       message: dissolved ? "你已退出并解散了队伍。" : "已退出队伍。",
     };
   } catch (error) {
-    return { ok: false, message: teamErrorMessage(error, "退出队伍失败。") };
+    return { ok: false, message: extractErrorMessage(error, "退出队伍失败。") };
   }
 }
 
@@ -836,7 +812,7 @@ async function confirmJoinRequest(requestId) {
     await loadMyTeam();
     return { ok: true, message: "已同意该加入申请。" };
   } catch (error) {
-    return { ok: false, message: teamErrorMessage(error, "同意申请失败。") };
+    return { ok: false, message: extractErrorMessage(error, "同意申请失败。") };
   }
 }
 
@@ -847,7 +823,7 @@ async function rejectJoinRequest(requestId) {
     await loadMyTeam();
     return { ok: true, message: "已拒绝该加入申请。" };
   } catch (error) {
-    return { ok: false, message: teamErrorMessage(error, "拒绝申请失败。") };
+    return { ok: false, message: extractErrorMessage(error, "拒绝申请失败。") };
   }
 }
 
@@ -858,7 +834,7 @@ async function cancelJoinRequest() {
     await loadMyTeam();
     return { ok: true, message: "已取消加入申请。" };
   } catch (error) {
-    return { ok: false, message: teamErrorMessage(error, "取消申请失败。") };
+    return { ok: false, message: extractErrorMessage(error, "取消申请失败。") };
   }
 }
 
@@ -869,7 +845,7 @@ async function startTeam() {
     await loadMyTeam();
     return { ok: true, message: "已确认参赛，队伍进入锁定态。" };
   } catch (error) {
-    return { ok: false, message: teamErrorMessage(error, "确认参赛失败。") };
+    return { ok: false, message: extractErrorMessage(error, "确认参赛失败。") };
   }
 }
 
@@ -882,7 +858,7 @@ async function cancelStartTeam() {
   } catch (error) {
     return {
       ok: false,
-      message: teamErrorMessage(error, "取消确认参赛失败。"),
+      message: extractErrorMessage(error, "取消确认参赛失败。"),
     };
   }
 }
@@ -894,7 +870,7 @@ async function removeMember(accountId) {
     await loadMyTeam();
     return { ok: true, message: "已移出该成员。" };
   } catch (error) {
-    return { ok: false, message: teamErrorMessage(error, "移出成员失败。") };
+    return { ok: false, message: extractErrorMessage(error, "移出成员失败。") };
   }
 }
 
@@ -905,7 +881,7 @@ async function transferCaptain(accountId) {
     await loadMyTeam();
     return { ok: true, message: "已转让队长。" };
   } catch (error) {
-    return { ok: false, message: teamErrorMessage(error, "转让队长失败。") };
+    return { ok: false, message: extractErrorMessage(error, "转让队长失败。") };
   }
 }
 
@@ -916,7 +892,7 @@ async function dissolveTeam() {
     await loadMyTeam();
     return { ok: true, message: "队伍已解散。" };
   } catch (error) {
-    return { ok: false, message: teamErrorMessage(error, "解散队伍失败。") };
+    return { ok: false, message: extractErrorMessage(error, "解散队伍失败。") };
   }
 }
 
@@ -925,10 +901,7 @@ async function dissolveTeam() {
 // 未读汇总请求代号：轮询、页面切换、标记已读后都会触发，只接受最新一次的结果。
 let unreadRequestGeneration = 0;
 
-// 刷新未读角标（GET /api/msg/mails/summary），把「收件箱 / 归档的未读封数」写入全局状态。
-// 2026-11-11（mistarg.2.0.0）起响应是嵌套形状 { inbox: { unread }, archive: { unread } }，
-// 只按「封」统计、不含自己发的；旧版的 threads / total 字段已不存在。
-// 失败时静默处理，不影响页面主流程。
+// 刷新未读角标（GET /api/msg/mails/summary），
 async function refreshUnreadSummary() {
   if (!state.user.currentUser) {
     state.unreadMessages = 0;
@@ -966,7 +939,6 @@ async function refreshUnreadSummary() {
 let tipsRequestGeneration = 0;
 
 // 刷新队伍 tips 余额（GET /api/tips/balance），供顶栏与求提示面板共用。
-// 无队伍是正常空值（200 + teamId:null + 零值），不算错误；失败时静默，保持上一次的数字。
 async function refreshTeamTips() {
   if (!state.user.currentUser) {
     state.teamTips = { loaded: false, hasTeam: false, balance: 0, today: null };
@@ -1000,9 +972,7 @@ async function refreshTeamTips() {
   }
 }
 
-// 刷新账号处罚状态（GET /api/me/status）。处罚可能被官方随时下发/解除、或 until 到期自动解除，
-// 所以必须轮询；封禁与禁言的口径见 api-11-moderation-mute.md。
-// 失败时静默（不覆盖已有状态），401 由请求层统一处理。
+// 刷新账号处罚状态（GET /api/me/status）
 async function refreshAccountStatus() {
   if (!state.user.currentUser) {
     state.accountStatus = createEmptyAccountStatus();
@@ -1046,11 +1016,6 @@ async function refreshAccountStatus() {
     };
 
     // 会话中途被封（本次登录时快照里还没有封禁）：立刻退出登录。
-    // 封禁会递增 token_version，旧令牌已全部失效；留在原地只会得到一串 401/403，
-    // 连 /me/* 申诉接口都调不动。封禁账号仍可登录，重新登录后即可申诉。
-    //
-    // 但 /me/status 的 banned 是「等效门禁状态」，队伍封禁（team.status=4）也同样为 true：
-    // 那种情况令牌仍然有效，把队员踢下线只会让他反复登录，所以只对**账号级**封禁强制登出。
     if (
       isAccountBanStatus(state.accountStatus) &&
       !state.sessionBanAcknowledged
@@ -1069,11 +1034,8 @@ async function refreshAccountStatus() {
 }
 
 // 收到 403 E_BANNED 时把账号标记为封禁（详情等 /me/status 回来再补全），
-// 让全局守卫先把界面切到申诉页。本地存的是旧结构时 accountStatus 可能缺失，这里补空对象。
+// 让全局守卫先把界面切到申诉页。
 function markAccountBanned() {
-  if (!state.accountStatus) {
-    state.accountStatus = createEmptyAccountStatus();
-  }
   state.accountStatus.loaded = true;
   state.accountStatus.banned = true;
   return state.accountStatus;
@@ -1084,9 +1046,6 @@ function markAccountBanned() {
 // banned 也置 true：后端 /me/status 的 banned 是「等效门禁状态」（含队伍封禁），
 // 全局守卫据此把用户收敛到申诉页；但这里**不写**个人处罚字段，AppealView 按 team.status 展示队伍封禁。
 function markTeamBanned(detail = {}) {
-  if (!state.accountStatus) {
-    state.accountStatus = createEmptyAccountStatus();
-  }
   const team = state.accountStatus.team ?? {};
   const reason = detail?.reason ?? team.reason ?? null;
   const until = detail?.until ?? team.until ?? null;
@@ -1130,7 +1089,6 @@ function applyAccountSnapshot(account) {
 
 // 强制退出登录：清本地令牌与账号状态，并尽力撤销服务端会话。
 // 封禁会递增 token_version（旧令牌全部失效），只有重新登录才能拿到能调 /me/* 的令牌；
-// 会话彻底失效（401 刷新也救不回来）时同样走这里，避免用户卡在「看似登录但什么都做不了」。
 // 调用后 currentUser 变 null，App 的守卫会把用户送回登录页。
 async function forceLogout(message = "") {
   state.sessionNotice = message;
@@ -1153,7 +1111,6 @@ function consumeSessionNotice() {
   return message;
 }
 
-// 组合式函数入口：任何组件调用都会获得同一份全局状态与同一组操作函数。
 export function useGameState() {
   return {
     state,
@@ -1177,10 +1134,10 @@ export function useGameState() {
     // 线索栏快照（api-13）
     applyClueBoardSnapshot,
     pendingClueBoardChanges,
-    markClueBoardRejected,
     hydrateBoardLabels,
     resetClueBoardSync,
     resetClueBoardLocal,
+    canUseClueBoard,
     toggleCluePanel,
     resetProgress,
     // 队伍接口操作

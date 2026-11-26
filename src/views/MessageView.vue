@@ -18,7 +18,6 @@ import StatusMessage from "@/components/StatusMessage.vue";
 import { messageApi } from "@/api/message";
 import { tipsApi } from "@/api/tips";
 import { useAttachments } from "@/composables/useAttachments";
-import { useMsgAttachments } from "@/composables/useMsgAttachments";
 import AttachmentPicker from "@/components/AttachmentPicker.vue";
 import AttachmentGallery from "@/components/AttachmentGallery.vue";
 import UserTabs from "@/components/UserTabs.vue";
@@ -131,7 +130,13 @@ const hintAttachments = useAttachments({
   onError: (text) => setNotice("error", text),
 });
 // 发信侧的附件开关（/api/msg/policy.attachmentsEnabled，严格判值：缺失即关闭）。
-const { attachmentsEnabled, loadPolicy } = useMsgAttachments();
+const attachmentsEnabled = ref(false);
+async function loadPolicy() {
+  const data = await messageApi
+    .getPolicy()
+    .then((payload) => payload?.data, () => null);
+  attachmentsEnabled.value = data?.attachmentsEnabled === true;
+}
 
 // 模板里用的解构别名（setup 里的顶层 ref 在模板中会自动解包，取 .value 反而读不到）
 const {

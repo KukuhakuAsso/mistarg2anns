@@ -23,8 +23,7 @@ function detectPlatform(ua) {
 }
 
 export function describeDevice() {
-  if (typeof navigator === "undefined") return "web-unknown-unknown";
-  const ua = navigator.userAgent || "";
+  const ua = globalThis.navigator?.userAgent || "";
   return `web-${detectBrowser(ua)}-${detectPlatform(ua)}`;
 }
 

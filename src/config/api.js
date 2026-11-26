@@ -21,10 +21,6 @@ function readApiEnvironment() {
   const configuredEnvironment =
     import.meta.env.VITE_API_ENVIRONMENT === "test" ? "test" : "production";
 
-  if (typeof window === "undefined") {
-    return configuredEnvironment;
-  }
-
   try {
     const savedEnvironment = window.localStorage.getItem(
       API_ENVIRONMENT_STORAGE_KEY,
@@ -61,12 +57,10 @@ export function setApiEnvironment(environment) {
   }
 
   apiEnvironment.value = environment;
-  if (typeof window !== "undefined") {
-    try {
-      window.localStorage.setItem(API_ENVIRONMENT_STORAGE_KEY, environment);
-    } catch (error) {
-      console.warn("[mistarg2anns] 保存 API 环境设置失败", error);
-    }
+  try {
+    window.localStorage.setItem(API_ENVIRONMENT_STORAGE_KEY, environment);
+  } catch (error) {
+    console.warn("[mistarg2anns] 保存 API 环境设置失败", error);
   }
 }
 
@@ -85,8 +79,7 @@ export function buildApiUrl(path) {
 
 // 当前 API 部署的源：baseUrl 可能是空、"/" 或绝对地址（如 https://api.example.com/）。
 function apiOrigin() {
-  const fallback =
-    typeof window === "undefined" ? "http://localhost" : window.location.origin;
+  const fallback = window.location.origin;
   try {
     return new URL(apiConfig.baseUrl || "/", fallback).origin;
   } catch {
@@ -105,8 +98,7 @@ export function isApiUrl(url) {
   // blob:/data: 不产生网络请求，谈不上携带凭证
   if (!raw || /^(?:blob|data):/i.test(raw)) return false;
 
-  const base =
-    typeof window === "undefined" ? "http://localhost/" : window.location.href;
+  const base = window.location.href;
   let parsed;
   try {
     parsed = new URL(raw, base);

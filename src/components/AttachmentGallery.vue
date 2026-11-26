@@ -22,10 +22,9 @@ function keyOf(item) {
 }
 
 function revoke(entry) {
-  if (entry?.blobUrl && typeof URL !== "undefined") {
-    URL.revokeObjectURL(entry.blobUrl);
-    entry.blobUrl = "";
-  }
+  if (!entry?.blobUrl) return;
+  URL.revokeObjectURL(entry.blobUrl);
+  entry.blobUrl = "";
 }
 
 async function loadInto(entry, rawUrl) {

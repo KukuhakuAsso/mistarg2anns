@@ -1,6 +1,6 @@
 // 站内信图片附件的客户端状态（api-8-message-mail.md §8.3）。
 //
-// 时序（已与后端确认）：选图 / 粘贴 / 拖拽 → 立刻 sign + 直传；
+// 时序：选图 / 粘贴 / 拖拽 → 立刻 sign + 直传；
 // 提交业务接口时只带 objectKey（未传完就禁止提交，失败可单张重试）。
 // 只上传没提交的临时对象由服务端按 TTL 清理，所以「移除」只是从列表里去掉，不调接口。
 //
@@ -21,16 +21,13 @@ function nextUid() {
 }
 
 export function useAttachments({ maxCount = IMAGE_MAX_COUNT, onError } = {}) {
-  // 每项：{ uid, file, filename, mime, sizeBytes, width, height, previewUrl,
-  //        objectKey, status: uploading|done|error, progress, error }
+  // 待发附件列表
   const items = ref([]);
   const dragging = ref(false);
   const issue = ref("");
   let dragDepth = 0;
 
-  // 正在校验（或排队等着校验）的文件数。inspectImageFile 是异步的（要解码图片），
-  // 这段时间 items 里还没有任何一项，所以单看 uploading 会漏掉「正在校验」这个状态：
-  // 选完图立刻点提交就能把不带附件的正文发出去。
+  // 正在校验（或排队等着校验）的文件数。和 uploading 一起决定 busy 状态。
   const validating = ref(0);
   // 取消代次：clear() / dispose() 时 +1。排队的批次与正在校验的批次都靠它作废 ——
   // 组件卸载后不该再解码图片、申请预览地址，更不该继续 sign + 上传。
@@ -44,9 +41,6 @@ export function useAttachments({ maxCount = IMAGE_MAX_COUNT, onError } = {}) {
     if (issue.value) onError?.(issue.value);
   }
 
-  const count = computed(() => items.value.length);
-  const hasItems = computed(() => items.value.length > 0);
-  const canAdd = computed(() => items.value.length < maxCount);
   const uploading = computed(() =>
     items.value.some((item) => item.status === "uploading"),
   );
@@ -56,18 +50,11 @@ export function useAttachments({ maxCount = IMAGE_MAX_COUNT, onError } = {}) {
   const failed = computed(() =>
     items.value.some((item) => item.status === "error"),
   );
-  // 有图且全部传完才能提交（提交时只带 objectKey）
-  const ready = computed(
-    () =>
-      items.value.length > 0 &&
-      items.value.every((item) => item.status === "done" && item.objectKey),
-  );
 
   function releasePreview(item) {
-    if (item?.previewUrl && typeof URL !== "undefined") {
-      URL.revokeObjectURL(item.previewUrl);
-      item.previewUrl = "";
-    }
+    if (!item?.previewUrl) return;
+    URL.revokeObjectURL(item.previewUrl);
+    item.previewUrl = "";
   }
 
   async function upload(item) {
@@ -166,8 +153,7 @@ export function useAttachments({ maxCount = IMAGE_MAX_COUNT, onError } = {}) {
         sizeBytes: result.sizeBytes,
         width: result.width,
         height: result.height,
-        previewUrl:
-          typeof URL !== "undefined" ? URL.createObjectURL(file) : "",
+        previewUrl: URL.createObjectURL(file),
         objectKey: "",
         status: "pending",
         progress: 0,
@@ -179,7 +165,8 @@ export function useAttachments({ maxCount = IMAGE_MAX_COUNT, onError } = {}) {
     }
 
     if (failures.length) message = failures[0];
-    else if (skipped > 0) message = `最多只能附带 ${maxCount} 张图片，多余的已忽略。`;
+    else if (skipped > 0)
+      message = `最多只能附带 ${maxCount} 张图片，多余的已忽略。`;
     setIssue(message);
   }
 
@@ -280,15 +267,9 @@ export function useAttachments({ maxCount = IMAGE_MAX_COUNT, onError } = {}) {
     items,
     dragging,
     issue,
-    count,
-    hasItems,
-    canAdd,
     uploading,
-    validating,
     busy,
     failed,
-    ready,
-    maxCount,
     addFiles,
     remove,
     retry,

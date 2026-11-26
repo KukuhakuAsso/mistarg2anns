@@ -11,17 +11,17 @@ const { drag } = useClueDrag();
 
 // 拖动中的卡：优先用这次拖拽携带的元数据（从档案拖新题时 boardLabels 里还没有它），
 // 其次回落到已收藏的快照（从待用区 / 板面拖动时）。
+// 两者都没有（跨设备同步来的卡且该题已不在 map 里）时用 clueId 兜底，
+// 与 boardClues / poolClues 的口径一致 —— 否则浮层整块不渲染，看起来像拖拽失灵。
 const clue = computed(() => {
     if (!drag.clueId) return null;
     const label = drag.meta ?? state.boardLabels?.[drag.clueId] ?? null;
-    return label
-        ? {
-              id: drag.clueId,
-              title: label.title,
-              folderName: label.subtitle ?? "",
-              cover: label.cover ?? null,
-          }
-        : null;
+    return {
+        id: drag.clueId,
+        title: label?.title || drag.clueId,
+        folderName: label?.subtitle ?? "",
+        cover: label?.cover ?? null,
+    };
 });
 
 const style = computed(() => ({

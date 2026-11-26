@@ -4,22 +4,14 @@ import { extractErrorInfo, extractErrorMessage } from "@/utils/errors";
 // access token key JWT，2 小时。所有需要登录的接口用 Authorization: Bearer <token>
 const ACCESS_TOKEN_KEY = "mistarg_access_token";
 
+// 代表正在进行的刷新请求，避免并发重复刷新。
 let refreshRequestPromise = null;
 
 // 会话代次：登录、注册、改名 / 改密换令牌、登出、强制登出都会 +1。
-//
-// 刷新令牌是异步的（一次带 Cookie 的网络往返）。若 A 的刷新还没回来，用户已经登出、
-// B 又登录进来，那么这次响应属于**旧会话**：既不能拿它的 access_token 覆盖 B 的令牌，
-// 也不能拿它重试原请求（否则之后所有请求都会以 A 的身份发出）。
-// 所以刷新在发起时记下代次，写回前比对，不一致就整份丢弃。
 let sessionGeneration = 0;
 
-// 读取 localStorage；环境不可用（无 window / 隐私模式）时返回 null。
+// 读取 localStorage；不可用（隐私模式 / 受限环境）时返回 null。
 function readStorage(key) {
-  if (typeof window === "undefined") {
-    return null;
-  }
-
   try {
     return window.localStorage.getItem(key);
   } catch {
@@ -29,10 +21,6 @@ function readStorage(key) {
 
 // 写入 localStorage；失败时静默忽略。
 function writeStorage(key, value) {
-  if (typeof window === "undefined") {
-    return;
-  }
-
   try {
     window.localStorage.setItem(key, value);
   } catch {
@@ -42,10 +30,6 @@ function writeStorage(key, value) {
 
 // 删除 localStorage 中的键；失败时静默忽略。
 function removeStorage(key) {
-  if (typeof window === "undefined") {
-    return;
-  }
-
   try {
     window.localStorage.removeItem(key);
   } catch {
@@ -59,8 +43,7 @@ function getAccessToken() {
 }
 
 // 保存 access token；传入空值时改为清除。
-// 这是「身份变更」入口（登录 / 注册 / 改名 / 改密拿到新令牌），必须推进会话代次：
-// 还在飞的旧会话刷新从此作废。刷新自身的写回不走这里，见 applyRefreshedToken()。
+// 推进会话代次
 export function setAccessToken(token) {
   sessionGeneration += 1;
 
@@ -73,13 +56,13 @@ export function setAccessToken(token) {
 }
 
 // 清除本地 access token（登出 / 强制登出 / 令牌彻底失效）。
-// 同样推进代次：在飞的刷新回来后会被判定为旧会话，不会再写回令牌。
+// 同样推进代次
 export function clearAccessToken() {
   sessionGeneration += 1;
   removeStorage(ACCESS_TOKEN_KEY);
 }
 
-// 刷新专用写回：只有代次没变（仍是同一个会话）时才落盘，自己不推进代次。
+// 刷新专用写回：自己不推进代次。
 // 返回是否写回成功。
 function applyRefreshedToken(token, generation) {
   if (!token || generation !== sessionGeneration) return false;
@@ -89,7 +72,9 @@ function applyRefreshedToken(token, generation) {
 
 // 把查询参数拼接到 URL 上；跳过 undefined / null / 空字符串，数组值按重复键展开。
 function appendQueryString(url, params = {}) {
-  const entries = Object.entries(params || {}).filter(([, value]) => value !== undefined && value !== null && value !== "");
+  const entries = Object.entries(params || {}).filter(
+    ([, value]) => value !== undefined && value !== null && value !== "",
+  );
   if (!entries.length) {
     return url;
   }
@@ -107,7 +92,6 @@ function appendQueryString(url, params = {}) {
   return `${url}${separator}${query.toString()}`;
 }
 
-// 从错误响应中提取可读文案：依次尝试 error.message、message、error，都没有时返回兜底文案。
 // 读取响应体并尽力解析为 JSON；raw 为 true 时额外带上原始 Response 与解析结果。
 async function readResponse(response, raw = false) {
   const text = await response.text();
@@ -133,7 +117,8 @@ async function refreshAccessToken(generation = sessionGeneration) {
   if (refreshRequestPromise) {
     const shared = await refreshRequestPromise;
     // 共享的那次刷新属于另一个会话：它的结果不能当成自己的
-    if (shared.generation !== generation) return { ok: false, stale: true, generation };
+    if (shared.generation !== generation)
+      return { ok: false, stale: true, generation };
     return shared;
   }
 
@@ -169,14 +154,22 @@ async function refreshAccessToken(generation = sessionGeneration) {
         ok: false,
         stale: false,
         generation,
-        error: new Error(extractErrorMessage(payload) || "Refresh token expired or invalid."),
+        error: new Error(
+          extractErrorMessage(payload) || "Refresh token expired or invalid.",
+        ),
       };
     }
 
-    const nextToken = payload?.data?.access_token || payload?.access_token || payload?.token;
+    const nextToken =
+      payload?.data?.access_token || payload?.access_token || payload?.token;
     // 写回前再比一次代次（readResponse 也是异步的）
     applyRefreshedToken(nextToken, generation);
-    return { ok: true, stale: generation !== sessionGeneration, generation, payload };
+    return {
+      ok: true,
+      stale: generation !== sessionGeneration,
+      generation,
+      payload,
+    };
   })();
 
   refreshRequestPromise = task;
@@ -196,7 +189,7 @@ export async function request(path, options = {}) {
     body,
     headers = {},
     params = {},
-    useAuth = false,  // 是否使用鉴权，即是否在请求头中带上 access token
+    useAuth = false, // 是否使用鉴权，即是否在请求头中带上 access token
     skipRefresh = false, // 是否跳过刷新 access token 的逻辑
     raw = false,
     signal,
@@ -226,20 +219,17 @@ export async function request(path, options = {}) {
   }
 
   // 发起前记下会话代次：这次请求属于哪个会话，由「发出时」决定，而不是响应回来时。
-  // 否则 A 会话发出的请求在 B 登录之后才 401，会被当成 B 的请求、用 B 的凭证重放一次，
-  // A 的 method/body 就落到了 B 的账号上。
   const generation = sessionGeneration;
 
   let response = await fetch(url, fetchOptions);
-  
+
   if (
     response.status === 401 &&
     useAuth &&
     !skipRefresh &&
     !String(path).includes("/auth/refresh")
   ) {
-    // 旧会话的请求：既不能拿新会话刷新出来的令牌重试（会用新身份重放旧请求），
-    // 也不能继续往下走到 notifySessionLost —— 那会把刚登录的新会话踢下线。
+    // 旧会话的请求
     if (generation !== sessionGeneration) {
       throw await responseError(response);
     }
@@ -267,48 +257,54 @@ export async function request(path, options = {}) {
   const payload = await readResponse(response, raw);
 
   if (!response.ok) {
-    const message = extractErrorMessage(payload);
-    const info = extractErrorInfo(payload);
-    const error = new Error(message);
-    error.status = response.status;
-    error.payload = payload;
-    error.code = info.code || undefined;
-    // 封禁类 403 的机读原因（ACCOUNT_BANNED / TEAM_BANNED）：调用方按它区分账号封禁与队伍封禁
-    error.reasonCode = info.reasonCode || "";
-    // 账号被封禁：除 /me/* 三条申诉接口外一切接口都 403 E_BANNED。
-    // 广播一次，交给 App.vue 把界面切到申诉页（这里不直接依赖路由，避免循环引用）。
-    if (error.code === "E_BANNED" && typeof window !== "undefined") {
-      window.dispatchEvent(
-        new CustomEvent("mistarg:banned", { detail: payload?.error?.detail ?? {} }),
-      );
-    }
-    // 刷新后仍是 401：会话无法恢复，交给 App 统一登出并回到登录页
-    if (response.status === 401 && useAuth) {
-      notifySessionLost();
-    }
-    throw error;
+    throw buildApiError(response, payload, { broadcast: true, useAuth });
   }
 
-  return raw ? payload : payload;
+  return payload;
 }
 
 // 会话彻底失效（刷新也救不回来）时广播，由 App.vue 统一登出并回到登录页。
 function notifySessionLost() {
-  if (typeof window === "undefined") return;
   window.dispatchEvent(new CustomEvent("mistarg:session-lost"));
 }
 
-// 把一次失败的响应收成错误对象（与下面非 2xx 的出口同形，但不广播会话失效）。
-// 用于「旧会话的 401」：当前会话本身是好的，不能因为上一个会话的请求把新会话踢下线。
-async function responseError(response) {
-  const payload = await readResponse(response);
+// 把响应收成本项目的错误对象。
+// broadcast=false 专供「旧会话的 401」：当前会话本身是好的，
+// 广播会把刚登录的新会话踢下线，所以那两条路径只抛错。
+function buildApiError(
+  response,
+  payload,
+  { broadcast = false, useAuth = false } = {},
+) {
   const info = extractErrorInfo(payload);
   const error = new Error(extractErrorMessage(payload));
   error.status = response.status;
   error.payload = payload;
   error.code = info.code || undefined;
+  // 封禁类 403 的机读原因（ACCOUNT_BANNED / TEAM_BANNED）：调用方按它区分账号封禁与队伍封禁
   error.reasonCode = info.reasonCode || "";
+
+  if (!broadcast) return error;
+
+  // 账号被封禁：除 /me/* 三条申诉接口外一切接口都 403 E_BANNED。
+  // 广播一次，交给 App.vue 把界面切到申诉页（这里不直接依赖路由，避免循环引用）。
+  if (error.code === "E_BANNED") {
+    window.dispatchEvent(
+      new CustomEvent("mistarg:banned", {
+        detail: payload?.error?.detail ?? {},
+      }),
+    );
+  }
+  // 刷新后仍是 401：会话无法恢复，交给 App 统一登出并回到登录页
+  if (response.status === 401 && useAuth) {
+    notifySessionLost();
+  }
   return error;
+}
+
+// 旧会话的 401：只收成错误对象，不广播任何全局事件。
+async function responseError(response) {
+  return buildApiError(response, await readResponse(response));
 }
 
 export default request;
@@ -336,13 +332,11 @@ function getAuthHeaders(extra = {}) {
 // 描述符，resolveServerUrl() 对绝对地址是原样透传的 —— 一旦后端改了约定（CDN 直链、
 // 脏数据、被篡改的记录），无条件加 Authorization 就会把访问令牌与测试票据送给第三方。
 //
-// 已知未覆盖的情况（PR #101 review，2026-11-10 决定不修）：本函数只校验**初始** URL，
-// 而 fetch 默认跟随重定向；若后端把某个素材 / 组件端点改成 302 到 CDN，浏览器会剥掉
-// Authorization，但**不会**剥掉 X-Mistarg-Test-Ticket。生产构建没有配置测试票据
-// （.env.production 无 VITE_X_MISTARG_TEST_TICKET，getApiHeaders 不会加这个头），
-// 所以泄露面仅限 dev / test 构建；玩家侧 media / asset 两个端点按 api-12 是 200 直出，
-// 目前不会发生重定向。若将来后端改成 302，需要改为后端同源直传或在此处做 manual 探测。
-export async function fetchWithAuth(url, options = {}, { retried = false } = {}) {
+export async function fetchWithAuth(
+  url,
+  options = {},
+  { retried = false } = {},
+) {
   const { headers = {}, ...init } = options;
   const trusted = isApiUrl(url);
 

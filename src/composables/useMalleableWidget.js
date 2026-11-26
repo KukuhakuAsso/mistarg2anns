@@ -1,12 +1,9 @@
 // 可塑区组件的加载器：fetch → sha384 校验 → Blob → import() → customElements.whenDefined。
 //
-// 关键约束（api-12）：
+// 关键约束：
 //   * 顺序不可换，校验不通过必须中止，绝不执行未通过校验的代码；
 //   * 组件包内联了自己的 Vue 运行时，跨边界只传纯数据（props），不传宿主的响应式对象；
 //   * 同一 tag 已注册就不再下载；props 变化不需要重新下载，rev 变化只需刷新数据。
-//
-// 实测服务端有两种下发形态：直接 200 + text/javascript，或 302 到 CDN 鉴权地址。
-// fetch 默认跟随跳转，两种形态都会落到同一段「取文本」逻辑上。
 import { ref } from "vue";
 import { fetchWithAuth } from "@/api/request";
 import { extractErrorMessage } from "@/utils/errors";
@@ -91,9 +88,7 @@ export function useMalleableWidget() {
 
   async function ensure(asset) {
     // 没有 asset（组件已停用 / 切到没有可塑区的题）：交给调用方显示区内 fallback。
-    // 必须先作废在飞的加载（cancel() 内部推进 token 并清空 tag）：
-    // 否则上一次 loadAsset 回来时 current === token 仍成立，会把**旧组件**挂到
-    // 这个已经没有可用描述符的可塑区上，覆盖掉这里的 error。
+    // 必须先作废在飞的加载（cancel() 内部推进 token 并清空 tag）
     if (!asset?.tag || !asset?.url) {
       cancel();
       tag.value = "";

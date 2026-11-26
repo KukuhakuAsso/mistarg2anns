@@ -71,8 +71,7 @@ export function useClueDrag() {
         if (drag.clueId && rect && drag.overBoard) {
             const x = clamp(drag.x - rect.left - drag.offsetX, 0, rect.width - drag.w);
             const y = clamp(drag.y - rect.top - drag.offsetY, 0, rect.height - drag.h);
-            // 只有真正落到板面上才算「收藏」。在 pointerdown 就登记的话，
-            // 普通点击（只想读题）和拖到一半松手放弃都会把题目永久塞进待用区。
+            // 只有真正落到板面上才算「收藏」。
             if (drag.meta) registerBoardCard(drag.meta);
             placeClue(drag.clueId, Math.round(x), Math.round(y));
         } else if (drag.clueId && drag.source === "board") {

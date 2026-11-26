@@ -12,7 +12,7 @@ const props = defineProps({
   runtime: { type: Object, default: null },
   // 完整题目视图（含 malleable / hints 等），透给组件的 pz.snapshot().view
   view: { type: Object, default: null },
-  // 显式指定宿主模式（管理端预览传 "preview"）；留空按 runtime 是否存在推断
+  // 显式指定宿主模式；留空按 runtime 是否存在推断
   mode: { type: String, default: "" },
 });
 

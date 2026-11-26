@@ -1,5 +1,5 @@
 <script setup>
-// 操作结果提示（各页面共用）：按语义上色，比普通说明文字更醒目。
+// 操作结果提示（各页面共用）
 // 配色与用户名 / 队名查重提示（NameStatus.vue）保持一致，且不随主题切换。
 // 文案与语义色由 useStatusMessage 提供，这里只负责展示。
 defineProps({
@@ -9,10 +9,6 @@ defineProps({
 </script>
 
 <template>
-  <!--
-    常驻节点（不用 v-if）：live region 必须在文案出现前就存在于 DOM 中，
-    否则首条提示往往不会被读屏播报；无文案时用 .is-empty 折叠占位。
-  -->
   <p
     class="status-message"
     :class="[`is-${tone}`, { 'is-empty': !message }]"

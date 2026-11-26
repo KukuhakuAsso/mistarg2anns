@@ -57,7 +57,7 @@ export async function readImageSize(file) {
   }
 
   const ImageCtor = globalThis.Image;
-  if (typeof ImageCtor !== "function" || typeof URL === "undefined") {
+  if (typeof ImageCtor !== "function") {
     return null;
   }
 

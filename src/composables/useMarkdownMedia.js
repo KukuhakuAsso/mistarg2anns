@@ -1,4 +1,4 @@
-// Markdown 正文里的受保护图片（`![x](/api/puzzle/media/18)`）。
+// Markdown 正文里的受保护图片
 //
 // 渲染器（miniMarkdown）只输出占位：<img data-media-path="/api/puzzle/media/18" ...>，
 // 没有 src —— 原生 <img> 带不上 Authorization 头，也绕过了 resolveServerUrl() 的前缀重写。
@@ -63,9 +63,8 @@ export function useMarkdownMedia(containerRef, htmlRef) {
     }
   }
 
-  // flush: "post" —— 等 v-html 把新内容写进 DOM 之后再查询节点；
-  // 同时监听容器本身，覆盖 v-if 重新创建元素（同一份 HTML 也会重建 DOM）的情况。
-  watch([containerRef, htmlRef], hydrate, { flush: "post", immediate: true });
+  // flush: "post" —— 等 v-html 把新内容写进 DOM 之后再查询节点，否则拿到的是旧节点。
+  watch([containerRef, htmlRef], hydrate, { flush: "post" });
 
   onBeforeUnmount(() => {
     generation += 1;

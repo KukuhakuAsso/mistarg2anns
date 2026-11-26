@@ -29,6 +29,7 @@ const {
   addClueToBoard,
   uncollectCard,
   pendingClueBoardChanges,
+  canUseClueBoard,
 } = useGameState();
 const { boardEl, drag, startDrag } = useClueDrag();
 const { flush: flushClueBoard, cooldownRemaining } = useClueBoardSync();
@@ -128,7 +129,6 @@ const resizing = ref(false);
 let resizeStart = null;
 
 function readStoredWidth() {
-  if (typeof window === "undefined") return null;
   try {
     const raw = window.localStorage.getItem(WIDTH_STORAGE_KEY);
     if (!raw) return null;
@@ -142,7 +142,6 @@ function readStoredWidth() {
 }
 
 function persistWidth(value) {
-  if (typeof window === "undefined") return;
   try {
     if (value == null) {
       window.localStorage.removeItem(WIDTH_STORAGE_KEY);
@@ -253,9 +252,9 @@ function onPoolPointerDown(event, clue) {
 </script>
 
 <template>
-  <!-- 线索栏需要登录：未登录时即使本地记着「展开」也不显示 -->
+  <!-- 线索栏需要登录且已进入游戏（未组队 / 未确认参赛 / 未开赛时不可用） -->
   <aside
-    v-show="state.user.currentUser && state.ui.cluePanelOpen"
+    v-show="canUseClueBoard && state.ui.cluePanelOpen"
     ref="panelEl"
     class="clue-board"
     :class="{ 'is-resizing': resizing }"

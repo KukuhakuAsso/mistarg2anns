@@ -6,11 +6,15 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { meApi } from "@/api/me";
 import { extractErrorMessage } from "@/utils/errors";
-import { isAccountBanStatus, BAN_SCOPE_TEAM, resolveErrorBanScope } from "@/utils/banScope";
+import {
+  isAccountBanStatus,
+  BAN_SCOPE_TEAM,
+  resolveErrorBanScope,
+} from "@/utils/banScope";
 import { useGameState } from "@/composables/useGameState";
 import { useStatusMessage } from "@/composables/useStatusMessage";
 import { useAttachments } from "@/composables/useAttachments";
-import { useMsgAttachments } from "@/composables/useMsgAttachments";
+import { messageApi } from "@/api/message";
 import AttachmentPicker from "@/components/AttachmentPicker.vue";
 import AttachmentGallery from "@/components/AttachmentGallery.vue";
 import StatusMessage from "@/components/StatusMessage.vue";
@@ -39,7 +43,14 @@ const {
 // 开关统一读 /api/msg/policy 的 attachmentsEnabled（2026-10-31 与后端确认：
 // 封禁账号也能调用 policy，所以申诉页不再依赖 /me/status 的同名字段）。
 // 严格判值：缺失 / 请求失败即视为关闭，不渲染选图入口。sign / media 对封禁与禁言账号放行。
-const { attachmentsEnabled, loadPolicy } = useMsgAttachments();
+const attachmentsEnabled = ref(false);
+async function loadPolicy() {
+  const data = await messageApi.getPolicy().then(
+    (payload) => payload?.data,
+    () => null,
+  );
+  attachmentsEnabled.value = data?.attachmentsEnabled;
+}
 const {
   items: attachments,
   dragging: attachmentsDragging,
@@ -518,12 +529,15 @@ onBeforeUnmount(() => {
           <p v-else-if="teamBanned" class="helper-text">
             队伍封禁期间与账号封禁口径相同：除申诉相关接口外功能页全部不可用
             （403），你的账号本身没有被处罚。
-            {{ teamAppeal
-              ? "你是队长，可在下方「队伍申诉」中提交申诉，官方回复写在队伍频道（全队可见）。"
-              : "队伍封禁只有队长可以代表队伍申诉。" }}
+            {{
+              teamAppeal
+                ? "你是队长，可在下方「队伍申诉」中提交申诉，官方回复写在队伍频道（全队可见）。"
+                : "队伍封禁只有队长可以代表队伍申诉。"
+            }}
           </p>
           <p v-else-if="muted" class="helper-text">
-            禁言期间只关闭发信通道：站内信与求提示的只读、确认报价 / 申请降价 / 关闭仍可用。
+            禁言期间只关闭发信通道：站内信与求提示的只读、确认报价 / 申请降价 /
+            关闭仍可用。
           </p>
 
           <!-- 申诉主体：账号申诉 / 队伍申诉（队长且队伍有可申诉处罚时出现） -->
@@ -547,12 +561,14 @@ onBeforeUnmount(() => {
             <strong>{{ kindText(appeal?.kind) }}</strong>
             <span>申诉额度</span>
             <strong>
-              {{ appeal?.used ?? 0 }}/{{ appeal?.limit ?? 3 }}
-              （剩余 {{ appeal?.remaining ?? 0 }} 条）
+              {{ appeal?.used ?? 0 }}/{{ appeal?.limit ?? 3 }} （剩余
+              {{ appeal?.remaining ?? 0 }} 条）
             </strong>
           </div>
 
-          <p v-if="appealStateText" class="helper-text">{{ appealStateText }}</p>
+          <p v-if="appealStateText" class="helper-text">
+            {{ appealStateText }}
+          </p>
 
           <!-- 官方最近回复 -->
           <div v-if="appeal?.last_reply" class="reply-card">
@@ -892,7 +908,10 @@ onBeforeUnmount(() => {
   cursor: pointer;
   background: rgba(255, 255, 255, 0.02);
   color: var(--text);
-  transition: filter 0.2s ease, opacity 0.2s ease, border-color 0.2s ease;
+  transition:
+    filter 0.2s ease,
+    opacity 0.2s ease,
+    border-color 0.2s ease;
 }
 
 .secondary-button {

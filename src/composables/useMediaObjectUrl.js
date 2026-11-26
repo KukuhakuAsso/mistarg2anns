@@ -46,7 +46,8 @@ function addRetryHandler(path, handler) {
   set.add(handler);
   return () => {
     set.delete(handler);
-    if (!set.size && retryHandlers.get(path) === set) retryHandlers.delete(path);
+    if (!set.size && retryHandlers.get(path) === set)
+      retryHandlers.delete(path);
   };
 }
 
@@ -54,7 +55,6 @@ function addRetryHandler(path, handler) {
 export const failedMediaPaths = computed(() => failedPaths.value);
 
 // 重试失败的素材：paths 为空表示全部；不传则重试所有失败项。
-// 只挑「确实处于失败态」的消费者，成功的不重新下载。
 export function retryFailedMedia(paths = null) {
   const targets = paths ? new Set(paths) : null;
   for (const [path, handlers] of [...retryHandlers]) {
@@ -64,10 +64,11 @@ export function retryFailedMedia(paths = null) {
   }
 }
 
-// 获取素材的 blob URL，并管理引用计数。
-// 返回值是「这条记录」本身：调用方必须持有它，释放时交回来（见 release）。
+// 获取素材的 blob URL，并管理引用计数。非组件场景（如 Markdown 正文里的图片）
+// 也走这里，与 useMediaObjectUrl 共用同一份缓存与引用计数。
+// 返回值是「这条记录」本身：调用方必须持有它，释放时交回来（见 releaseMediaRecord）。
 // fresh=true 用于「用户点重试」：不沿用失败记录，立刻重新发起。
-function acquire(path, { fresh = false } = {}) {
+export function acquireMediaRecord(path, { fresh = false } = {}) {
   let record = cache.get(path);
 
   // 失败记录过了保留期：直接作废（定时器可能还没跑到，这里兜底）
@@ -94,7 +95,10 @@ function acquire(path, { fresh = false } = {}) {
         throw new Error(
           response.status === 429 && waitSec > 0
             ? `请求过于频繁，请 ${waitSec} 秒后再试`
-            : extractErrorMessage(payload, `素材加载失败（${response.status}）`),
+            : extractErrorMessage(
+                payload,
+                `素材加载失败（${response.status}）`,
+              ),
         );
       }
       const blob = await response.blob();
@@ -115,29 +119,14 @@ function acquire(path, { fresh = false } = {}) {
   return record;
 }
 
-// 释放「自己持有的那条记录」（不是「当前路径对应的记录」）。
-//
-// 按路径去缓存里重查是错的：请求失败时缓存项会被删掉，别人重试会建一条新记录，
-// 这时旧消费者再按路径释放，减到的是别人的计数，refs 归零后就把别人还在用的
-// blob URL 撤销了（图直接裂开，status 却还停在 ready）。
-function release(record) {
+// 释放「自己持有的那条记录」。
+export function releaseMediaRecord(record) {
   if (!record) return;
   record.refs -= 1;
   if (record.refs > 0) return;
   // 只在缓存仍然指向自己时才删表；否则那条是别人的新记录，不归我们管
   if (cache.get(record.path) === record) cache.delete(record.path);
   record.promise.then((url) => URL.revokeObjectURL(url)).catch(() => {});
-}
-
-// 非组件场景（如 Markdown 正文里的图片）复用同一份缓存与引用计数。
-// 与 useMediaObjectUrl 一样持有「记录」而不是路径：释放时必须还回同一条，
-// 否则失败重试后可能减到别人新建记录的计数，把还在用的 blob 撤销掉（图直接裂开）。
-export function acquireMediaRecord(path, options) {
-  return acquire(path, options);
-}
-
-export function releaseMediaRecord(record) {
-  release(record);
 }
 
 // 使用素材的 blob URL 的组合式函数。
@@ -158,8 +147,6 @@ export function useMediaObjectUrl(source) {
   let unregisterRetry = null;
   let failedPath = "";
   // 加载代次：只有最新一次 load 能改状态与失败计数。
-  // A → 空 → A 会复用同一条记录（activeRecord 相同），只比记录身份会让两个
-  // rejection 处理器都通过，failedCounts 被 +2 而 clear() 只 -1，路径永久残留。
   let loadSeq = 0;
 
   // getter 与 ref 都要能读到最新值：unref 只解包 ref，函数需要主动调用。
@@ -173,7 +160,7 @@ export function useMediaObjectUrl(source) {
       bumpFailed(failedPath, -1);
       failedPath = "";
     }
-    if (activeRecord) release(activeRecord);
+    if (activeRecord) releaseMediaRecord(activeRecord);
     activeRecord = null;
     src.value = "";
     status.value = "idle";
@@ -189,14 +176,12 @@ export function useMediaObjectUrl(source) {
     const my = ++loadSeq;
     status.value = "loading";
 
-    const record = acquire(path, { fresh });
+    const record = acquireMediaRecord(path, { fresh });
     activeRecord = record;
     unregisterRetry = addRetryHandler(path, () => load(path, { fresh: true }));
 
     try {
       const url = await record.promise;
-      // 用记录身份而不是路径判断：A→B→A 这种来回切换时路径会重复，
-      // 只比路径会把迟到的旧响应写进新状态；loadSeq 再挡掉复用同一记录的旧加载。
       if (my !== loadSeq || activeRecord !== record) return;
       src.value = url;
       status.value = "ready";

@@ -52,14 +52,15 @@ let flushTimer = null;
 
 // 会话代次：reset()（登出 / 换账号）时 +1。
 // 在飞的 pull / flush 每个 await 之后都要比对：代次变了说明结果属于上一个账号，
-// 不能再写 state、markClueBoardRejected 或改冷却窗口。
+// 不能再写 state、也不能改冷却窗口。
 let sessionEpoch = 0;
 
-// 读取账号标识，用来判断异步响应回来时是否已经换了账号
+// 读取账号标识，用来判断异步响应回来时是否已经换了账号。
+// 与 useGameState 的 currentAccountKey 保持一致：只用 id，不用 username 兜底。
 function accountKeyOf(state) {
   const user = state.user.currentUser;
   if (!user) return null;
-  return user.id ?? user.username ?? null;
+  return user.id ?? null;
 }
 
 // 冷却窗口按账号取；没有记录 = 可以立即上传
@@ -79,7 +80,6 @@ export function useClueBoardSync() {
     state,
     applyClueBoardSnapshot,
     pendingClueBoardChanges,
-    markClueBoardRejected,
     hydrateBoardLabels,
     resetClueBoardSync,
   } = useGameState();
@@ -113,7 +113,8 @@ export function useClueBoardSync() {
         const payload = await clueBoardApi.getSnapshot();
         // 期间登出 / 换账号：这份快照属于上一个账号，直接丢弃
         if (epoch !== sessionEpoch) return { ok: false, stale: true };
-        if (accountKey !== accountKeyOf(state)) return { ok: false, stale: true };
+        if (accountKey !== accountKeyOf(state))
+          return { ok: false, stale: true };
         applyClueBoardSnapshot(payload?.data?.items ?? []);
         hydrateFromMap();
         return { ok: true };
@@ -167,14 +168,15 @@ export function useClueBoardSync() {
         });
         // 写回前再比一次代次与账号：响应属于旧会话就整份丢弃
         if (epoch !== sessionEpoch) return { ok: false, stale: true };
-        if (accountKey !== accountKeyOf(state)) return { ok: false, stale: true };
+        if (accountKey !== accountKeyOf(state))
+          return { ok: false, stale: true };
         // 响应是合并后的全量快照，直接当作新的「已知服务端状态」
         applyClueBoardSnapshot(payload?.data?.items ?? []);
         hydrateFromMap();
         setCooldown(accountKey, Date.now() + UPLOAD_COOLDOWN_MS);
         return { ok: true, uploaded: items.length };
       } catch (error) {
-        // 旧会话的失败不能影响新会话：不写冷却、不标拒绝
+        // 旧会话的失败不能影响新会话
         if (epoch !== sessionEpoch) return { ok: false, stale: true };
         if (error?.status === 429) {
           const retry = Number(error.payload?.error?.detail?.retry_after_sec);
@@ -183,13 +185,12 @@ export function useClueBoardSync() {
           return { ok: false, retryAfter: seconds };
         }
         if (error?.status === 400) {
-          // 校验失败：把这批条目标成「已拒绝」，冷却结束后不再重发同一份数据，
-          // 等用户把卡片挪到新坐标再试（坐标变化就是新数据）
+          // 校验失败：本地改动保留，冷却结束后会重算差异再试（能自愈）。
+          // payload 在发送前已过 sanitizeItems，走到这里通常意味着契约变更。
           console.warn(
-            "[mistarg2anns] 线索栏快照被拒绝，本次改动暂不重试",
+            "[mistarg2anns] 线索栏快照被服务端拒绝，稍后重试",
             error?.message,
           );
-          markClueBoardRejected(items);
           setCooldown(accountKey, Date.now() + UPLOAD_COOLDOWN_MS);
           return { ok: false, rejected: true };
         }
@@ -207,7 +208,6 @@ export function useClueBoardSync() {
 
   // 本地一改就排一次上传：冷却没到的话 flush 会立刻返回，本地状态照常可用。
   // 只有真的存在差异才排队 —— applyClueBoardSnapshot 每次都会整体替换 board，
-  // 不判断差异的话「应用快照 → 触发 watch → 3 秒后 flush → 再应用快照」会变成定时 GET 循环。
   function scheduleFlush() {
     if (!state.user.currentUser) return;
     if (!pendingClueBoardChanges().length) return;

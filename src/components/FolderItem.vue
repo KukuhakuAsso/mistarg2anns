@@ -1,26 +1,19 @@
 <script setup>
-// 主界面上的单个文件夹入口：解锁可进入，未解锁只显示解锁条件。
+// 主界面上的单个文件夹入口：显示名称与状态角标（已完成 / 新文件）。
 import { computed } from "vue";
 import AppIcon from "@/components/AppIcon.vue";
 
 const props = defineProps({
     folder: { type: Object, required: true },
-    hint: { type: String, default: "" },
 });
 
 const emit = defineEmits(["open"]);
 
 const status = computed(() => {
-    if (!props.folder.unlocked) return "locked";
     if (props.folder.completed) return "done";
     if (props.folder.visited) return "none";
     return "new";
 });
-
-// 隐藏档案在锁定状态下不暴露名称
-const label = computed(() =>
-    props.folder.unlocked || !props.folder.hidden ? props.folder.name : "未归档",
-);
 </script>
 
 <template>
@@ -29,11 +22,9 @@ const label = computed(() =>
             class="folder-item"
             type="button"
             :class="{
-                'folder-item--locked': status === 'locked',
                 'folder-item--done': status === 'done',
                 'folder-item--new': status === 'new',
             }"
-            :disabled="!folder.unlocked"
             @click="emit('open', folder.id)"
         >
             <span class="folder-item__icon">
@@ -41,23 +32,16 @@ const label = computed(() =>
             </span>
 
             <span class="folder-item__text">
-                <span class="folder-item__name">{{ label }}</span>
+                <span class="folder-item__name">{{ folder.name }}</span>
             </span>
 
             <span
                 v-if="status !== 'none'"
                 class="folder-item__status"
                 :class="`folder-item__status--${status}`"
-                :aria-label="
-                    status === 'locked'
-                        ? '未解锁'
-                        : status === 'done'
-                            ? '已完成'
-                            : '新文件'
-                "
+                :aria-label="status === 'done' ? '已完成' : '新文件'"
             >
-                <AppIcon v-if="status === 'locked'" name="lock" :size="10" />
-                <AppIcon v-else-if="status === 'done'" name="check" :size="10" />
+                <AppIcon v-if="status === 'done'" name="check" :size="10" />
                 <span v-else class="folder-item__status-dot" aria-hidden="true" />
             </span>
         </button>
@@ -66,12 +50,6 @@ const label = computed(() =>
 </template>
 
 <style scoped>
-.desktop-app-item-wrapper {
-    display: flex;
-    width: 100%;
-    height: 100%;
-}
-
 .folder-item {
     position: relative;
     display: flex;
@@ -169,10 +147,6 @@ const label = computed(() =>
     color: var(--text);
 }
 
-.folder-item__status--locked {
-    color: var(--text-dim);
-}
-
 .folder-item__status--new {
     background: color-mix(in srgb, var(--accent) 18%, var(--surface));
 }
@@ -189,14 +163,6 @@ const label = computed(() =>
 .folder-item__status--done {
     color: var(--accent);
     background: color-mix(in srgb, var(--accent) 18%, var(--surface));
-}
-
-.folder-item--locked {
-    opacity: 0.9;
-}
-
-.folder-item--locked .folder-item__icon {
-    color: var(--text-dim);
 }
 
 .folder-item--done {

@@ -8,10 +8,6 @@ defineProps({
 </script>
 
 <template>
-  <!--
-    常驻节点（不用 v-if）：live region 必须在文案出现前就存在于 DOM 中，
-    否则首条提示往往不会被读屏播报；无文案时用 .is-empty 折叠占位。
-  -->
   <small
     :id="id"
     class="name-status"

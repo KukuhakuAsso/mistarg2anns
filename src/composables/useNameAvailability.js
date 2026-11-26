@@ -94,8 +94,6 @@ export function useNameAvailability({
           data.available === true || data.status === "available";
         const isTaken = data.available === false || data.status === "taken";
 
-        // 结论先算好，再决定写回 —— 写回会同步改 value、并在下一 tick 再次触发 watch，
-        // 那次触发会命中 settled，所以必须在这之前把结论存好。
         const next = isTaken
           ? { status: "taken", message: messages.taken ?? "" }
           : isAvailable
@@ -118,7 +116,6 @@ export function useNameAvailability({
           return;
         }
 
-        // 400 时后端会在 detail.fields.<字段> 写明不合规的具体原因。
         const fieldMessage = extractFieldMessages(error)[0] || "";
         if (fieldMessage) {
           setStatus("invalid", fieldMessage);
