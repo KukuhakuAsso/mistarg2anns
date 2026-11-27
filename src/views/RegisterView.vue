@@ -11,10 +11,7 @@ import {
   extractErrorMessage,
   extractFieldMessages,
 } from "@/utils/errors";
-import {
-  BAN_SCOPE_TEAM,
-  resolveErrorBanScope,
-} from "@/utils/banScope";
+import { BAN_SCOPE_TEAM, resolveErrorBanScope } from "@/utils/banScope";
 import { loginWithPassword } from "@/config/auth";
 import NameStatus from "@/components/NameStatus.vue";
 import StatusMessage from "@/components/StatusMessage.vue";
@@ -371,8 +368,8 @@ onMounted(async () => {
 
   try {
     await loadRegistrationConfig();
-  } catch (error) {
-    // ignore and keep the form usable without captcha if config is unavailable
+  } catch {
+    // 省略错误处理，保持表单可用，即使注册配置加载失败
   }
 });
 
@@ -382,8 +379,8 @@ onBeforeUnmount(() => {
   if (turnstileWidgetId.value !== null && window.turnstile?.remove) {
     try {
       window.turnstile.remove(turnstileWidgetId.value);
-    } catch (error) {
-      // ignore unmount cleanup errors
+    } catch {
+      // 省略
     }
   }
   turnstileWidgetId.value = null;
@@ -416,7 +413,7 @@ function switchAuthMode(mode) {
     try {
       window.turnstile.remove(turnstileWidgetId.value);
     } catch (error) {
-      // ignore removal errors
+      // 省略
     }
     turnstileWidgetId.value = null;
   }
@@ -578,10 +575,7 @@ function ensureCaptchaToken() {
   return false;
 }
 
-// 读错误体里的机读字段：403 人机验证、429 冷却都按 reason_code / 秒数分支，不匹配中文文案。
-// 服务不可用 / 未就绪 / 缺测试凭证时不重置组件：重置解决不了，UNAVAILABLE 还会立刻重拉一次挑战。
-// 其余人机验证类 403（凭据缺失、已用掉、过期、来源不符）重置组件让用户重新验证。
-// 返回 true 表示已经处理完（调用方不要再覆盖提示）。
+// 读错误体里的机读字段
 function handleCaptchaFailure(info) {
   const reason = String(info?.reasonCode || "");
   if (!reason.startsWith("CAPTCHA_")) {
@@ -598,7 +592,7 @@ function handleCaptchaFailure(info) {
   }
 
   refreshCaptcha();
-    if (reason === "CAPTCHA_UNAVAILABLE") {
+  if (reason === "CAPTCHA_UNAVAILABLE") {
     setAuthMessage("error", "人机验证服务暂时不可用，请稍后重试。");
     return true;
   }
@@ -662,10 +656,11 @@ async function sendRegisterCode() {
     const info = extractErrorInfo(error);
 
     // 该邮箱已有一张未消费的验证码：直接进第二步，重发改走 /auth/reg/resend。
-    // 其余 429（60 秒冷却 / 今日额度用尽）不能当成「已发送」，否则用户会白等一封不存在的邮件。
+    // 其余 429
     if (error?.status === 429 && info.reasonCode === "REG_VERIFY_PENDING") {
       enterVerifyStep(email, "验证码此前已发送，请查收邮箱后填写。", "info");
-      if (info.resendAfterSec !== null) startResendCooldown(info.resendAfterSec);
+      if (info.resendAfterSec !== null)
+        startResendCooldown(info.resendAfterSec);
       return;
     }
 
@@ -717,7 +712,7 @@ async function resendRegisterCode() {
   authSubmitting.value = true;
   setAuthMessage("pending", "正在重新发送验证码，请稍候...");
   try {
-    // 重发必须走 /auth/reg/resend：3.2 只发第一次，再调只会拿到 429 REG_VERIFY_PENDING
+    // 重发必须走 /auth/reg/resend
     await authApi.resendVerificationCode(buildSendCodePayload(email));
     setAuthMessage("success", `验证码已重新发送至 ${email}，旧验证码已失效。`);
     startResendCooldown();
@@ -725,7 +720,7 @@ async function resendRegisterCode() {
   } catch (error) {
     const info = extractErrorInfo(error);
 
-    // 409：该邮箱没有进行中的注册，或已经建号成功 —— 两种都只能退回第一步重来
+    // 409：该邮箱没有进行中的注册，或已经建号成功
     if (error?.status === 409) {
       backToRegisterForm(
         extractErrorMessage(

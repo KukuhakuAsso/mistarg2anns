@@ -16,6 +16,8 @@ const { startDrag } = useClueDrag();
 
 const style = computed(() => ({
     transform: `translate(${props.clue.x}px, ${props.clue.y}px)`,
+    // 叠放层级由线索栏的叠放队列决定：后点击 / 后放置的卡片更高
+    zIndex: props.clue.z ?? 1,
 }));
 </script>
 

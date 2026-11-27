@@ -64,6 +64,9 @@ function createDefaultState() {
     sessionNotice: "",
     board: [],
     boardLabels: {},
+    // 线索叠放队列：数组顺序即层级，末尾在最上层（后点击 / 后拖动的卡压住早先的卡）。
+    // 仅本地维护，不参与服务端快照同步（服务端只存坐标）。
+    clueOrder: [],
     // 线索栏服务端快照：clueId → { x, y, removed }，只用于算差量，不持久化 ——
     // 每次登录都重新 GET，避免把上一个账号的状态当成「已知服务端状态」。
     serverBoard: {},
@@ -136,33 +139,58 @@ function normalizeIdList(raw) {
   return Array.isArray(raw) ? raw.filter((id) => typeof id === "string") : [];
 }
 
+// 叠放队列：只保留板上真实存在的卡片并去重；
+// 板上有但队列里没有的（旧存档 / 服务端同步补上的）按板面顺序补到末尾，保证每张卡都有层级。
+function normalizeClueOrder(raw, board) {
+  const onBoard = new Set(board.map((item) => item.clueId));
+  const order = [];
+  const seen = new Set();
+
+  for (const id of normalizeIdList(raw)) {
+    if (!onBoard.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    order.push(id);
+  }
+  for (const item of board) {
+    if (seen.has(item.clueId)) continue;
+    seen.add(item.clueId);
+    order.push(item.clueId);
+  }
+  return order;
+}
+
+function emptyBoardSnapshot() {
+  return {
+    board: [],
+    boardLabels: {},
+    clueOrder: [],
+    removedClues: [],
+    unplacedClues: [],
+  };
+}
+
 // 读取某个账号自己的板面；没有存档或存档损坏时给出空板面。
 function loadBoardFor(owner) {
   const key = boardStorageKey(owner);
-  if (!key)
-    return { board: [], boardLabels: {}, removedClues: [], unplacedClues: [] };
+  if (!key) return emptyBoardSnapshot();
 
   try {
     const raw = localStorage.getItem(key);
-    if (!raw)
-      return {
-        board: [],
-        boardLabels: {},
-        removedClues: [],
-        unplacedClues: [],
-      };
+    if (!raw) return emptyBoardSnapshot();
 
     const saved = JSON.parse(raw);
     const boardLabels = normalizeBoardLabels(saved?.boardLabels);
+    const board = normalizeBoard(saved?.board, boardLabels);
     return {
-      board: normalizeBoard(saved?.board, boardLabels),
+      board,
       boardLabels,
+      clueOrder: normalizeClueOrder(saved?.clueOrder, board),
       removedClues: normalizeIdList(saved?.removedClues),
       unplacedClues: normalizeIdList(saved?.unplacedClues),
     };
   } catch (error) {
     console.warn("[mistarg2anns] 读取本地线索栏失败，已按空板面处理", error);
-    return { board: [], boardLabels: {}, removedClues: [], unplacedClues: [] };
+    return emptyBoardSnapshot();
   }
 }
 
@@ -180,6 +208,7 @@ function persistBoard() {
       JSON.stringify({
         board: state.board,
         boardLabels: state.boardLabels,
+        clueOrder: state.clueOrder,
         removedClues: state.removedClues,
         unplacedClues: state.unplacedClues,
       }),
@@ -251,6 +280,7 @@ watch(
   () => [
     state.board,
     state.boardLabels,
+    state.clueOrder,
     state.removedClues,
     state.unplacedClues,
   ],
@@ -303,18 +333,26 @@ function switchBoardOwner(owner) {
   const saved = loadBoardFor(nextOwner);
   state.board = saved.board;
   state.boardLabels = saved.boardLabels;
+  state.clueOrder = saved.clueOrder;
   state.removedClues = saved.removedClues;
   state.unplacedClues = saved.unplacedClues;
 }
 
 // ---------- 派生状态 ----------
 
-// 派生：板面上已放置的卡片，附带其坐标（标题来自 boardLabels 快照）。
+// 派生：板面上已放置的卡片，附带其坐标与层级（标题来自 boardLabels 快照）。
 // 快照缺失（跨设备同步过来、本机还没拿到 map）时用 clue_id 兜底，
 // 否则卡片会被整条过滤掉 —— 看起来像是同步丢了。
-const boardClues = computed(() =>
-  state.board
-    .map((placement) => {
+// z 来自叠放队列：队列越靠后 = 层级越高；队列里没有的按板面顺序排在最后。
+const boardClues = computed(() => {
+  const rank = new Map();
+  for (const id of state.clueOrder ?? []) {
+    if (!rank.has(id)) rank.set(id, rank.size + 1);
+  }
+  const base = rank.size;
+
+  return state.board
+    .map((placement, index) => {
       const label = state.boardLabels?.[placement.clueId];
       return {
         id: placement.clueId,
@@ -324,10 +362,11 @@ const boardClues = computed(() =>
         cover: label?.cover ?? null,
         x: placement.x,
         y: placement.y,
+        z: rank.get(placement.clueId) ?? base + index + 1,
       };
     })
-    .filter(Boolean),
-);
+    .filter(Boolean);
+});
 
 // 派生：尚未放到板面上的卡片池（待用区）。
 const poolClues = computed(() => {
@@ -409,10 +448,26 @@ function registerBoardCard(
   dropFrom(state.unplacedClues, id);
 }
 
+// 把一张卡移到叠放队列末尾（= 最上层）。点击 / 拖动板面卡片、或新落一张卡时调用。
+function bringClueToFront(clueId) {
+  if (!clueId) return;
+  const order = (state.clueOrder ?? []).filter((id) => id !== clueId);
+  order.push(clueId);
+  state.clueOrder = order;
+}
+
+// 卡片离开板面时同步清掉它的层级记录。
+function dropClueFromOrder(clueId) {
+  if (!clueId || !state.clueOrder?.length) return;
+  if (!state.clueOrder.includes(clueId)) return;
+  state.clueOrder = state.clueOrder.filter((id) => id !== clueId);
+}
+
 // 从收藏里彻底移除一张卡（待用区的删除按钮、或卡片上的移除）：
 function uncollectCard(cardId) {
   if (!cardId) return;
   state.board = state.board.filter((item) => item.clueId !== cardId);
+  dropClueFromOrder(cardId);
   const labels = { ...(state.boardLabels ?? {}) };
   delete labels[cardId];
   state.boardLabels = labels;
@@ -428,6 +483,7 @@ function applyTipsBalance(balance) {
 }
 
 // 在指定坐标放置一条线索；若该线索已在板面则仅更新其坐标。
+// 放置 / 移动后一律提到最上层：后操作的卡片压住更早放置的卡片。
 function placeClue(clueId, x, y) {
   dropFrom(state.unplacedClues, clueId);
   dropFrom(state.removedClues, clueId);
@@ -435,14 +491,16 @@ function placeClue(clueId, x, y) {
   if (existing) {
     existing.x = x;
     existing.y = y;
-    return;
+  } else {
+    state.board.push({ clueId, x, y });
   }
-  state.board.push({ clueId, x, y });
+  bringClueToFront(clueId);
 }
 
 // 从板面移除一条线索（回到待用区）。
 function removeClueFromBoard(clueId) {
   state.board = state.board.filter((item) => item.clueId !== clueId);
+  dropClueFromOrder(clueId);
   if (!state.unplacedClues.includes(clueId)) state.unplacedClues.push(clueId);
 }
 
@@ -454,6 +512,7 @@ function clearBoard() {
     }
   }
   state.board = [];
+  state.clueOrder = [];
 }
 
 // ---------- 线索栏快照同步（api-13） ----------
@@ -522,6 +581,7 @@ function applyClueBoardSnapshot(items = []) {
 
   state.board = board;
   state.boardLabels = labels;
+  state.clueOrder = normalizeClueOrder(state.clueOrder, board);
   state.serverBoard = nextServer;
   state.removedClues = [...nextRemoved];
   state.unplacedClues = [...unplaced];
@@ -586,6 +646,7 @@ function resetClueBoardSync() {
 function resetClueBoardLocal() {
   state.board = [];
   state.boardLabels = {};
+  state.clueOrder = [];
   resetClueBoardSync();
 }
 
@@ -698,6 +759,10 @@ async function loadMyTeam() {
   }
 }
 
+// 队伍门禁（未入队 / 未确认参赛 / 未开赛）直接决定题目结构与线索栏是否可用：
+// 建队、入队、确认 / 取消参赛、退队、解散之后都重拉一次 map，
+// 否则旧的门禁错误会一直留在状态里，线索栏打不开。
+
 // 创建队伍（POST /api/team），成功后重新拉取我的队伍。
 async function createTeam(name, intro = "") {
   if (!state.user.currentUser) {
@@ -716,6 +781,7 @@ async function createTeam(name, intro = "") {
       intro: String(intro ?? "").trim(),
     });
     await loadMyTeam();
+    await mapState.refresh();
     return { ok: true, message: `队伍「${validation.value}」创建成功。` };
   } catch (error) {
     const payload = error?.payload ?? {};
@@ -747,6 +813,8 @@ async function joinTeam(code) {
     const response = await teamApi.applyJoin(cleanCode);
     const data = response?.data ?? {};
     await loadMyTeam();
+    // 直接入队才算门禁变化；只是提交申请的话队伍没变，不用重拉
+    if (data.joined) await mapState.refresh();
     return {
       ok: true,
       joined: Boolean(data.joined),
@@ -796,6 +864,7 @@ async function leaveTeam() {
     const response = await teamApi.leaveTeam();
     const dissolved = Boolean(response?.data?.dissolved);
     await loadMyTeam();
+    await mapState.refresh();
     return {
       ok: true,
       message: dissolved ? "你已退出并解散了队伍。" : "已退出队伍。",
@@ -843,6 +912,8 @@ async function startTeam() {
   try {
     await teamApi.startTeam();
     await loadMyTeam();
+    // 确认参赛后取题门禁打开（比赛已开始时立刻能取到 map），线索栏随即可用
+    await mapState.refresh();
     return { ok: true, message: "已确认参赛，队伍进入锁定态。" };
   } catch (error) {
     return { ok: false, message: extractErrorMessage(error, "确认参赛失败。") };
@@ -854,6 +925,8 @@ async function cancelStartTeam() {
   try {
     await teamApi.cancelStart();
     await loadMyTeam();
+    // 取消确认参赛 = 门禁重新关闭，map 立刻回到门禁错误，线索栏一并收起
+    await mapState.refresh();
     return { ok: true, message: "已取消确认参赛。" };
   } catch (error) {
     return {
@@ -890,6 +963,7 @@ async function dissolveTeam() {
   try {
     await teamApi.dissolveTeam();
     await loadMyTeam();
+    await mapState.refresh();
     return { ok: true, message: "队伍已解散。" };
   } catch (error) {
     return { ok: false, message: extractErrorMessage(error, "解散队伍失败。") };
@@ -1127,6 +1201,7 @@ export function useGameState() {
     uncollectCard,
     applyTipsBalance,
     placeClue,
+    bringClueToFront,
     removeClueFromBoard,
     clearBoard,
     arrangeBoard,

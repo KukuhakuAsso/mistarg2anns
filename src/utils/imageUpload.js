@@ -40,9 +40,7 @@ export function pastedImageName(mime, at = new Date()) {
   return `pasted-${stamp}.${ext}`;
 }
 
-// 读取图片原始像素尺寸。优先 createImageBitmap（快、不占 DOM），
-// 不支持或解码失败时回落到 Image + objectURL。
-// 走 globalThis 取构造器：Node（探针 / SSR）里这些 API 不存在，直接引用会 ReferenceError。
+// 读取图片原始像素尺寸。
 export async function readImageSize(file) {
   const createBitmap = globalThis.createImageBitmap;
   if (typeof createBitmap === "function") {
@@ -90,7 +88,8 @@ export async function inspectImageFile(file) {
   }
 
   const sizeBytes = Number(file.size) || 0;
-  if (sizeBytes <= 0) return { ok: false, reason: "图片内容为空，换一张试试。" };
+  if (sizeBytes <= 0)
+    return { ok: false, reason: "图片内容为空，换一张试试。" };
   if (sizeBytes > IMAGE_MAX_BYTES) {
     return {
       ok: false,
@@ -115,8 +114,6 @@ export async function inspectImageFile(file) {
 }
 
 // 从剪贴板 / 拖拽的数据里挑出受支持的图片文件。
-// 粘贴的位图没有文件名（clipboard item 的 getAsFile 给的是 image.png 之类），统一改名，
-// 保证服务端记下的 fileName 与用户看到的一致。
 export function pickImageFiles(items, { fromClipboard = false } = {}) {
   const list = Array.from(items || []);
   const files = [];
@@ -141,7 +138,10 @@ export function pickImageFiles(items, { fromClipboard = false } = {}) {
       const name = pastedImageName(mime);
       try {
         if (!FileCtor) throw new Error("no File constructor");
-        file = new FileCtor([file], name, { type: mime, lastModified: Date.now() });
+        file = new FileCtor([file], name, {
+          type: mime,
+          lastModified: Date.now(),
+        });
       } catch {
         // 极少数环境不支持 File 构造器：保留原名，不影响上传与校验
       }

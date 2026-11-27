@@ -45,7 +45,12 @@ function clamp(value, min, max) {
 }
 
 export function useClueDrag() {
-    const { placeClue, removeClueFromBoard, registerBoardCard } = useGameState();
+    const {
+        placeClue,
+        removeClueFromBoard,
+        registerBoardCard,
+        bringClueToFront,
+    } = useGameState();
 
     function stop() {
         drag.active = false;
@@ -86,6 +91,9 @@ export function useClueDrag() {
         event.preventDefault();
 
         const rect = event.currentTarget.getBoundingClientRect();
+
+        // 按住板面上的卡片就把它提到最上层：后点击的线索压住先点击的线索
+        if (source === "board") bringClueToFront(clueId);
 
         drag.clueId = clueId;
         drag.source = source;

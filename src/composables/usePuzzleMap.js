@@ -120,7 +120,14 @@ export function usePuzzleMap() {
     loading: computed(() => state.loading),
     error: computed(() => state.error),
     load,
-    refresh: () => load({ force: true }),
+    // 强制重拉。若已有请求在飞，先等它落地再发：load() 在 inflight 非空时会直接复用旧请求，
+    // 队伍门禁刚变化时那样会拿到「你还没有队伍」之类的旧结果。
+    refresh: async () => {
+      if (inflight) {
+        await inflight;
+      }
+      return load({ force: true });
+    },
     reset,
   };
 }

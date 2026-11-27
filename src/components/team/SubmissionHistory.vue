@@ -6,10 +6,6 @@
 import { ref, watch } from "vue";
 import { puzzleApi } from "@/api/puzzle";
 import { extractErrorMessage } from "@/utils/errors";
-import {
-  normalizeSubmissionPage,
-  toSubmissionRow,
-} from "@/utils/submissionPage";
 
 const props = defineProps({
   puzzleKey: { type: String, required: true },
@@ -44,6 +40,35 @@ function formatDuration(ms) {
   return m > 0 ? `${m}分${s}秒` : `${s}秒`;
 }
 
+// 分页响应归一化：玩家端 request() 返回整个响应体（{ ok, data, req_id }），
+// 这里统一收口，免得取错层级时静默变成空列表。
+function normalizeSubmissionPage(payload) {
+  const data = payload?.data ?? payload ?? {};
+
+  return {
+    items: Array.isArray(data.items) ? data.items : [],
+    nextCursor: data.nextCursor ?? null,
+    hasMore: Boolean(data.hasMore),
+  };
+}
+
+// 单条记录 → 展示用字段；后端可能缺字段，这里补齐成稳定形状。
+function toSubmissionRow(item) {
+  // 不能直接 Number(item.durationMs)：Number(null) === 0，
+  // 会把「客户端没上报时长」显示成「用时 0秒」
+  const rawDuration = item?.durationMs;
+  const durationMs = rawDuration == null ? null : Number(rawDuration);
+  return {
+    id: item?.id,
+    accountId: item?.accountId ?? null,
+    username: item?.username || "",
+    answer: item?.answer == null ? "" : String(item.answer),
+    correct: Boolean(item?.correct),
+    durationMs: Number.isFinite(durationMs) && durationMs >= 0 ? durationMs : null,
+    createdAt: item?.createdAt ?? null,
+  };
+}
+
 async function load({ reset = false } = {}) {
   // 先判守卫再动 token：过早自增会让在飞请求的结果被丢弃，且它的 finally 不再收尾，
   // loading 会永久卡住
@@ -59,7 +84,7 @@ async function load({ reset = false } = {}) {
 
   try {
     // 玩家端 request() 返回的是整个响应体（{ ok, data, req_id }），
-    // 与管理端 http.js 直接返回 data 不同 —— 归一化统一在 utils 里做，避免再取错层级
+    // 与管理端 http.js 直接返回 data 不同 —— 由 normalizeSubmissionPage 统一收口
     const payload = await puzzleApi.getSubmissions(props.puzzleKey, {
       cursor: reset ? 0 : nextCursor.value ?? 0,
       limit: PAGE_SIZE,

@@ -1,9 +1,7 @@
-// 设备标识（api-13 §四的 device 字段）：稳定、可读、≤64 字符。
+// 设备标识
 //
-// 不要传整段 User-Agent（上限 64）：这里只取「浏览器 + 平台」，
-// 例如 web-chrome-win / web-safari-ios / web-edge-mac。同一设备每次上传保持一致，
-// 另一端才能辨认「这条改动来自哪台设备」。
-
+// 这里只取「浏览器 + 平台」，
+// 例如 web-chrome-win / web-safari-ios / web-edge-mac。
 function detectBrowser(ua) {
   if (/Edg\//i.test(ua)) return "edge";
   if (/OPR\/|Opera/i.test(ua)) return "opera";

@@ -89,7 +89,6 @@ export function createDesktopMenu({
         })),
         // 暂未接线，保留原设计意图：
         // { id: "settings", name: "设置", detail: "界面 · 通知", page: null },
-        // { id: "tips", name: "tips点", detail: "tips 点可用", page: null },
       ],
     },
     archive: {

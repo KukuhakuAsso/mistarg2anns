@@ -32,7 +32,7 @@ function resolveErrorFields(source) {
 }
 
 // 取指定字段的报错原因。一个响应里可能同时含多个字段的原因，需要落到某个输入框下方时
-// 必须按字段名取值，否则会把别的字段（如队伍简介）的原因张冠李戴到该输入框。
+// 必须按字段名取值
 export function extractFieldMessage(source, fieldName) {
   const fields = resolveErrorFields(source);
   if (!fields || typeof fields !== "object") {
@@ -42,7 +42,7 @@ export function extractFieldMessage(source, fieldName) {
   return firstNonEmpty(fields[fieldName]);
 }
 
-// 取出字段级报错明细：detail.fields 形如 { email: "邮箱格式不正确", username: "用户名不能为空" }，
+// 取出字段级报错明细
 // 同一个响应里可能同时含多个字段的原因，这里按出现顺序全部取出并去重。
 export function extractFieldMessages(source) {
   const fields = resolveErrorFields(source);
@@ -68,9 +68,6 @@ export function extractFieldMessages(source) {
 }
 
 // 取出机读错误信息：code / reason_code 以及限流的秒数。
-//
-// 分支判断只看这些字段，不要去匹配中文 message —— 文案会改、会本地化，reason_code 才是稳定契约。
-// 注意这些键在错误体的**顶层 detail 上**，不是 detail.fields 的键。
 export function extractErrorInfo(source) {
   const payload = resolveErrorPayload(source);
   const detail = payload.error?.detail ?? payload.detail ?? {};
@@ -93,8 +90,7 @@ export function extractErrorInfo(source) {
 export function extractErrorMessage(source, fallback = DEFAULT_ERROR_MESSAGE) {
   const payload = resolveErrorPayload(source);
 
-  // 字段级原因优先：E_VALIDATION 的 error.message 通常只是笼统的「参数校验失败」，
-  // 真正有用的原因在 detail.fields 里，多个字段的原因用分号连成一句。
+  // 字段级原因优先
   const fieldMessages = extractFieldMessages(payload);
   if (fieldMessages.length) {
     return fieldMessages.join("；");

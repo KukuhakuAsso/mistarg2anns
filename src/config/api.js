@@ -9,8 +9,8 @@ export const apiConfig = {
   baseUrl: import.meta.env.VITE_API_BASE_URL || "/",
   basePath: import.meta.env.VITE_API_BASE_PATH || "/api",
   // 主、次版本必须与服务端一致（修订号差异 ≤5），否则全部业务接口 426 E_VERSION。
-  // 兜底值要跟着服务端当前版本走；正常构建由 .env 的 VITE_API_VERSION 覆盖。
-  apiVersion: import.meta.env.VITE_API_VERSION || "mistarg.2.2.2",
+  // 不设置兜底值，必须由 VITE_API_VERSION 提供。
+  apiVersion: import.meta.env.VITE_API_VERSION,
   devTicket: import.meta.env.VITE_DEV_TICKET || "",
   testTicket: import.meta.env.VITE_X_MISTARG_TEST_TICKET || "",
 };
@@ -25,10 +25,7 @@ function readApiEnvironment() {
     const savedEnvironment = window.localStorage.getItem(
       API_ENVIRONMENT_STORAGE_KEY,
     );
-    if (
-      savedEnvironment === "test" &&
-      apiConfig.testTicket
-    ) {
+    if (savedEnvironment === "test" && apiConfig.testTicket) {
       return "test";
     }
     if (savedEnvironment === "production") {
@@ -77,7 +74,8 @@ export function buildApiUrl(path) {
   return `${base.replace(/\/+$/, "")}${apiPrefix}${safePath}`;
 }
 
-// 当前 API 部署的源：baseUrl 可能是空、"/" 或绝对地址（如 https://api.example.com/）。
+// 当前 API 部署的源：baseUrl 可能是空、"/"（开发代理 / nginx 反代，同源），
+// 也可能是绝对地址（GitHub Pages 预览站这类没有后端的部署，跨源）。
 function apiOrigin() {
   const fallback = window.location.origin;
   try {
@@ -88,11 +86,6 @@ function apiOrigin() {
 }
 
 // 判断一个地址是否指向本 API 部署（同源 + 落在 basePath 之下）。
-//
-// 这是「要不要带用户凭证」的唯一判据：素材与组件的 URL 都由服务端下发，
-// 前端不能默认它们一定是自家的（见下方 resolveServerUrl 的外链分支）。
-// 相对路径按当前页面解析，所以 `/api-mist/puzzle/media/18` 会被判为可信，
-// 而同源但不在 API 前缀下的路径判为不可信（宁可拿 401，也别把令牌发出去）。
 export function isApiUrl(url) {
   const raw = String(url ?? "").trim();
   // blob:/data: 不产生网络请求，谈不上携带凭证
@@ -112,22 +105,18 @@ export function isApiUrl(url) {
   return parsed.pathname === prefix || parsed.pathname.startsWith(`${prefix}/`);
 }
 
-// api-12 约定：cover / attachments / malleable.asset 的 url 由后端拼成 `/api/…`。
-// 开发期看到绝对地址就说明契约被破坏了（CDN 直链迁移、脏数据等），
-// 这里把偏离显性化；生产环境由 fetchWithAuth 的信任边界兜底（外链不带凭证）。
+// 约定：cover / attachments / malleable.asset 的 url 由后端拼成 `/api/…`。
+// 绝对地址不带访问令牌与测试票据。
 function warnIfExternalAssetUrl(raw) {
   if (!import.meta.env.DEV) return;
   if (!/^(?:https?:)?\/\//i.test(raw)) return;
   console.warn(
     `[mistarg2anns] 素材 / 组件地址不是本站路径：${raw}\n` +
-      "api-12 约定这些字段由后端拼成 /api/…；绝对地址不会携带访问令牌与测试票据。",
+      "约定这些字段由后端拼成 /api/…；绝对地址不会携带访问令牌与测试票据。",
   );
 }
 
-// 后端返回的素材 / 组件地址都是后端自身的绝对路径（`/api/puzzle/media/18`）。
-// 开发与生产部署的 API 前缀可能是 `/api-mist` 等，直接用会打到静态站点上 404，
-// 所以统一在这里把 `/api` 前缀换成当前生效的 baseUrl + basePath；外链与 blob/data 原样返回
-// （外链不重写，但也不会被带上凭证 —— 见 isApiUrl）。
+// 重写后端发来的链接
 export function resolveServerUrl(path) {
   const raw = String(path ?? "").trim();
   if (!raw) return "";
