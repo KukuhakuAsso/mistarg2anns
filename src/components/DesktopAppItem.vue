@@ -108,11 +108,4 @@ const emit = defineEmits(["open"]);
     line-height: 1.2;
     text-align: center;
 }
-
-.desktop-app-item__meta {
-    margin-top: 4px;
-    font-size: 12px;
-    line-height: 1.4;
-    color: var(--text-dim);
-}
 </style>

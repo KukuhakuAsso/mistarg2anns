@@ -1,9 +1,8 @@
 // 受限 Markdown → 白名单 HTML（零依赖）。
 //
-// 题面 description 是「受限 Markdown 源文本」（api-12），需要白名单渲染：
+// 题面 description 是「受限 Markdown 源文本」，需要白名单渲染：
 // 支持 标题 / 段落 / 强调 / 行内代码 / 围栏代码 / 列表 / 引用 / 表格 / 分隔线 / 链接 / 图片；
 // 不解析任何原始 HTML —— 输入里的标签一律转义成文本，输出标签全部由本文件拼出，
-// 因此结果可以直接交给 v-html，不存在注入面。
 //
 // 标题统一降一级（# → h2），保证页面只有一个 H1（题目名）。
 
@@ -30,10 +29,7 @@ function safeUrl(raw) {
   return "";
 }
 
-// 本站 API 路径（`/api/puzzle/media/18` 等）是受取题门禁保护的素材：
-//   · 原生 <img> 发不出 Authorization 头（刷新 Cookie 只挂在 /api/auth 上）；
-//   · 它也不经过 resolveServerUrl()，部署在 /api-mist 等前缀时会打到错误端点。
-// 所以这里不写 src，只留路径，由渲染方用带鉴权的 blob URL 回填（见 useMarkdownMedia）。
+// 本站 API 路径
 const PROTECTED_MEDIA_RE = /^\/api\//i;
 
 export function isProtectedMediaUrl(url) {

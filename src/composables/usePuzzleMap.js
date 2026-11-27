@@ -16,9 +16,6 @@ const state = reactive({
 
 let inflight = null;
 // 每次 reset() 都 +1，作废所有在飞的请求。
-// 只把 inflight 置空是不够的：那个 async 函数仍在 await，回来照样写 state，
-// 结果是登出后又被写回上一个账号的题目结构（还把 loaded 置回 true，
-// 之后登录直接命中缓存、连请求都不发）。
 let generation = 0;
 
 // 题目条目：kind 目前只有 puzzle（resource 为将来的资源型条目预留）。
@@ -116,18 +113,6 @@ export function usePuzzleMap() {
     inflight = null;
   }
 
-  function findFolder(folderId) {
-    return state.folders.find((folder) => folder.id === folderId) ?? null;
-  }
-
-  function findEntry(entryId) {
-    for (const folder of state.folders) {
-      const hit = folder.entries.find((entry) => entry.id === entryId);
-      if (hit) return hit;
-    }
-    return null;
-  }
-
   return {
     folders: computed(() => state.folders),
     progress: computed(() => state.progress),
@@ -135,10 +120,15 @@ export function usePuzzleMap() {
     loading: computed(() => state.loading),
     error: computed(() => state.error),
     load,
-    refresh: () => load({ force: true }),
+    // 强制重拉。若已有请求在飞，先等它落地再发：load() 在 inflight 非空时会直接复用旧请求，
+    // 队伍门禁刚变化时那样会拿到「你还没有队伍」之类的旧结果。
+    refresh: async () => {
+      if (inflight) {
+        await inflight;
+      }
+      return load({ force: true });
+    },
     reset,
-    findFolder,
-    findEntry,
   };
 }
 

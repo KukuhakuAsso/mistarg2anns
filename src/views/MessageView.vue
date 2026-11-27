@@ -1,8 +1,5 @@
 <script setup>
-// 站内信中心：对接 /api/msg/mails（邮件式，mistarg.2.0.0 起为「站内邮箱」）。
-// 列表按「每封邮件一行」展示（不使用 threaded 线程视图），支持 收件箱 / 已发送 / 归档 / 全部；
-// 详情按「单封」拉取（GET /msg/mails/:id → 这一封 + 祖先链）；能否回复由服务端的 canReply（0/1）决定。
-// 队伍会话（channel=team）是共享邮箱：本队成员可读可回（受发信开关约束）。
+// 站内信中心 收件箱 / 已发送 / 归档 / 全部；
 import {
   computed,
   nextTick,
@@ -18,17 +15,13 @@ import StatusMessage from "@/components/StatusMessage.vue";
 import { messageApi } from "@/api/message";
 import { tipsApi } from "@/api/tips";
 import { useAttachments } from "@/composables/useAttachments";
-import { useMsgAttachments } from "@/composables/useMsgAttachments";
 import AttachmentPicker from "@/components/AttachmentPicker.vue";
 import AttachmentGallery from "@/components/AttachmentGallery.vue";
 import UserTabs from "@/components/UserTabs.vue";
-import { assignEnterIndex } from "@/utils/mailEnterIndex";
 
 const { state, refreshUnreadSummary, refreshTeamTips } = useGameState();
 
-// 处罚门禁（api-11-moderation-mute.md）：禁言只关发信通道，读信与求提示的
-// 确认 / 议价 / 关闭都不变；队伍封禁时求提示「提问」也会被拦。
-// 这里只做体验层隐藏，服务端仍会校验（403 E_MUTED / E_FORBIDDEN）。
+// 处罚门禁
 const isMuted = computed(() => Boolean(state.accountStatus?.muted));
 const isTeamBanned = computed(() => state.accountStatus?.team?.status === 4);
 // 禁言原因/到期，用于提示条文案
@@ -57,16 +50,13 @@ const muteNotice = computed(() => {
 
 // 当前页签：inbox = 收信，compose = 写信。
 const activeTab = ref("inbox");
-// 邮箱文件夹（api-8 §8.1 box，2026-11-11 起）：inbox 收件箱 / sent 已发送 / archive 归档 / all 全部。
-// 默认 inbox —— 自己发出的邮件在 sent，不在 inbox。
+// 邮箱文件夹inbox 收件箱 / sent 已发送 / archive 归档 / all 全部。
 const mailboxFilter = ref("inbox");
 // 列表筛选：all = 全部，unread = 未读（走 only_unread），read = 已读（前端筛）。
 const inboxFilter = ref("all");
 // 列表筛选的频道口径："" = 全部频道，否则为 system / account / team。
 const channelFilter = ref("");
 // 列表筛选的来源口径："" = 全部来源，否则为 source 枚举
-//（mail / feedback / hint / announce / warn / system / notice / appeal_*）。
-// 2026-11-11 起这是服务端参数，不再由前端过滤已加载的行。
 const sourceFilter = ref("");
 // 回复状态筛选（api-8 answered）："" = 不限，0 = 只看未回复，1 = 只看已回复。
 const answeredFilter = ref("");
@@ -120,10 +110,7 @@ const {
   clear: clearNotice,
 } = useStatusMessage();
 
-// ---------- 图片附件（api-8-message-mail.md §8.3，2026-10-31 起） ----------
-// 写信 / 回复 / 问题反馈共用一份，求提示提问自己一份（两处不能混：提交是各走各的接口）。
-// 前端不做压缩，选图时即按规格校验（≤3 张、jpg/png/webp、≤5MiB、长边 ≤1600px）；
-// 校验通过后立刻 sign + 直传，提交时只带 objectKey，未传完禁止提交。
+// ---------- 图片附件 ----------
 const composeAttachments = useAttachments({
   onError: (text) => setNotice("error", text),
 });
@@ -131,7 +118,14 @@ const hintAttachments = useAttachments({
   onError: (text) => setNotice("error", text),
 });
 // 发信侧的附件开关（/api/msg/policy.attachmentsEnabled，严格判值：缺失即关闭）。
-const { attachmentsEnabled, loadPolicy } = useMsgAttachments();
+const attachmentsEnabled = ref(false);
+async function loadPolicy() {
+  const data = await messageApi.getPolicy().then(
+    (payload) => payload?.data,
+    () => null,
+  );
+  attachmentsEnabled.value = data?.attachmentsEnabled === true;
+}
 
 // 模板里用的解构别名（setup 里的顶层 ref 在模板中会自动解包，取 .value 反而读不到）
 const {
@@ -163,10 +157,6 @@ const {
   onDrop: onHintDrop,
 } = hintAttachments;
 
-// 附件开关关闭时（后端 attachmentsEnabled=false，此时 sign 会回 403 MSG_IMAGE_DISABLED）
-// 连事件都不绑：否则粘贴一张图就会造出一条「上传失败」的附件，
-// failed 卡住提交，而选图入口是隐藏的 —— 用户没有「移除」可点，只能刷新页面。
-// 用 v-on 对象而不是逐个加条件，新增入口时不会漏掉。
 const composeAttachEvents = computed(() =>
   attachmentsEnabled.value
     ? {
@@ -202,7 +192,8 @@ const hintQuestionPlaceholder = computed(() => {
 // 同一个输入框两种用途：申请更便宜时换成对应文案
 const hintComposePlaceholder = computed(() => {
   if (!cheaperTarget.value) return hintQuestionPlaceholder.value;
-  const base = "说明想怎么便宜（可选，1–2000 字）：比如只想要方向提示，不需要完整答案";
+  const base =
+    "说明想怎么便宜（可选，1–2000 字）：比如只想要方向提示，不需要完整答案";
   return attachmentsEnabled.value ? `${base}；也可以附图` : base;
 });
 
@@ -266,15 +257,11 @@ const HINT_POLL_MS = 10000;
 let hintTimer = null;
 
 const isLoggedIn = computed(() => Boolean(state.user.currentUser));
-// 详情里的根邮件摘要（服务端归一后的 mail）
-// 可回复的来源白名单：只有「普通邮件」与「问题反馈」能回。
-// 公告 / 系统消息 / 官方通知 / 警告 / 申诉链 / 求提示答复一律只读（前端直接拦，不等后端 403）。
+// 详情里的根邮件摘要
 const REPLYABLE_SOURCES = new Set(["mail", "feedback"]);
 const isReplyableSource = (item) => REPLYABLE_SOURCES.has(item?.source ?? "");
 
 // 玩家可回复的邮件：来源在白名单里 + 服务端 canReply（0/1）+ 未被禁言。
-// 2026-11-11 起队伍会话是可回复的共享邮箱（回复发送给全队），不再按频道禁用。
-// 禁言期间发信接口一律 E_MUTED，所以直接禁掉回复入口。
 const canReply = computed(
   () =>
     isReplyableSource(mail.value) &&
@@ -301,9 +288,6 @@ const readOnlyHint = computed(() => {
 });
 // 写信收件人选择「请求提示」时，撰写页显示求提示面板。
 // 必须同时满足：当前就在写信页、不是回复、收件人选的是「请求提示」。
-// 只看 composeTarget 的话，选了求提示再切回收信或去回复邮件时它仍是 "hint"：
-// 回复模式下收件人下拉已隐藏，正文区却被求提示面板顶替，邮件根本回不了；
-// 而且 hintPollingWanted 会跟着一直为 true，回到收信后仍在轮询提示历史。
 const isHintCompose = computed(
   () =>
     activeTab.value === "compose" &&
@@ -332,13 +316,11 @@ const cheaperPendingOf = (item) =>
 const hintBusyOf = (item, action) =>
   hintActing.value === `${item.id}:${action}`;
 
-// 需要轮询：求提示面板打开着，或提示记录弹窗打开着 —— 用「请求历史」拿服务端权威状态
-// （只有当前这一条的状态不够：官方可能在你没盯着时报价、拒绝、或回应降价）。
+// 需要轮询
 const hintPollingWanted = computed(
   () => isHintCompose.value || hintHistoryOpen.value,
 );
-// 回复模式下的主题预览：留空由服务端按层级生成（层级 ≥5 会收缩成「回复*N：」），
-// 填了就是中途改题（服务端原样使用并开启新的主题基准）。
+// 回复模式下的主题预览
 const replySubjectPlaceholder = computed(() =>
   mail.value?.subject
     ? `留空自动生成：回复：${mail.value.subject}`
@@ -354,10 +336,6 @@ const rowSender = (item) => senderName(item);
 const rowSenderTitle = (item) => senderRoleLabel(item);
 
 // 列表筛选：「未读」交给服务端（only_unread），「已读」只能在前端分类；
-// 来源 / 频道已经是服务端参数，不再在这里筛。
-//
-// 这条判定必须只有一份实现：loadMails() 也要用它来给「将要显示的行」编号，
-// 否则入场序号的顺序会和实际渲染顺序对不上（见下方 enterIndex 的注释）。
 function matchesMailFilter(item) {
   if (inboxFilter.value === "read" && rowUnread(item) > 0) {
     return false;
@@ -367,9 +345,22 @@ function matchesMailFilter(item) {
 
 const filteredMails = computed(() => mails.value.filter(matchesMailFilter));
 
-// ---------- 批量选择（api-8 §8.6 / §8.7） ----------
+// 动画坐标
+function assignEnterIndex(prevMap, items, isVisible) {
+  const next = new Map(prevMap ?? []);
+  let shown = 0;
+
+  for (const item of items ?? []) {
+    if (!isVisible(item)) continue;
+    next.set(item.mailId, shown);
+    shown += 1;
+  }
+
+  return next;
+}
+
+// ---------- 批量选择 ----------
 // 批量接口单次最多 100 个 id：勾选不设上限，发送时按 100 分片串行发，
-// 不再做「只处理前 100 封却报成功」的静默截断。
 const BATCH_LIMIT = 100;
 const batchBusy = ref("");
 const isSelected = (item) => selectedIds.value.includes(item.mailId);
@@ -463,7 +454,7 @@ async function runBatch(action) {
     const doneSet = new Set(done);
     const rest = ids.filter((id) => !doneSet.has(id));
     selectedIds.value = rest;
-    const detail = errorText(error, "批量操作失败。");
+    const detail = extractErrorMessage(error, "批量操作失败。");
     setNotice(
       "error",
       done.length
@@ -493,32 +484,29 @@ async function markAllRead() {
     );
     await Promise.all([loadMails(), refreshUnreadSummary()]);
   } catch (error) {
-    setNotice("error", errorText(error, "全部已读失败。"));
+    setNotice("error", extractErrorMessage(error, "全部已读失败。"));
   } finally {
     batchBusy.value = "";
   }
 }
 
-// 空列表提示：已读是客户端筛选，可能只是把已加载的记录都滤掉了。
+// 空列表提示
 const emptyHint = computed(() =>
   inboxFilter.value === "read"
     ? "已加载的邮件中没有符合条件的记录；可点「加载更早的邮件」继续查找。"
     : "暂无邮件记录。",
 );
 
-// 邮件行的入场序号：同一批新邮件从 0 逐封错开，翻页追加不会因下标变大而挤在一起。
+// 邮件行的入场序号
 function rowEnterIndex(item) {
   return mailsEnterIndex.value.get(item.mailId) ?? 0;
 }
 
-// 写信可选收件人：官方（问题反馈）与请求提示。
+// 写信可选收件人
 const composeRecipients = [
   { value: OFFICIAL_TARGET, label: "官方 / 工作人员（问题反馈）" },
   { value: HINT_TARGET, label: "请求提示" },
 ];
-
-// 错误文案统一由 @/utils/errors 解析（含字段级原因），本地保留短名便于调用。
-const errorText = extractErrorMessage;
 
 // 来源标记（服务端判定，客户端不能指定）
 const SOURCE_LABEL = {
@@ -715,7 +703,6 @@ function switchAnswered(value) {
 }
 
 // 左侧「写信」：清掉回复上下文，写一封新邮件。
-// 禁言期间发信接口一律 403 E_MUTED，入口已在界面上隐藏，这里再兜一层。
 function startNewMail() {
   if (isMuted.value) {
     setNotice("error", "禁言期间不能发信，可在「我的申诉」查看与提交申诉。");
@@ -743,9 +730,7 @@ function switchChannel(channel) {
 
 // ---------- 邮件列表 ----------
 
-// 列表请求代号：切频道 / 切未读筛选、关闭详情后的刷新、可见性补刷、加载更多都可能重叠。
-// 只接受最新一次请求的结果——否则旧频道的慢响应会覆盖新筛选的行与游标，
-// 旧的 append 还会把别的频道的数据追加到当前列表后面。
+// 列表请求代号
 let mailsRequestGeneration = 0;
 
 async function loadMails({ append = false, replay = false } = {}) {
@@ -757,9 +742,6 @@ async function loadMails({ append = false, replay = false } = {}) {
   mailsLoading.value = true;
 
   // 切分类 / 频道 / 来源：先把已加载的邮件整批清空。
-  // 紧接着一定会重新拉最新一页，留着上一个 tab 的数据既没有意义，
-  // 也会让行动画「先拿旧数据播一遍、再被新数据替换」。
-  // 清空后列表只显示「正在加载邮件列表…」，等响应回来再整体挂载一遍。
   if (!append && replay) {
     mailsListToken.value += 1;
     mails.value = [];
@@ -793,11 +775,7 @@ async function loadMails({ append = false, replay = false } = {}) {
     const data = response?.data ?? {};
     const items = Array.isArray(data.items) ? data.items : [];
 
-    // 入场序号必须按「最终会显示出来的顺序」编号，而不是按接口返回的原始顺序。
-    // 「已读」与「来源」是前端分类：接口一页 20 封里可能只有 3 封符合条件，
-    // 若照原始下标编号，渲染出来的 3 行会拿到被打散的序号（如 0 / 7 / 13），
-    // animation-delay 就会拉出空洞、看起来像「先挂载再筛掉」。
-    // 先筛、再按 0,1,2… 连续编号，挂载出来的错峰才是连贯的。
+    // 翻页时沿用旧行编号，新一批重新从 0 错开
     mailsEnterIndex.value = assignEnterIndex(
       append ? mailsEnterIndex.value : null,
       items,
@@ -812,7 +790,7 @@ async function loadMails({ append = false, replay = false } = {}) {
     if (requestId !== mailsRequestGeneration) {
       return;
     }
-    setNotice("error", errorText(error, "加载邮件列表失败。"));
+    setNotice("error", extractErrorMessage(error, "加载邮件列表失败。"));
   } finally {
     // loading 归最新一次请求管，旧请求不要替它关掉
     if (requestId === mailsRequestGeneration) {
@@ -833,8 +811,7 @@ function newestLoadedMailId() {
   return newest;
 }
 
-// 拉取比已知最新 id 更大的邮件（服务端按 id 正序返回、忽略 cursor），反转后插到列表最前面。
-// 返回 true 表示这次增量请求成功发出（即使没有新邮件），false 表示本次跳过、需要整页刷新。
+// 拉取比已知最新 id 更大的邮件反转后插到列表最前面。
 async function loadNewMails() {
   const sinceId = newestLoadedMailId();
   if (
@@ -918,14 +895,14 @@ function stopMailPolling() {
 
 // ---------- 邮件详情（单封 + 祖先链，GET /api/msg/mails/:id） ----------
 
-// 详情请求代号：打开 A 还没回来就切到 B（或直接关闭）时，A 的响应不能再写内容 / 报错 / 关 loading。
+// 详情请求代号
 let detailRequestGeneration = 0;
 
 function isCurrentDetail(mailId, requestId) {
   return requestId === detailRequestGeneration && mailId === activeMailId.value;
 }
 
-// 这封所在线程的根 id：归档（root_id）用。mails/:id 会带 rootMsgId，根邮件为 null。
+// 这封所在线程的根 id
 const threadRootId = computed(() => {
   const item = mail.value;
   if (!item) {
@@ -958,7 +935,7 @@ async function openMail(mailId) {
   chainTruncated.value = false;
   clearNotice();
 
-  // 只有这次选择仍然有效时才继续标记已读（见下方 markActiveThreadRead 的守卫）
+  // 只有这次选择仍然有效时才继续标记已读
   const loaded = await fetchMail(mailId);
   if (!loaded) {
     return;
@@ -981,7 +958,7 @@ function closeMail() {
   loadMails();
 }
 
-// 单封详情：mailId 默认取当前打开的那封；返回 true 表示这份结果仍是当前选择（已写入状态）。
+// 单封详情：mailId 默认取当前打开的那封
 // 渲染顺序：这一封（时间最新）在前，replyChain 按服务端顺序（时间倒序，链尾是根）跟在后面。
 async function fetchMail(mailId = activeMailId.value) {
   if (!mailId) {
@@ -1012,7 +989,7 @@ async function fetchMail(mailId = activeMailId.value) {
     if (!isCurrentDetail(mailId, requestId)) {
       return false;
     }
-    setNotice("error", errorText(error, "加载邮件内容失败。"));
+    setNotice("error", extractErrorMessage(error, "加载邮件内容失败。"));
     return false;
   } finally {
     // loading 归最新一次请求管
@@ -1048,7 +1025,7 @@ async function markActiveThreadRead() {
       for (const message of messages.value) {
         if (doneSet.has(message.mailId)) message.unread = 0;
       }
-      setNotice("error", errorText(error, "标记已读失败。"));
+      setNotice("error", extractErrorMessage(error, "标记已读失败。"));
     }
     return;
   }
@@ -1063,10 +1040,7 @@ async function markActiveThreadRead() {
   refreshUnreadSummary();
 }
 
-// 归档 / 取消归档：整条线程（root_id）。归档不改变已读状态，只是移出收件箱。
-// 「归档」文件夹里的邮件一律视为已归档（按钮就是取消归档），其余文件夹看邮件自己的标记。
-// 注意这里的判断只在**点击那一刻**要正确：动作成功后详情会被关掉（见 toggleThreadArchive），
-// 所以不存在「取消归档之后按钮还停在取消归档」的失真状态。
+// 归档 / 取消归档
 const threadArchived = computed(
   () => Number(mail.value?.archived) === 1 || mailboxFilter.value === "archive",
 );
@@ -1088,9 +1062,6 @@ async function toggleThreadArchive() {
         ? "已归档，可在「归档」文件夹找回。"
         : "已取消归档，邮件回到原文件夹。",
     );
-    // 归档后这封多半已经不属于当前文件夹（「归档」里取消归档尤其如此）：直接回列表，
-    // 别让详情停在 archived 与服务端不一致的那一封上。
-    // 期间已经切到别的邮件时只刷列表与未读，别把别人的详情关掉。
     if (openedId === activeMailId.value) {
       closeMail(); // 内部已重建列表并刷新未读汇总
     } else {
@@ -1101,7 +1072,7 @@ async function toggleThreadArchive() {
     if (openedId === activeMailId.value) {
       setNotice(
         "error",
-        errorText(error, next ? "归档失败。" : "取消归档失败。"),
+        extractErrorMessage(error, next ? "归档失败。" : "取消归档失败。"),
       );
     }
   } finally {
@@ -1234,7 +1205,7 @@ async function sendCompose() {
       await loadMails();
     }
   } catch (error) {
-    setNotice("error", errorText(error, "发送失败。"));
+    setNotice("error", extractErrorMessage(error, "发送失败。"));
   } finally {
     composing.value = false;
   }
@@ -1280,8 +1251,6 @@ function applyHintList(items) {
 }
 
 // 提问：只提交问题，不扣费；提交后开始等报价。
-// 只要没有 pending（名额未占），即使还有 quoted 在等支付也能再提一条。
-// 门禁：禁言 → E_MUTED；队伍被封禁 → E_FORBIDDEN「队伍已被官方封禁」（api-11 限制矩阵）。
 async function submitHintQuestion() {
   if (hintSubmitting.value) {
     return;
@@ -1345,13 +1314,11 @@ async function submitHintQuestion() {
       ...openHints.value,
     ];
     setNotice("success", "已提交，等待官方报价（报价前不扣点数）。");
-    // 2026-11-12 起提问会在队伍会话生成一封来信（自己发的，进「已发送」）：
-    // 正在看这两个文件夹时静默刷新一下，不打断撰写面板。
     if (mailboxFilter.value === "sent" || mailboxFilter.value === "all") {
       void loadMails();
     }
   } catch (error) {
-    setNotice("error", errorText(error, "提交求提示失败。"));
+    setNotice("error", extractErrorMessage(error, "提交求提示失败。"));
   } finally {
     hintSubmitting.value = false;
   }
@@ -1375,15 +1342,15 @@ async function confirmHint(item) {
       "success",
       `已确认 #${id}，扣除 ${data.cost ?? 0} 点；答复已发到「队伍会话」，可在收件箱查看。`,
     );
-    // 答复是一条新邮件：刷新列表、余额、「待报价」名额（可能还占着别的请求），
-    // 以及未读汇总（GET /msg/mails/summary）——顶栏角标要立刻反映出这条新答复
+    // 答复是一条新邮件：刷新列表、余额、「待报价」名额，
+    // 以及未读汇总
     await Promise.all([
       loadMails(),
       loadTipsBalance(),
       refreshHintPendingCount(),
       refreshUnreadSummary(),
     ]);
-    // 2026-11-12 起答复是对「提问邮件」的回复：确认后直接打开那条线程，省得自己去翻收件箱
+    // 答复是对「提问邮件」的回复：确认后直接打开那条线程，省得自己去翻收件箱
     const answerMailId = Number(data.msgId) || 0;
     if (answerMailId) {
       activeTab.value = "inbox";
@@ -1401,7 +1368,7 @@ async function confirmHint(item) {
         `本队 tips 不足（需要 ${detail.required ?? "?"}，当前 ${detail.balance ?? tipsBalance.value}）；补齐后可再次确认 #${id} 的报价。`,
       );
     } else {
-      setNotice("error", errorText(error, "确认失败。"));
+      setNotice("error", extractErrorMessage(error, "确认失败。"));
     }
     // 状态可能已被别处改动（如已处理），拉一次最新状态
     await refreshHintSnapshot();
@@ -1411,12 +1378,6 @@ async function confirmHint(item) {
 }
 
 // 申请更便宜：整个提问只允许一次，不加价、不扣费；
-// 「可能答不全」这句提醒必须由前端在发请求之前给出（后端不提供）。
-// 2026-11-13（2.2.0）起可以带说明（content，可选 1..2000）与附件：
-// 它们写成「申请更便宜」邮件的正文 / 图片，staff 在求提示工作台能看到。
-// 这里**复用下面同一个输入框与附件队列**（和「提交求提示」是同一套 UI），
-// 只是把提交目标切成这条请求；不带正文时后端沿用默认文案「申请更便宜」。
-// 注意：带正文 / 附件会被禁言判定拦住（403 E_MUTED），所以禁言期间不给这个入口。
 function requestCheaper(item) {
   if (hintActing.value || !canRequestCheaperOf(item)) {
     return;
@@ -1484,7 +1445,7 @@ async function submitCheaper() {
         "禁言期间不能附带说明与图片，请清空后重新提交（默认申请仍然有效）。",
       );
     } else {
-      setNotice("error", errorText(error, "申请失败。"));
+      setNotice("error", extractErrorMessage(error, "申请失败。"));
     }
   } finally {
     hintSubmitting.value = false;
@@ -1533,7 +1494,7 @@ async function submitClose(item) {
       loadHintRequests({ reset: true }),
     ]);
   } catch (error) {
-    setNotice("error", errorText(error, "关闭失败。"));
+    setNotice("error", extractErrorMessage(error, "关闭失败。"));
     await refreshHintSnapshot();
   } finally {
     hintActing.value = "";
@@ -1571,7 +1532,7 @@ async function loadHintRequests({ reset = false } = {}) {
     hintNextCursor.value = data.nextCursor ?? null;
     hintPendingCount.value = Number(data.pendingCount ?? 0) || 0;
   } catch (error) {
-    setNotice("error", errorText(error, "加载提示请求历史失败。"));
+    setNotice("error", extractErrorMessage(error, "加载提示请求历史失败。"));
   } finally {
     hintRequestsLoading.value = false;
   }
@@ -1604,7 +1565,7 @@ async function loadLedger({ reset = false } = {}) {
     // 无队伍时后端返回 teamId:null + 空列表，属正常空值
     ledgerTeamId.value = data.teamId ?? null;
   } catch (error) {
-    setNotice("error", errorText(error, "加载点数流水失败。"));
+    setNotice("error", extractErrorMessage(error, "加载点数流水失败。"));
   } finally {
     ledgerLoading.value = false;
   }
@@ -1617,7 +1578,7 @@ async function refreshHintPendingCount() {
     const response = await messageApi.getHintRequests({ limit: 1 });
     const data = response?.data ?? {};
     hintPendingCount.value = Number(data.pendingCount ?? 0) || 0;
-  } catch (error) {
+  } catch {
     // 配额数字读失败无伤大雅，下次历史 / 刷新会修正
   }
 }
@@ -1676,7 +1637,7 @@ async function restoreOpenHints() {
     const { items, pendingCount } = await loadAllHintRequests();
     hintPendingCount.value = pendingCount;
     applyHintList(items);
-  } catch (error) {
+  } catch {
     // 恢复失败不影响页面其他部分
   }
 }
@@ -1731,7 +1692,6 @@ function waitedText(value) {
 // ---------- 提示请求的轮询 ----------
 
 // 用「请求历史」轮询当前状态：一次请求同时拿到 pendingCount 与每条请求的最新状态
-//（pending / quoted / answered / rejected / closed 以及议价字段）。
 let hintRefreshing = false;
 
 async function refreshHintSnapshot() {
@@ -1741,12 +1701,11 @@ async function refreshHintSnapshot() {
 
   hintRefreshing = true;
   try {
-    // 一次轮询拉全历史：进行中列表必须是「所有 open」，不能只是最新一页里的 open
+    // 一次轮询拉全历史
     const { items, pendingCount } = await loadAllHintRequests();
     hintPendingCount.value = pendingCount;
 
     // 记录弹窗开着：同步已翻到的行，并补上「比最新一行还新」的记录（别处新产生的）。
-    // 未翻到的旧页不塞进来，否则分页游标会与内容错位、「加载更多」出现重复行。
     if (hintHistoryOpen.value && !hintRequestsLoading.value) {
       if (!hintRequests.value.length) {
         // 打开时历史为空（或首页没拉成）：现在有记录了，按首页重新加载，顺带恢复游标
@@ -1773,7 +1732,7 @@ async function refreshHintSnapshot() {
 
     // 进行中的请求：用完整历史里的最新状态覆盖（可能有多条 pending / quoted）
     applyHintList(items);
-  } catch (error) {
+  } catch {
     // 轮询失败静默处理：下一轮会重试，避免刷屏报错
   } finally {
     hintRefreshing = false;
@@ -1817,10 +1776,7 @@ onMounted(async () => {
   }
 
   document.addEventListener("visibilitychange", handleVisibilityChange);
-  // 先起轮询再 await 初始化：初始化期间就卸载的话，onBeforeUnmount 拿到的 timer 一定有效，
-  // 不会在挂载回调恢复执行后留下一个没人清理的 setInterval。
-  // 轮询自身有守卫（页面不可见 / 详情打开 / 写信页 / 列表加载中 / 无 since_id 基准都跳过），
-  // 提前起步不会和下面的初始化重复发请求。
+  // 先起轮询再 await 初始化
   startMailPolling();
   // 未读角标（GET /msg/mails/summary）由 App.vue 的全局轮询统一负责，本页只加载自己的数据。
   // 附件开关随页面取一次（策略因用户而异，不进缓存；拿不到就按关闭处理）。
@@ -1964,9 +1920,7 @@ onBeforeUnmount(() => {
               </div>
             </div>
 
-            <!-- 请求提示：先提问（不扣费），官方报价后由玩家确认扣费；答复进队伍会话。
-               只有 pending 占「每队 1 条」名额：可以有 1 条 pending + 多条 quoted 同时存在，
-               每条各自确认（按各自 quotedCost 扣费）。 -->
+            <!-- 请求提示 -->
             <template v-if="isHintCompose">
               <div class="hint-panel">
                 <p class="helper-text">
@@ -2072,8 +2026,7 @@ onBeforeUnmount(() => {
                   </li>
                 </ul>
 
-                <!-- 提交区：默认是「提交求提示」；点某条请求的「申请更便宜」后，
-                     同一个输入框 / 附件队列改用来写这一次的说明（带正文或附图会被禁言判定拦住） -->
+                <!-- 提交区 -->
                 <div class="hint-submit">
                   <template v-if="cheaperTarget">
                     <p class="helper-text">
@@ -2110,7 +2063,10 @@ onBeforeUnmount(() => {
                       @remove="removeHint"
                       @retry="retryHint"
                     />
-                    <p v-if="!tipsHasTeam && !cheaperTarget" class="helper-text">
+                    <p
+                      v-if="!tipsHasTeam && !cheaperTarget"
+                      class="helper-text"
+                    >
                       加入队伍后才能求提示。
                     </p>
                     <div class="hint-submit__actions">
@@ -2133,7 +2089,9 @@ onBeforeUnmount(() => {
                             ? false
                             : !tipsHasTeam || !hintQuestion.trim())
                         "
-                        @click="cheaperTarget ? submitCheaper() : submitHintQuestion()"
+                        @click="
+                          cheaperTarget ? submitCheaper() : submitHintQuestion()
+                        "
                       >
                         {{
                           hintSubmitting
@@ -2597,7 +2555,7 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- 本队点数流水（GET /api/tips/ledger）：余额变化都带 balanceAfter，可自查收支 -->
+    <!-- 本队点数流水 -->
     <div
       v-if="ledgerOpen"
       class="modal-backdrop"
@@ -2945,7 +2903,6 @@ onBeforeUnmount(() => {
 }
 
 .mail-editor:focus,
-.reply-input:focus,
 .input:focus {
   outline: none;
   border-color: var(--border-strong);

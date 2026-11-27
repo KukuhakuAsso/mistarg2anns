@@ -45,7 +45,12 @@ function clamp(value, min, max) {
 }
 
 export function useClueDrag() {
-    const { placeClue, removeClueFromBoard, registerBoardCard } = useGameState();
+    const {
+        placeClue,
+        removeClueFromBoard,
+        registerBoardCard,
+        bringClueToFront,
+    } = useGameState();
 
     function stop() {
         drag.active = false;
@@ -71,8 +76,7 @@ export function useClueDrag() {
         if (drag.clueId && rect && drag.overBoard) {
             const x = clamp(drag.x - rect.left - drag.offsetX, 0, rect.width - drag.w);
             const y = clamp(drag.y - rect.top - drag.offsetY, 0, rect.height - drag.h);
-            // 只有真正落到板面上才算「收藏」。在 pointerdown 就登记的话，
-            // 普通点击（只想读题）和拖到一半松手放弃都会把题目永久塞进待用区。
+            // 只有真正落到板面上才算「收藏」。
             if (drag.meta) registerBoardCard(drag.meta);
             placeClue(drag.clueId, Math.round(x), Math.round(y));
         } else if (drag.clueId && drag.source === "board") {
@@ -87,6 +91,9 @@ export function useClueDrag() {
         event.preventDefault();
 
         const rect = event.currentTarget.getBoundingClientRect();
+
+        // 按住板面上的卡片就把它提到最上层：后点击的线索压住先点击的线索
+        if (source === "board") bringClueToFront(clueId);
 
         drag.clueId = clueId;
         drag.source = source;

@@ -7,7 +7,9 @@ import { BAN_SCOPE_TEAM, resolveBanScope } from "@/utils/banScope";
 
 // 归一化登录类型为 email / username / player_no；其他值直接抛错。
 function normalizeLoginType(type) {
-  const value = String(type ?? "").trim().toLowerCase();
+  const value = String(type ?? "")
+    .trim()
+    .toLowerCase();
   if (["email", "username", "player_no"].includes(value)) {
     return value;
   }
@@ -89,7 +91,6 @@ export async function loginWithPassword({ type, identifier, password }) {
     }
 
     if (code === "E_BANNED") {
-      // 2.2.2 起 detail 带 reason_code：账号封禁与队伍封禁要分开说，别让队员以为自己被封了
       const subject =
         resolveBanScope(detail) === BAN_SCOPE_TEAM
           ? "所在队伍已被封禁"

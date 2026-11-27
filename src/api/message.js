@@ -102,11 +102,37 @@ import request from "@/api/request";
  */
 
 /**
+ * `GET /api/msg/policy` 的 `data`：发信策略，**因用户而异**。
+ * @typedef {Object} MsgPolicy
+ * @property {boolean} playerSendEnabled 玩家自由发信是否开启（默认关闭）
+ * @property {boolean} playerSendRestricted 当前身份是否受该开关约束（`player` / `captain` 为 `true`）
+ * @property {boolean} muted 本人或所在队伍是否被禁言
+ * @property {boolean} attachmentsEnabled 图片附件是否可用
+ */
+
+/**
  * `request` 抛出的接口错误。
  * @typedef {Error & { status: number, code: string, reasonCode: string, payload: Object }} ApiError
  */
 
 export const messageApi = {
+  /**
+   * 发信策略与图片附件开关。
+   *
+   * - 接口：`GET /api/msg/policy`
+   * - 鉴权：需要访问令牌（**封禁态也可读**，申诉页靠它判断能不能附图）
+   * - 文档：api-8-message-mail.md §8.0
+   *
+   * @returns {Promise<{ ok: boolean, data: MsgPolicy, req_id: string }>}
+   * @throws {ApiError}
+   *   - 401 `E_AUTH`：未登录或令牌失效
+   */
+  getPolicy: () =>
+    request("/msg/policy", {
+      method: "GET",
+      useAuth: true,
+    }),
+
   /**
    * 邮件列表（平铺粒度，每次发信一行，倒序分页）。
    *

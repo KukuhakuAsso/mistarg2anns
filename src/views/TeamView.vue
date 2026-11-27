@@ -76,11 +76,10 @@ const members = computed(() => currentTeam.value?.members ?? []);
 const currentAccountId = computed(() => state.user.currentUser?.id ?? null);
 
 // 队伍封禁（status=4）：只锁参赛与队伍结构（建队 / 加入 / 队伍结构操作 / 退队 / 取题提交），
-// 站内信、求提示的后续动作、账号设置等都不受影响（api-11 限制矩阵）。
+// 站内信、求提示的后续动作、账号设置等都不受影响。
 const teamBanned = computed(
   () =>
-    state.accountStatus?.team?.status === 4 ||
-    currentTeam.value?.status === 4,
+    state.accountStatus?.team?.status === 4 || currentTeam.value?.status === 4,
 );
 // 队伍级禁言（status=3 或 /me/status 的 team.muted）：只关发信与求提示提问，其余不受影响。
 // 展示优先级与拦截一致：封禁 > 禁言。
@@ -209,7 +208,8 @@ async function handleCreateTeam() {
 
   // 把队名相关的原因落到输入框下方：400 的 detail.fields.name，或 409 的「该队名已被占用」。
   const conflictOnName =
-    result.code === "E_CONFLICT" && String(result.message || "").includes("队名");
+    result.code === "E_CONFLICT" &&
+    String(result.message || "").includes("队名");
   const nameError = result.nameError || (conflictOnName ? result.message : "");
   if (nameError) {
     resetTeamNameState();
@@ -336,7 +336,10 @@ function handleTransfer(member) {
       </div>
 
       <!-- 加载中 -->
-      <div v-else-if="loading" class="page-shell__column page-shell__column--static">
+      <div
+        v-else-if="loading"
+        class="page-shell__column page-shell__column--static"
+      >
         <section class="panel-card">
           <p class="helper-text">正在加载队伍信息...</p>
         </section>
@@ -434,20 +437,29 @@ function handleTransfer(member) {
           <div class="team-summary">
             <div>
               <h2>{{ currentTeam.name }}</h2>
-              <p v-if="currentTeam.intro" class="panel-card__meta">{{ currentTeam.intro }}</p>
+              <p v-if="currentTeam.intro" class="panel-card__meta">
+                {{ currentTeam.intro }}
+              </p>
               <p class="panel-card__meta">
                 成员 {{ members.length }}/{{ currentTeam.maxSize ?? 5 }} · 已解
                 {{ currentTeam.progress?.solvedCount ?? 0 }} 题 · 得分
                 {{ currentTeam.progress?.score ?? 0 }}
               </p>
             </div>
-            <span :class="['status', teamLocked ? 'status--locked' : 'status--pending']">
+            <span
+              :class="[
+                'status',
+                teamLocked ? 'status--locked' : 'status--pending',
+              ]"
+            >
               {{ teamLocked ? "已确认参赛" : "未确认参赛" }}
             </span>
           </div>
 
           <p v-if="currentTeam.inviteCode" class="panel-card__meta">
-            邀请码：<code class="invite-code">{{ currentTeam.inviteCode }}</code>
+            邀请码：<code class="invite-code">{{
+              currentTeam.inviteCode
+            }}</code>
           </p>
           <p v-else class="panel-card__meta">邀请码仅本队成员可见。</p>
 
@@ -477,7 +489,9 @@ function handleTransfer(member) {
             <li v-for="member in members" :key="member.accountId">
               <div class="member-meta">
                 <strong>{{ member.username }}</strong>
-                <small>{{ member.playerNo }} · {{ roleLabel(member.role) }}</small>
+                <small
+                  >{{ member.playerNo }} · {{ roleLabel(member.role) }}</small
+                >
               </div>
               <div
                 v-if="isTeamCaptain && !teamLocked && !isMe(member)"
@@ -526,7 +540,11 @@ function handleTransfer(member) {
                   class="secondary-button"
                   type="button"
                   :disabled="Boolean(busy) || teamLocked"
-                  @click="run(`confirm-${request.id}`, () => confirmJoinRequest(request.id))"
+                  @click="
+                    run(`confirm-${request.id}`, () =>
+                      confirmJoinRequest(request.id),
+                    )
+                  "
                 >
                   同意
                 </button>
@@ -534,7 +552,11 @@ function handleTransfer(member) {
                   class="ghost-button"
                   type="button"
                   :disabled="Boolean(busy) || teamLocked"
-                  @click="run(`reject-${request.id}`, () => rejectJoinRequest(request.id))"
+                  @click="
+                    run(`reject-${request.id}`, () =>
+                      rejectJoinRequest(request.id),
+                    )
+                  "
                 >
                   拒绝
                 </button>

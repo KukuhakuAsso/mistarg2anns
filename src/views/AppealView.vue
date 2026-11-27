@@ -1,16 +1,17 @@
 <script setup>
-// 我的申诉（api-11-moderation-mute.md §三）：
-//   scope=account → 我本人的账号级处罚（封禁 / 账号级禁言）
-//   scope=team    → 队长代表队伍（队伍级禁言 / 队伍封禁）；服务端只在「我是队长 + 队伍有可申诉处罚」时给 teamAppeal
-// 这三个 /me/* 接口是封禁账号唯一可用的接口族，所以本页在封禁状态下也必须能正常打开。
+// 我的申诉
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { meApi } from "@/api/me";
 import { extractErrorMessage } from "@/utils/errors";
-import { isAccountBanStatus, BAN_SCOPE_TEAM, resolveErrorBanScope } from "@/utils/banScope";
+import {
+  isAccountBanStatus,
+  BAN_SCOPE_TEAM,
+  resolveErrorBanScope,
+} from "@/utils/banScope";
 import { useGameState } from "@/composables/useGameState";
 import { useStatusMessage } from "@/composables/useStatusMessage";
 import { useAttachments } from "@/composables/useAttachments";
-import { useMsgAttachments } from "@/composables/useMsgAttachments";
+import { messageApi } from "@/api/message";
 import AttachmentPicker from "@/components/AttachmentPicker.vue";
 import AttachmentGallery from "@/components/AttachmentGallery.vue";
 import StatusMessage from "@/components/StatusMessage.vue";
@@ -35,11 +36,16 @@ const {
   clear: clearMessage,
 } = useStatusMessage();
 
-// ---------- 申诉截图（api-11 §三 / api-8 §8.3，2026-10-31 起） ----------
-// 开关统一读 /api/msg/policy 的 attachmentsEnabled（2026-10-31 与后端确认：
-// 封禁账号也能调用 policy，所以申诉页不再依赖 /me/status 的同名字段）。
-// 严格判值：缺失 / 请求失败即视为关闭，不渲染选图入口。sign / media 对封禁与禁言账号放行。
-const { attachmentsEnabled, loadPolicy } = useMsgAttachments();
+// ---------- 申诉截图 ----------
+// 开关统一读 /api/msg/policy 的 attachmentsEnabled
+const attachmentsEnabled = ref(false);
+async function loadPolicy() {
+  const data = await messageApi.getPolicy().then(
+    (payload) => payload?.data,
+    () => null,
+  );
+  attachmentsEnabled.value = data?.attachmentsEnabled;
+}
 const {
   items: attachments,
   dragging: attachmentsDragging,
@@ -60,9 +66,7 @@ const {
   onDrop: onAttachmentsDrop,
 } = useAttachments({ onError: (text) => setMessage("error", text) });
 
-// 附件开关关闭时（sign 会 403 MSG_IMAGE_DISABLED）连事件都不绑：
-// 否则粘贴一张图就会造出一条「上传失败」的附件，failed 卡住提交，
-// 而选图入口是隐藏的 —— 用户没有「移除」可点，只能刷新页面。
+// 附件事件绑定：
 const attachmentEvents = computed(() =>
   attachmentsEnabled.value
     ? {
@@ -75,7 +79,6 @@ const attachmentEvents = computed(() =>
     : {},
 );
 
-// 开关关闭时不再提「可拖拽或粘贴截图」
 const appealPlaceholder = computed(() => {
   const withShot = attachmentsEnabled.value ? "；可拖拽或粘贴截图。" : "。";
   return scope.value === "team"
@@ -84,14 +87,12 @@ const appealPlaceholder = computed(() => {
 });
 
 const isLoggedIn = computed(() => Boolean(state.user.currentUser));
-// /me/status 的 banned 是「等效门禁状态」（含队伍封禁），不能直接当账号封禁展示：
-// 个人封禁 > 队伍封禁 > 禁言（文档口径），accountBanned 按处罚来源区分。
+// 账户封禁
 const accountBanned = computed(() => isAccountBanStatus(status.value));
 const muted = computed(() => Boolean(status.value?.muted));
 const teamInfo = computed(() => status.value?.team || null);
-// 队伍封禁（team.status=4）：全局门禁里只锁参赛与队伍结构，队长可代表队伍申诉
+// 队伍封禁
 const teamBanned = computed(() => teamInfo.value?.status === 4);
-// teamAppeal 非 null 才说明「我是队长且队伍有可申诉处罚（禁言 / 封禁）」，否则不给队伍申诉入口
 const teamAppeal = computed(() => status.value?.teamAppeal || null);
 const accountAppeal = computed(() => status.value?.appeal || null);
 
@@ -120,7 +121,6 @@ function untilText(value, verb) {
 }
 
 // 顶部状态卡：账号封禁 > 队伍封禁 > 账号禁言 > 队伍禁言 > 正常
-// （文档口径：封禁 > 禁言；同级别时账号级 > 队伍级）
 const statusCard = computed(() => {
   if (accountBanned.value) {
     return {
@@ -201,8 +201,6 @@ const scopes = computed(() => {
   return list;
 });
 
-// 申诉主体默认落在「有可申诉处罚」的那一侧：只被队伍封禁的队长直接进队伍申诉。
-// 用户手动切过主体后就不再自动跳转，避免状态轮询把页面切走。
 const scopePicked = ref(false);
 
 function scopeHasAppeal(value) {
@@ -243,7 +241,6 @@ const submitDisabledReason = computed(() => {
         ? "当前队伍没有需要申诉的处罚。"
         : "只有队长可以代表队伍申诉。";
     }
-    // 队伍封禁只能走队伍申诉：账号侧没有可申诉处罚时要说清楚，否则用户以为页面坏了
     if (teamBanned.value) {
       return teamAppeal.value
         ? "队伍封禁需由队长在「队伍申诉」中提交；账号侧没有可申诉的处罚。"
@@ -295,7 +292,6 @@ async function loadChain(target = scope.value) {
     if (target === "team") teamScopeDenied.value = "";
   } catch (error) {
     if (target === "team" && error?.status === 403) {
-      // 403 = 只有队长可以代表队伍申诉：隐藏页签并回落到账号申诉
       teamScopeDenied.value = extractErrorMessage(
         error,
         "只有队长可以代表队伍申诉",
@@ -318,7 +314,6 @@ async function loadChain(target = scope.value) {
 async function refreshAll() {
   loading.value = true;
   try {
-    // 附件开关与处罚状态一起取：policy 对封禁账号也放行，所以申诉页用同一份口径
     await Promise.all([loadStatus(), loadPolicy()]);
     await loadChain("account");
     if (teamAppeal.value) await loadChain("team");
@@ -328,7 +323,6 @@ async function refreshAll() {
   }
 }
 
-// 切换主体时才需要拉另一条链（已拉过就直接用缓存）
 watch(scope, async (next) => {
   clearMessage();
   if (!chains.value[next]) {
@@ -408,8 +402,7 @@ const STATUS_POLL_MS = 30000;
 let timer = null;
 let clearTimer = null;
 let lastFingerprint = "";
-// 组件是否已卸载：onMounted 里的 refreshAll 可能还没回来用户就离开了，
-// 那条续体不能再往已卸载的组件上注册 interval / 监听器（否则永远清不掉）。
+// 组件是否已卸载，防止出现无法在已销毁组件上注册定时器或处理异步返回的情况。
 let disposed = false;
 
 function fingerprint(value) {
@@ -435,15 +428,12 @@ async function pollStatus() {
   const current = fingerprint(next);
   if (lastFingerprint && current !== lastFingerprint) {
     setMessage("info", "账号处罚状态已更新。");
-    // 链请求也可能很慢：每一段 await 之后都要重新确认组件还在，
-    // 否则卸载后的续体会在已销毁的组件上再排一个 6 秒的 clearTimer。
     await loadChain("account");
     if (disposed) return;
     if (teamAppeal.value) {
       await loadChain("team");
       if (disposed) return;
     }
-    // 让全站门禁（禁言隐藏发信入口 / 封禁跳转）跟上
     refreshAccountStatus();
     window.clearTimeout(clearTimer);
     clearTimer = window.setTimeout(() => clearMessage(), 6000);
@@ -457,7 +447,6 @@ function handleVisibilityChange() {
 
 onMounted(async () => {
   await refreshAll();
-  // 请求期间用户已经离开：这时再注册的 interval / 监听器不会再有机会被清理
   if (disposed) return;
   lastFingerprint = fingerprint(status.value);
   timer = window.setInterval(() => {
@@ -518,12 +507,15 @@ onBeforeUnmount(() => {
           <p v-else-if="teamBanned" class="helper-text">
             队伍封禁期间与账号封禁口径相同：除申诉相关接口外功能页全部不可用
             （403），你的账号本身没有被处罚。
-            {{ teamAppeal
-              ? "你是队长，可在下方「队伍申诉」中提交申诉，官方回复写在队伍频道（全队可见）。"
-              : "队伍封禁只有队长可以代表队伍申诉。" }}
+            {{
+              teamAppeal
+                ? "你是队长，可在下方「队伍申诉」中提交申诉，官方回复写在队伍频道（全队可见）。"
+                : "队伍封禁只有队长可以代表队伍申诉。"
+            }}
           </p>
           <p v-else-if="muted" class="helper-text">
-            禁言期间只关闭发信通道：站内信与求提示的只读、确认报价 / 申请降价 / 关闭仍可用。
+            禁言期间只关闭发信通道：站内信与求提示的只读、确认报价 / 申请降价 /
+            关闭仍可用。
           </p>
 
           <!-- 申诉主体：账号申诉 / 队伍申诉（队长且队伍有可申诉处罚时出现） -->
@@ -547,12 +539,14 @@ onBeforeUnmount(() => {
             <strong>{{ kindText(appeal?.kind) }}</strong>
             <span>申诉额度</span>
             <strong>
-              {{ appeal?.used ?? 0 }}/{{ appeal?.limit ?? 3 }}
-              （剩余 {{ appeal?.remaining ?? 0 }} 条）
+              {{ appeal?.used ?? 0 }}/{{ appeal?.limit ?? 3 }} （剩余
+              {{ appeal?.remaining ?? 0 }} 条）
             </strong>
           </div>
 
-          <p v-if="appealStateText" class="helper-text">{{ appealStateText }}</p>
+          <p v-if="appealStateText" class="helper-text">
+            {{ appealStateText }}
+          </p>
 
           <!-- 官方最近回复 -->
           <div v-if="appeal?.last_reply" class="reply-card">
@@ -892,7 +886,10 @@ onBeforeUnmount(() => {
   cursor: pointer;
   background: rgba(255, 255, 255, 0.02);
   color: var(--text);
-  transition: filter 0.2s ease, opacity 0.2s ease, border-color 0.2s ease;
+  transition:
+    filter 0.2s ease,
+    opacity 0.2s ease,
+    border-color 0.2s ease;
 }
 
 .secondary-button {

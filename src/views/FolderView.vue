@@ -5,10 +5,7 @@ let rememberedModalHeight = 0;
 </script>
 
 <script setup>
-// 档案（目录）页：题目列表来自 GET /api/puzzle/map，点击后在可移动窗口里取单题视图。
-//
-// 未解锁的题目根本不会出现在 map 里，所以这里没有锁定态；
-// 直接请求未解锁题的 view 会得到 404（与不存在同形），按正常提示处理即可。
+// 档案（目录）页
 import {
   computed,
   nextTick,
@@ -42,8 +39,7 @@ const { state, refreshTeamTips, registerBoardCard, applyTipsBalance } =
   useGameState();
 const { startDrag: startClueDrag } = useClueDrag();
 
-// 题目内的预置提示（api-10 §10.11）：列表随题目视图一起下发，unlocked 已按本队购买记录
-// 与 0 价派生；未解锁项没有 content，购买成功后由接口就地返回该条的 unlocked + content。
+// 题目内的预置提示
 const tipsOpen = ref(false);
 const tipsBalance = computed(() => state.teamTips.balance);
 const hints = computed(() => view.value?.hints ?? []);
@@ -54,8 +50,7 @@ const puzzles = computed(() =>
   props.folder.entries.filter((entry) => entry.kind === "puzzle"),
 );
 
-// 本档案里加载失败的封面：只有它们才值得显示「重试」入口。
-// 用路径集合和失败列表取交集，别的档案 / 线索栏的失败不会让这里亮起来。
+// 本档案里加载失败的封面
 const failedCoverPaths = computed(() => {
   const failed = failedMediaPaths.value;
   const hit = new Set();
@@ -102,8 +97,7 @@ const modalWidth = computed(() =>
   Math.min(modalWide.value ? 960 : 680, window.innerWidth - 32),
 );
 
-// 实际宽度要等 view 回来才确定，但位置必须一开始就定好：若先按窄版定位，
-// 宽版展开后右边缘会顶出视口。所以定位统一按最宽形态计算。
+//定位统一按最宽形态计算。
 const modalPositionWidth = computed(() =>
   Math.min(960, window.innerWidth - 32),
 );
@@ -130,8 +124,7 @@ function fitModalHeight() {
   return clamp(base, min, max);
 }
 
-// 取题请求的代次：关闭弹窗或改开别的题后，旧请求的响应必须作废，
-// 否则加载慢的那道题迟到的响应会把用户正在看的题整个换掉。
+// 取题请求的代次
 let viewToken = 0;
 
 async function openEntry(entry) {
@@ -179,8 +172,6 @@ function closeEntry() {
 }
 
 // 按住题目文件即可拖到右侧线索栏：落点落在板面上会生成一张卡片并持久化。
-// 元数据随拖拽一起带过去，由 useClueDrag 在「真的落板成功」时才登记收藏 ——
-// 在这里登记的话，普通点击读题、拖到一半取消都会把题目永久塞进待用区。
 function startPuzzleDrag(event, entry) {
   if (event.pointerType === "mouse" && event.button !== 0) return;
   startClueDrag(event, entry.id, "puzzle", {
@@ -218,7 +209,7 @@ function replaceHint(next) {
   if (target) Object.assign(target, next);
 }
 
-// 购买一条预置提示：一步买断、队伍共享、不可退款（api-10 §10.11）。
+// 购买一条预置提示：一步买断、队伍共享、不可退款。
 async function buyHint(hint) {
   const puzzle = view.value;
   if (!puzzle || buyingHintId.value !== null) return;
@@ -269,8 +260,6 @@ async function handleSolved({ puzzleKey }) {
   if (entry) entry.solved = true;
   if (view.value) view.value.solved = true;
   await refresh();
-  // 重新拉 map 后封面可能换成完成态；板面快照存的是旧封面，跟着更新一次。
-  // 只更新「已经收藏过」的卡片：解出一道从没拖进板面的题，不该把它塞进待用区。
   const fresh = puzzles.value.find((item) => item.id === puzzleKey);
   if (fresh) {
     registerBoardCard(

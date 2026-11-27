@@ -23,9 +23,7 @@
     --radius: 6px;
     --bar-h: 46px;
     --panel-w: clamp(320px, 32vw, 440px);
-    /* 与 src/config/board.js 中的 CARD_W / CARD_H 保持一致 */
-    --card-w: 156px;
-    --card-h: 88px;
+    /* --card-w / --card-h 不在样式表里声明：main.js 启动时从 src/config/board.js 注入 */
 
     --sans: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
     --mono: ui-monospace, Consolas, "Courier New", monospace;

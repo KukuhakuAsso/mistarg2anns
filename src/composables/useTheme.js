@@ -10,7 +10,9 @@ const THEME_ICON = { system: "monitor", light: "sun", dark: "moon" };
 
 const prefersDark = ref(false);
 
-if (typeof window !== "undefined" && window.matchMedia) {
+// matchMedia 在少数 WebView / 严格隐私模式下缺失，这里只做能力检测；
+// 缺失时按浅色处理，主题切换仍可用（只是「跟随系统」拿不到系统偏好）。
+if (window.matchMedia) {
     const query = window.matchMedia("(prefers-color-scheme: dark)");
     prefersDark.value = query.matches;
     query.addEventListener("change", (event) => {
@@ -20,7 +22,6 @@ if (typeof window !== "undefined" && window.matchMedia) {
 
 export function useTheme() {
     const { state } = useGameState();
-    console.log(state);
     const isDark = computed(
         () =>
             state.ui.theme === "dark" ||

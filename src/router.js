@@ -88,15 +88,13 @@ function goToRoute(target) {
   syncFromLocation();
 }
 
-// 模块加载即完成初始化（无 window 时跳过）：
-// 补齐初始 hash、同步一次当前路由，并监听后续 hash 变化（前进/后退、手改地址都会走到这里）。
-if (typeof window !== "undefined") {
-  if (!window.location.hash) {
-    window.location.hash = "/";
-  }
-  syncFromLocation();
-  window.addEventListener("hashchange", syncFromLocation, { passive: true });
+// 模块加载即完成初始化：补齐初始 hash、同步一次当前路由，并监听后续 hash 变化
+// （前进/后退、手改地址都会走到这里）。
+if (!window.location.hash) {
+  window.location.hash = "/";
 }
+syncFromLocation();
+window.addEventListener("hashchange", syncFromLocation, { passive: true });
 
 // 对外接口：读 currentRoute 判断当前页面，用 goToRoute / backToDesktop 导航。
 export const router = {

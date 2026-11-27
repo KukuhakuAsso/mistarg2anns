@@ -14,10 +14,6 @@ import { useClueBoardSync } from "@/composables/useClueBoardSync";
 import { useGameState } from "@/composables/useGameState";
 import { useStatusMessage } from "@/composables/useStatusMessage";
 import { CARD_GAP, CARD_H } from "@/config/board";
-import {
-  CLUE_PANEL_MIN_W,
-  clampCluePanelWidth,
-} from "@/utils/panelWidth";
 
 const {
   state,
@@ -29,6 +25,7 @@ const {
   addClueToBoard,
   uncollectCard,
   pendingClueBoardChanges,
+  canUseClueBoard,
 } = useGameState();
 const { boardEl, drag, startDrag } = useClueDrag();
 const { flush: flushClueBoard, cooldownRemaining } = useClueBoardSync();
@@ -118,6 +115,30 @@ async function uploadNow() {
 
 // ---------- 宽度调整 ----------
 
+// 线索栏宽度区间：自身可读性（放得下一列卡片）/ 主内容区保底 / 上限留余量。
+const CLUE_PANEL_MIN_W = 280;
+const CLUE_PANEL_MAX_W = 760;
+const CLUE_PANEL_MIN_CONTENT = 320;
+
+// 把任意输入收拢到合法区间；上下限都按视口算，极窄窗口优先保住下限。
+function clampCluePanelWidth(value, viewportWidth) {
+  const viewport =
+    Number.isFinite(viewportWidth) && viewportWidth > 0
+      ? viewportWidth
+      : CLUE_PANEL_MIN_W + CLUE_PANEL_MIN_CONTENT;
+
+  const max = Math.min(
+    CLUE_PANEL_MAX_W,
+    Math.max(CLUE_PANEL_MIN_W, viewport - CLUE_PANEL_MIN_CONTENT),
+  );
+  const min = Math.min(CLUE_PANEL_MIN_W, max);
+
+  const num = Number(value);
+  if (!Number.isFinite(num)) return min;
+
+  return Math.round(Math.min(Math.max(num, min), max));
+}
+
 const WIDTH_STORAGE_KEY = "mistarg2anns:clue-board-width";
 
 // 面板根元素：拖动时用它拿当前实际宽度（可能是 CSS 里 clamp() 算出来的）
@@ -128,7 +149,6 @@ const resizing = ref(false);
 let resizeStart = null;
 
 function readStoredWidth() {
-  if (typeof window === "undefined") return null;
   try {
     const raw = window.localStorage.getItem(WIDTH_STORAGE_KEY);
     if (!raw) return null;
@@ -142,7 +162,6 @@ function readStoredWidth() {
 }
 
 function persistWidth(value) {
-  if (typeof window === "undefined") return;
   try {
     if (value == null) {
       window.localStorage.removeItem(WIDTH_STORAGE_KEY);
@@ -253,9 +272,9 @@ function onPoolPointerDown(event, clue) {
 </script>
 
 <template>
-  <!-- 线索栏需要登录：未登录时即使本地记着「展开」也不显示 -->
+  <!-- 线索栏需要登录且已进入游戏（未组队 / 未确认参赛 / 未开赛时不可用） -->
   <aside
-    v-show="state.user.currentUser && state.ui.cluePanelOpen"
+    v-show="canUseClueBoard && state.ui.cluePanelOpen"
     ref="panelEl"
     class="clue-board"
     :class="{ 'is-resizing': resizing }"
